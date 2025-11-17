@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Latent Space - Monitoring Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            padding: 20px;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+        
+        .last-update {
+            color: #888;
+            font-size: 0.9em;
+        }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .card {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 25px;
+            backdrop-filter: blur(10px);
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+        
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+        }
+        
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .card-title {
+            font-size: 1.4em;
+            font-weight: 600;
+        }
+        
+        .status-badge {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .status-online {
+            background: #4caf50;
+            box-shadow: 0 0 15px rgba(76, 175, 80, 0.5);
+        }
+        
+        .status-warning {
+            background: #ff9800;
+            box-shadow: 0 0 15px rgba(255, 152, 0, 0.5);
+        }
+        
+        .status-error {
+            background: #f44336;
+            box-shadow: 0 0 15px rgba(244, 67, 54, 0.5);
+        }
+        
+        .status-offline {
+            background: #666;
+        }
+        
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        
+        .metric:last-child {
+            border-bottom: none;
+        }
+        
+        .metric-label {
+            color: #aaa;
+            font-size: 0.95em;
+        }
+        
+        .metric-value {
+            font-weight: 600;
+            font-size: 1.1em;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4caf50 0%, #8bc34a 100%);
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8em;
+            font-weight: 600;
+        }
+        
+        .progress-warning {
+            background: linear-gradient(90deg, #ff9800 0%, #ffc107 100%);
+        }
+        
+        .progress-danger {
+            background: linear-gradient(90deg, #f44336 0%, #e91e63 100%);
+        }
+        
+        .log-container {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            padding: 15px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            margin-top: 15px;
+        }
+        
+        .log-entry {
+            padding: 5px 0;
+            color: #aaa;
+        }
+        
+        .log-error {
+            color: #f44336;
+        }
+        
+        .log-warning {
+            color: #ff9800;
+        }
+        
+        .log-success {
+            color: #4caf50;
+        }
+        
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+        
+        .btn {
+            flex: 1;
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: #2196f3;
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background: #1976d2;
+            transform: scale(1.05);
+        }
+        
+        .btn-danger {
+            background: #f44336;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #d32f2f;
+        }
+        
+        .chart-container {
+            margin-top: 20px;
+            height: 150px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            padding: 15px;
+            position: relative;
+        }
+        
+        .mini-chart {
+            width: 100%;
+            height: 100%;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .pulse {
+            animation: pulse 2s infinite;
+        }
+        
+        .refresh-indicator {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 10px 20px;
+            background: rgba(33, 150, 243, 0.9);
+            border-radius: 20px;
+            display: none;
+        }
+        
+        .refresh-indicator.show {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="refresh-indicator" id="refreshIndicator">
+        🔄 Refreshing...
+    </div>
+    
+    <div class="header">
+        <h1>🎨 Latent Space Monitoring</h1>
+        <div class="last-update">Last updated: <span id="lastUpdate">Loading...</span></div>
+    </div>
+    
+    <div class="grid">
+        <!-- Jetson A Card -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">👁️ Jetson A - Gaze Painter</div>
+                <div class="status-badge" id="jetsonAStatus">
+                    <span class="pulse">●</span> Checking...
+                </div>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Service Status</span>
+                <span class="metric-value" id="jetsonAService">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Network Health</span>
+                <span class="metric-value" id="jetsonANetwork">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Camera Status</span>
+                <span class="metric-value" id="jetsonACamera">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Display Status</span>
+                <span class="metric-value" id="jetsonADisplay">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">CPU Usage</span>
+                <span class="metric-value" id="jetsonACPU">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Memory</span>
+                <span class="metric-value">
+                    <span id="jetsonAMemory">-</span>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="jetsonAMemoryBar" style="width: 0%">0%</div>
+                    </div>
+                </span>
+            </div>
+            
+            <div class="actions">
+                <button class="btn btn-primary" onclick="restartService('jetson_a')">🔄 Restart</button>
+                <button class="btn btn-danger" onclick="stopService('jetson_a')">⏹️ Stop</button>
+            </div>
+            
+            <div class="log-container" id="jetsonALogs">
+                <div class="log-entry">Loading logs...</div>
+            </div>
+        </div>
+        
+        <!-- Jetson B Card -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">🧠 Jetson B - Analysis</div>
+                <div class="status-badge" id="jetsonBStatus">
+                    <span class="pulse">●</span> Checking...
+                </div>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Analysis Service</span>
+                <span class="metric-value" id="jetsonBAnalysis">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Web Server</span>
+                <span class="metric-value" id="jetsonBWeb">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">NFS Server</span>
+                <span class="metric-value" id="jetsonBNFS">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Network Health</span>
+                <span class="metric-value" id="jetsonBNetwork">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">CPU Usage</span>
+                <span class="metric-value" id="jetsonBCPU">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Disk Space</span>
+                <span class="metric-value">
+                    <span id="jetsonBDisk">-</span>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="jetsonBDiskBar" style="width: 0%">0%</div>
+                    </div>
+                </span>
+            </div>
+            
+            <div class="actions">
+                <button class="btn btn-primary" onclick="restartService('jetson_b')">🔄 Restart</button>
+                <button class="btn btn-danger" onclick="stopService('jetson_b')">⏹️ Stop</button>
+            </div>
+            
+            <div class="log-container" id="jetsonBLogs">
+                <div class="log-entry">Loading logs...</div>
+            </div>
+        </div>
+        
+        <!-- RPi4 Card -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">🖨️ RPi4 - Print Service</div>
+                <div class="status-badge" id="rpiStatus">
+                    <span class="pulse">●</span> Checking...
+                </div>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Service Status</span>
+                <span class="metric-value" id="rpiService">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Printer Status</span>
+                <span class="metric-value" id="rpiPrinter">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Print Queue</span>
+                <span class="metric-value" id="rpiQueue">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Network Health</span>
+                <span class="metric-value" id="rpiNetwork">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">CPU Usage</span>
+                <span class="metric-value" id="rpiCPU">-</span>
+            </div>
+            
+            <div class="actions">
+                <button class="btn btn-primary" onclick="restartService('rpi4')">🔄 Restart</button>
+                <button class="btn btn-danger" onclick="stopService('rpi4')">⏹️ Stop</button>
+            </div>
+            
+            <div class="log-container" id="rpiLogs">
+                <div class="log-entry">Loading logs...</div>
+            </div>
+        </div>
+        
+        <!-- Statistics Card -->
+        <div class="card">
+            <div class="card-header">
+                <div class="card-title">📊 Today's Statistics</div>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Total Drawings</span>
+                <span class="metric-value" id="statsDrawings">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Total Prints</span>
+                <span class="metric-value" id="statsPrints">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">Avg. Cycle Time</span>
+                <span class="metric-value" id="statsCycleTime">-</span>
+            </div>
+            
+            <div class="metric">
+                <span class="metric-label">API Success Rate</span>
+                <span class="metric-value" id="statsAPISuccess">-</span>
+            </div>
+            
+            <div class="chart-container">
+                <canvas id="activityChart" class="mini-chart"></canvas>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const CONFIG = {
+            apiEndpoint: '/api/monitoring',  // Will be served by monitoring_server.py
+            refreshInterval: 5000  // 5 seconds
+        };
+        
+        let updateTimer;
+        
+        async function fetchStatus() {
+            const indicator = document.getElementById('refreshIndicator');
+            indicator.classList.add('show');
+            
+            try {
+                const response = await fetch(CONFIG.apiEndpoint + '?t=' + Date.now());
+                const data = await response.json();
+                
+                updateDashboard(data);
+                document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+                
+            } catch (error) {
+                console.error('Failed to fetch status:', error);
+                showError();
+            } finally {
+                setTimeout(() => {
+                    indicator.classList.remove('show');
+                }, 500);
+            }
+        }
+        
+        function updateDashboard(data) {
+            // Jetson A
+            updateDeviceCard('jetsonA', data.jetson_a);
+            
+            // Jetson B
+            updateDeviceCard('jetsonB', data.jetson_b);
+            
+            // RPi4
+            updateDeviceCard('rpi', data.rpi4);
+            
+            // Statistics
+            updateStatistics(data.statistics);
+        }
+        
+        function updateDeviceCard(prefix, deviceData) {
+            if (!deviceData) return;
+            
+            // Status badge
+            const statusBadge = document.getElementById(`${prefix}Status`);
+            statusBadge.className = 'status-badge';
+            
+            if (deviceData.status === 'online') {
+                statusBadge.classList.add('status-online');
+                statusBadge.innerHTML = '<span class="pulse">●</span> Online';
+            } else if (deviceData.status === 'warning') {
+                statusBadge.classList.add('status-warning');
+                statusBadge.innerHTML = '<span class="pulse">●</span> Warning';
+            } else if (deviceData.status === 'error') {
+                statusBadge.classList.add('status-error');
+                statusBadge.innerHTML = '<span class="pulse">●</span> Error';
+            } else {
+                statusBadge.classList.add('status-offline');
+                statusBadge.innerHTML = '● Offline';
+            }
+            
+            // Metrics
+            for (const [key, value] of Object.entries(deviceData.metrics || {})) {
+                const element = document.getElementById(`${prefix}${capitalize(key)}`);
+                if (element) {
+                    element.textContent = value;
+                }
+            }
+            
+            // Progress bars
+            if (deviceData.memory) {
+                updateProgressBar(`${prefix}MemoryBar`, deviceData.memory);
+            }
+            if (deviceData.disk) {
+                updateProgressBar(`${prefix}DiskBar`, deviceData.disk);
+            }
+            
+            // Logs
+            if (deviceData.logs) {
+                updateLogs(`${prefix}Logs`, deviceData.logs);
+            }
+        }
+        
+        function updateProgressBar(id, percentage) {
+            const bar = document.getElementById(id);
+            if (!bar) return;
+            
+            bar.style.width = percentage + '%';
+            bar.textContent = percentage + '%';
+            
+            bar.className = 'progress-fill';
+            if (percentage > 80) {
+                bar.classList.add('progress-danger');
+            } else if (percentage > 60) {
+                bar.classList.add('progress-warning');
+            }
+        }
+        
+        function updateLogs(id, logs) {
+            const container = document.getElementById(id);
+            if (!container) return;
+            
+            container.innerHTML = '';
+            logs.slice(-5).forEach(log => {
+                const entry = document.createElement('div');
+                entry.className = 'log-entry';
+                
+                if (log.includes('ERROR')) {
+                    entry.classList.add('log-error');
+                } else if (log.includes('WARNING')) {
+                    entry.classList.add('log-warning');
+                } else if (log.includes('SUCCESS') || log.includes('✓')) {
+                    entry.classList.add('log-success');
+                }
+                
+                entry.textContent = log;
+                container.appendChild(entry);
+            });
+        }
+        
+        function updateStatistics(stats) {
+            if (!stats) return;
+            
+            document.getElementById('statsDrawings').textContent = stats.drawings || '0';
+            document.getElementById('statsPrints').textContent = stats.prints || '0';
+            document.getElementById('statsCycleTime').textContent = stats.cycleTime || '-';
+            document.getElementById('statsAPISuccess').textContent = stats.apiSuccess || '-';
+        }
+        
+        function showError() {
+            document.getElementById('lastUpdate').textContent = 'Error fetching data';
+        }
+        
+        function capitalize(str) {
+            return str.charAt(0).toUpperCase() + str.slice(1);
+        }
+        
+        async function restartService(device) {
+            if (!confirm(`Restart ${device}?`)) return;
+            
+            try {
+                await fetch(`/api/restart/${device}`, { method: 'POST' });
+                alert('Restart command sent');
+                fetchStatus();
+            } catch (error) {
+                alert('Failed to restart: ' + error);
+            }
+        }
+        
+        async function stopService(device) {
+            if (!confirm(`Stop ${device}? This will halt the service.`)) return;
+            
+            try {
+                await fetch(`/api/stop/${device}`, { method: 'POST' });
+                alert('Stop command sent');
+                fetchStatus();
+            } catch (error) {
+                alert('Failed to stop: ' + error);
+            }
+        }
+        
+        // Initialize
+        fetchStatus();
+        setInterval(fetchStatus, CONFIG.refreshInterval);
+    </script>
+</body>
+</html>
