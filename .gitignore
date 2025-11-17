@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+*.egg-info/
+
+# Logs & Data
+logs/
+*.log
+*.flag
+*.db
+
+# NFS Share - Do not commit runtime data
+shared_output/
+
+# User-specific
+.DS_Store
