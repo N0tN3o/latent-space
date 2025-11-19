@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Latent Space - Monitoring Dashboard Backend
+Latent Space - Monitoring Dashboard Backend (CORRECTED)
 
-Serves the remote_ui.html and provides the API endpoints for
-monitoring and remote control.
+Serves the remote_ui.html and provides API endpoints for monitoring.
+Now runs on PORT 8001 (to avoid conflict with gallery on 8000)
 """
 
 import os
@@ -108,7 +108,6 @@ def parse_cpu_mem(output):
              mem_percent = (used_kb / total_kb) * 100
              mem_str = f"{used_kb/1024:.0f}M / {total_kb/1024:.0f}M"
         elif mem_total:
-             # Fallback for different 'top' formats
              total_kb = float(mem_total.group(1))
              used = re.search(r"(\d+)\s+used", output)
              used_kb = float(used.group(1)) if used else 0
@@ -160,7 +159,7 @@ def get_analytics():
         "drawings": 0,
         "prints": 0,
         "cycleTime": "N/A",
-        "apiSuccess": "N/A"  # Mocked
+        "apiSuccess": "N/A"
     }
     today = datetime.now().date()
     
@@ -202,7 +201,7 @@ def index():
 
 @app.route('/<path:filename>')
 def serve_ui_files(filename):
-    """Serve supporting files for the UI (if any)"""
+    """Serve supporting files for the UI"""
     return send_from_directory(app.template_folder, filename)
 
 @app.route('/api/monitoring')
@@ -319,7 +318,6 @@ def control_service(action, device):
             
         logging.info(f"Executing {action} on {service} for {device}")
         
-        # Sudo is required, configured via /etc/sudoers.d/
         command = f"sudo /bin/systemctl {action} {service}"
         
         stdout, stderr, code = run_remote_command(dev["ip"], dev["user"], command)
@@ -333,4 +331,5 @@ def control_service(action, device):
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000, debug=True)
+    # CORRECTED: Now runs on port 8001
+    app.run(host='0.0.0.0', port=8001, debug=False)
