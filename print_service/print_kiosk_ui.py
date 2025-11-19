@@ -11,19 +11,23 @@ Enhanced Print Kiosk Touch UI with Queue and Search
 import sys
 import os
 import subprocess
+import platform
 import time
 import json
+import shutil
+import webbrowser
 from datetime import datetime, timedelta
 from pathlib import Path
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QListWidget,
                              QMessageBox, QStackedWidget, QLineEdit, QScrollArea,
-                             QListWidgetItem, QGridLayout)
+                             QListWidgetItem, QGridLayout, QInputDialog)
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize
 from PyQt5.QtGui import QFont, QPixmap, QImage, QIcon
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-import fitz  # PyMuPDF for PDF thumbnails
+# Removed PyMuPDF dependency (fitz). Thumbnails use a PNG next to the PDF
+# or a simple placeholder pixmap when not available.
 
 sys.path.append(str(Path(__file__).parent.parent / "scripts"))
 
@@ -33,7 +37,10 @@ except ImportError:
     NetworkHealth = None
     NetworkStatus = None
 
-SHARED_DIR = Path("/home/art/LatentSpace/shared_output")
+SHARED_DIR = Path(os.environ.get(
+    "LATENT_SHARED_DIR",
+    str(Path(__file__).parent.parent / "shared_output")
+))
 DOCS_DIR = SHARED_DIR / "docs"
 PRINTED_DIR = DOCS_DIR / "printed"
 PRINT_LOG = DOCS_DIR / "print_history.json"
@@ -93,32 +100,48 @@ class PrintRecord:
         self.printed = True
     
     def get_thumbnail(self, size=(200, 280)):
-        """Generate thumbnail from PDF"""
+        """Return a thumbnail QPixmap.
+
+        Behavior:
+        - If a PNG with the same name as the PDF exists (same folder, .png), load it.
+        - Otherwise return a simple gray placeholder pixmap.
+        """
+        # Prefer a pre-generated PNG thumbnail next to the PDF
+        png_path = self.path.with_suffix('.png')
         try:
-            doc = fitz.open(self.path)
-            page = doc[0]
-            
-            # Calculate zoom to fit size
-            mat = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-            img_data = mat.tobytes("ppm")
-            
-            qimg = QImage.fromData(img_data)
-            pixmap = QPixmap.fromImage(qimg)
-            
-            # Scale to thumbnail size
-            pixmap = pixmap.scaled(size[0], size[1], 
-                                   Qt.KeepAspectRatio, 
-                                   Qt.SmoothTransformation)
-            
-            doc.close()
-            return pixmap
-            
+            if png_path.exists():
+                pixmap = QPixmap(str(png_path))
+                if not pixmap.isNull():
+                    return pixmap.scaled(size[0], size[1], Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+            # If pdf2image is available, try to render first page and cache as PNG
+            try:
+                from pdf2image import convert_from_path
+                from PIL import Image
+                # convert_from_path may require poppler; try with a small DPI
+                pages = convert_from_path(str(self.path), dpi=150, first_page=1, last_page=1)
+                if pages:
+                    img = pages[0]
+                    img.thumbnail((size[0]*2, size[1]*2))
+                    # Save cached PNG next to PDF for next time
+                    try:
+                        img.save(png_path, format='PNG')
+                        pixmap = QPixmap(str(png_path))
+                        if not pixmap.isNull():
+                            return pixmap.scaled(size[0], size[1], Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    except Exception:
+                        pass
+            except Exception:
+                # pdf2image not available or failed — fall through to placeholder
+                pass
+
         except Exception as e:
-            print(f"Thumbnail error: {e}")
-            # Return placeholder
-            pixmap = QPixmap(size[0], size[1])
-            pixmap.fill(Qt.lightGray)
-            return pixmap
+            print(f"Thumbnail generation error: {e}")
+
+        # Fallback placeholder
+        pixmap = QPixmap(size[0], size[1])
+        pixmap.fill(Qt.lightGray)
+        return pixmap
     
     def get_display_text(self):
         """Get text for list display"""
@@ -126,6 +149,60 @@ class PrintRecord:
         time_str = self.timestamp.strftime("%I:%M %p")
         status = "✓ Printed" if self.printed else "○ Not Printed"
         return f"{date_str} at {time_str}\n{status}"
+
+
+def detect_pdf_handlers():
+    """Detect common PDF handlers on Windows and whether a .pdf association exists.
+
+    Returns:
+      dict with keys: 'sumatra' (path or None), 'acrobat' (path or None), 'has_assoc' (bool)
+    """
+    handlers = {'sumatra': None, 'acrobat': None, 'has_assoc': False}
+
+    # Detect Sumatra via PATH or common install locations
+    sumatra = shutil.which('SumatraPDF.exe') or shutil.which('sumatrapdf.exe')
+    if not sumatra:
+        # common Program Files locations
+        for base in (os.environ.get('ProgramFiles'), os.environ.get('ProgramFiles(x86)'), os.environ.get('ProgramW6432')):
+            if base:
+                p = Path(base) / 'SumatraPDF' / 'SumatraPDF.exe'
+                if p.exists():
+                    sumatra = str(p)
+                    break
+    handlers['sumatra'] = sumatra
+
+    # Detect Acrobat Reader
+    acro = shutil.which('AcroRd32.exe') or shutil.which('acrord32.exe')
+    if not acro:
+        for base in (os.environ.get('ProgramFiles'), os.environ.get('ProgramFiles(x86)'), os.environ.get('ProgramW6432')):
+            if base:
+                p = Path(base) / 'Adobe' / 'Acrobat Reader DC' / 'Reader' / 'AcroRd32.exe'
+                if p.exists():
+                    acro = str(p)
+                    break
+    handlers['acrobat'] = acro
+
+    # Check file association for .pdf in registry (Windows only)
+    if platform.system() == 'Windows':
+        try:
+            import winreg
+            try:
+                # UserChoice indicates default app in modern Windows
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.pdf\UserChoice") as key:
+                    handlers['has_assoc'] = True
+            except FileNotFoundError:
+                # Fallback: check HKEY_CLASSES_ROOT\.pdf default value
+                try:
+                    with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r".pdf") as k2:
+                        val, _ = winreg.QueryValueEx(k2, None)
+                        if val:
+                            handlers['has_assoc'] = True
+                except Exception:
+                    handlers['has_assoc'] = False
+        except Exception:
+            handlers['has_assoc'] = False
+
+    return handlers
 
 class PDFWatcher(FileSystemEventHandler):
     def __init__(self, callback):
@@ -236,6 +313,33 @@ class EnhancedPrintKioskUI(QMainWindow):
         
         # Setup UI
         self.setup_ui()
+
+        # Add a hidden, obfuscated keyboard shortcut for quitting (Ctrl+Alt+Shift+Q)
+        # Quit is password-protected via LATENT_QUIT_PASSWORD env var.
+        try:
+            from PyQt5.QtGui import QKeySequence
+            from PyQt5.QtWidgets import QShortcut
+            secret_shortcut = QShortcut(QKeySequence('Ctrl+Alt+Shift+Q'), self)
+            secret_shortcut.activated.connect(self.secret_quit_triggered)
+        except Exception:
+            pass
+
+        # Detect PDF handlers and warn if necessary (Windows)
+        handlers = detect_pdf_handlers()
+        self._pdf_handlers = handlers
+        if platform.system() == 'Windows' and not handlers.get('has_assoc') and not handlers.get('sumatra'):
+            # One-time warning explaining no association and offering Sumatra link
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle('PDF Handler Not Found')
+            msg.setText('No default PDF application is configured on this system.\n\n' \
+                        'This will prevent automatic printing from the kiosk.\n\n' \
+                        'Recommended: install SumatraPDF (lightweight) and set it as default.')
+            install_btn = msg.addButton('Open Sumatra page', QMessageBox.ActionRole)
+            ignore_btn = msg.addButton('Ignore', QMessageBox.RejectRole)
+            msg.exec_()
+            if msg.clickedButton() == install_btn:
+                webbrowser.open('https://www.sumatrapdfreader.org/free')
         
         # Start file watcher
         self.setup_file_watcher()
@@ -327,6 +431,8 @@ class EnhancedPrintKioskUI(QMainWindow):
         self.network_indicator.setStyleSheet("color: #00ff00;")
         header.addWidget(self.network_indicator)
         
+        # (Quit button removed — use secret shortcut instead)
+        
         layout.addLayout(header)
         
         # Search bar
@@ -389,6 +495,8 @@ class EnhancedPrintKioskUI(QMainWindow):
         error_msg.setFont(QFont("Arial", 24))
         error_msg.setWordWrap(True)
         layout.addWidget(error_msg)
+        
+        # (Quit button removed from error screen — use secret shortcut instead)
         
         layout.addStretch()
         
@@ -504,33 +612,92 @@ class EnhancedPrintKioskUI(QMainWindow):
             
             if reply != QMessageBox.Yes:
                 return
-            
-            # Print using lp command
-            result = subprocess.run(
-                ["lp", "-d", PRINTER_NAME, str(record.path)],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode == 0:
-                # Mark as printed
-                record.mark_as_printed()
-                
-                QMessageBox.information(
-                    self,
-                    "Success",
-                    "Print job sent successfully!\nThank you!"
-                )
-                
-                # Refresh display
-                self.update_queue_display()
+            # Platform-specific printing
+            if platform.system() == "Windows":
+                # Use the shell-registered print action
+                try:
+                    if not record.path.exists():
+                        raise FileNotFoundError(str(record.path))
+                    # If Sumatra is installed, prefer its CLI for reliable printing
+                    sumatra = getattr(self, '_pdf_handlers', {}).get('sumatra')
+                    acro = getattr(self, '_pdf_handlers', {}).get('acrobat')
+                    if sumatra:
+                        try:
+                            # SumatraCLI: -print-to-default prints to default printer
+                            res = subprocess.run([str(sumatra), '-print-to-default', str(record.path)], capture_output=True, text=True, timeout=30)
+                            if res.returncode == 0:
+                                record.mark_as_printed()
+                                QMessageBox.information(self, "Success", "Print job sent successfully!\nThank you!")
+                                self.update_queue_display()
+                                return
+                        except Exception:
+                            pass
+                    # Acrobat fallback attempt (may require additional args)
+                    if acro:
+                        try:
+                            res = subprocess.run([str(acro), '/p', str(record.path)], capture_output=True, text=True, timeout=30)
+                            if res.returncode == 0:
+                                record.mark_as_printed()
+                                QMessageBox.information(self, "Success", "Print job sent successfully!\nThank you!")
+                                self.update_queue_display()
+                                return
+                        except Exception:
+                            pass
+                    # Last resort: use shell print (may raise if no association)
+                    os.startfile(str(record.path), 'print')
+                    # Mark as printed and notify
+                    record.mark_as_printed()
+                    QMessageBox.information(self, "Success", "Print job sent successfully!\nThank you!")
+                    self.update_queue_display()
+                except Exception as e:
+                    # Improve message when no application is associated with PDFs
+                    errmsg = str(e)
+                    low = errmsg.lower()
+                    if 'no application is associated' in low or 'not associated' in low or 'open with' in low:
+                        dlg = QMessageBox(self)
+                        dlg.setIcon(QMessageBox.Critical)
+                        dlg.setWindowTitle("Print Error")
+                        dlg.setText("No application is associated with PDF files on this system.\n\n" \
+                                    "You can: \n" \
+                                    " - Install a PDF viewer (e.g., SumatraPDF) and set it as default, or\n" \
+                                    " - Open the folder and print the file manually from an installed app.")
+                        open_btn = dlg.addButton("Open folder", QMessageBox.ActionRole)
+                        copy_btn = dlg.addButton("Copy path", QMessageBox.ActionRole)
+                        dlg.addButton(QMessageBox.Cancel)
+                        dlg.exec_()
+
+                        clicked = dlg.clickedButton()
+                        if clicked == open_btn:
+                            try:
+                                subprocess.run(['explorer', '/select,', str(record.path)])
+                            except Exception:
+                                QMessageBox.information(self, "Open Folder", f"Folder: {record.path.parent}")
+                        elif clicked == copy_btn:
+                            QApplication.clipboard().setText(str(record.path))
+                        return
+                    else:
+                        QMessageBox.critical(self, "Print Error", f"Failed to print (Windows):\n{e}")
             else:
-                QMessageBox.critical(
-                    self,
-                    "Print Error",
-                    f"Failed to print:\n{result.stderr}"
-                )
+                # Print using lp command on Unix-like systems
+                try:
+                    result = subprocess.run(
+                        ["lp", "-d", PRINTER_NAME, str(record.path)],
+                        capture_output=True,
+                        text=True,
+                        timeout=20
+                    )
+
+                    if result.returncode == 0:
+                        record.mark_as_printed()
+                        QMessageBox.information(self, "Success", "Print job sent successfully!\nThank you!")
+                        self.update_queue_display()
+                    else:
+                        errmsg = result.stderr.strip() or result.stdout.strip() or 'Unknown error'
+                        QMessageBox.critical(self, "Print Error", f"Failed to print:\n{errmsg}")
+                except FileNotFoundError as e:
+                    QMessageBox.critical(self, "Print Error", f"Printing command not found: {e}")
+                except Exception as e:
+                    QMessageBox.critical(self, "Print Error", f"Printing failed:\n{e}")
         
         except Exception as e:
             QMessageBox.critical(
@@ -570,8 +737,55 @@ class EnhancedPrintKioskUI(QMainWindow):
             self.network_thread.wait()
         event.accept()
 
+    def confirm_quit(self):
+        """Ask the user to confirm quitting the application and then close."""
+        reply = QMessageBox.question(
+            self,
+            "Quit",
+            "Are you sure you want to quit the Print Kiosk?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.Yes:
+            self.close()
+
+    def secret_quit_triggered(self):
+        """Handler for the hidden quit shortcut.
+
+        Requires environment variable `LATENT_QUIT_PASSWORD` to be set.
+        Prompts for password (masked). If it matches, quits the app.
+        If no password is configured, shows an informational message how to enable.
+        """
+        pwd = os.environ.get('LATENT_QUIT_PASSWORD')
+        if not pwd:
+            QMessageBox.information(
+                self,
+                "Quit Disabled",
+                "Secret quit is disabled. Set the environment variable `LATENT_QUIT_PASSWORD` to enable a password-protected quit."
+            )
+            return
+
+        # Ask for password
+        text, ok = QInputDialog.getText(self, 'Quit (password required)', 'Enter quit password:', QLineEdit.Password)
+        if not ok:
+            return
+        if text == pwd:
+            # confirmed
+            self.close()
+        else:
+            QMessageBox.warning(self, 'Wrong Password', 'Password incorrect — quit denied.')
+
 def main():
     app = QApplication(sys.argv)
+    # Global dark theme for dialogs/messages so text remains readable
+    app.setStyleSheet('''
+        QMainWindow { background-color: #1a1a1a; }
+        QWidget { color: #ffffff; background-color: #1a1a1a; }
+        QLabel { color: #ffffff; }
+        QDialog, QMessageBox { background-color: #2a2a2a; color: #ffffff; }
+        QMessageBox QLabel { color: #ffffff; }
+        QMessageBox QPushButton { background-color: #4CAF50; color: white; border-radius: 6px; padding: 6px 12px; }
+        QPushButton { background-color: #2a2a2a; color: white; border: 2px solid #444; border-radius: 10px; }
+    ''')
     window = EnhancedPrintKioskUI()
     window.show()
     sys.exit(app.exec_())
