@@ -49,6 +49,7 @@ apt install -y \
     python3 python3-venv python3-pip python3-pyqt5 python3-pyqt5.qtmultimedia \
     nfs-common openssh-server rsync cups cups-client printer-driver-all \
     git curl wget vim htop iptables-persistent net-tools libopencv-dev
+apt install cups-pdf -y
 
 # ============================================
 # 2. Create Directory Structure
@@ -62,11 +63,11 @@ chown -R "$ACTUAL_USER:$ACTUAL_USER" "$PROJECT_DIR"
 # ============================================
 log_info "Step 3/11: Setting up Python environment..."
 cd "$PROJECT_DIR/print_service"
-sudo -u "$ACTUAL_USER" python3 -m venv venv
+sudo -u "$ACTUAL_USER" python3 -m venv --system-site-packages venv
 sudo -u "$ACTUAL_USER" bash -c "
     source venv/bin/activate
     pip install --upgrade pip
-    pip install PyQt5 PyMuPDF watchdog Pillow pdf2image
+    pip install PyMuPDF watchdog Pillow pdf2image
 "
 
 # ============================================
@@ -152,7 +153,7 @@ log_info "Step 9/11: Creating systemd service..."
 cat > /etc/systemd/system/print-service.service << EOFSERVICE
 [Unit]
 Description=Latent Space - Print Service (RPi4)
-After=network-online.target graphical.target cups.service
+After=web-server.service graphical.target cups.service
 Wants=network-online.target
 
 [Service]
@@ -161,6 +162,7 @@ User=$ACTUAL_USER
 Environment="DISPLAY=:0"
 Environment="XAUTHORITY=/home/$ACTUAL_USER/.Xauthority"
 Environment="LATENT_PROJECT_ROOT=$PROJECT_DIR"
+Environment="LATENT_QUIT_PASSWORD=LatentSpace2025"
 WorkingDirectory=$PROJECT_DIR/print_service
 ExecStartPre=/bin/sleep 10
 ExecStart=$PROJECT_DIR/print_service/venv/bin/python3 print_kiosk_ui.py
