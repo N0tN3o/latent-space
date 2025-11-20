@@ -17,13 +17,48 @@
         .online { background-color: #28a745; box-shadow: 0 0 8px #28a745; }
         .offline { background-color: #dc3545; }
         input, textarea, select { background-color: #262626 !important; color: #ffffff !important; border: 1px solid #555 !important; }
-        .accordion-button { background-color: #1b1b1b; color: #ffffff; }
-        .accordion-button:not(.collapsed) { background-color: #2a2a2a; color: #ffffff; }
+        .accordion-button { background-color: #1b1b1b; color: #ffffff !important; }
+        .accordion-button:not(.collapsed) { background-color: #2a2a2a; color: #ffffff !important; }
         .accordion-body { background-color: #121212; color: #f5f5f5; }
         /* Contact rows: stronger contrast for labels and values */
         .contact-row { border-bottom: 1px solid #444; padding: 10px 0; color: #f1f1f1; }
         .contact-row .fw-bold { color: #cfd6e0; }
         .form-text { color: #bdbdbd; }
+
+        /* Override Bootstrap muted and low-contrast utility classes which may be applied
+           to headings and subtitles. Use !important so these take precedence over
+           the framework defaults and browser forced color schemes. */
+        .text-muted { color: #bdbdbd !important; }
+        .card-subtitle { color: #d0d0d0 !important; }
+        header h3, header h3 .text-muted { color: #ffffff !important; }
+        h4, h3, h6, .card-header strong { color: #ffffff !important; }
+        /* Ensure accordion button text is clearly visible in all states */
+        .accordion-button, .accordion-button * { color: #ffffff !important; }
+
+        /* Make the accordion caret/arrows high-contrast so they don't blend
+           into dark backgrounds or get muted by Bootstrap utilities. We keep
+           the original SVG but apply a filter to ensure it's bright. */
+        .accordion-button::after {
+            filter: invert(1) brightness(2) !important;
+            opacity: 1 !important;
+        }
+        .accordion-button:not(.collapsed)::after {
+            filter: invert(1) brightness(2) !important;
+        }
+
+        /* High-contrast dropdown arrow for the AI Config select control */
+        select.form-select {
+            background-color: #262626 !important;
+            color: #ffffff !important;
+            /* inline white SVG caret as background image */
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill='%23ffffff' d='M4.646 6.646a.5.5 0 0 1 .708 0L8 9.293l2.646-2.647a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 0 1 0-.708z'/></svg>") !important;
+            background-repeat: no-repeat !important;
+            background-position: right 0.75rem center !important;
+            background-size: 1rem auto !important;
+            padding-right: 2.5rem !important;
+        }
+        /* IE/Edge legacy arrow */
+        select.form-select::-ms-expand { filter: invert(1) brightness(2) !important; }
     </style>
 </head>
 <body>
@@ -188,6 +223,50 @@
                             
                             <div class="mt-4">
                                 <p class="text-muted small">For urgent issues during the exhibition, please call the support number listed on the physical documentation.</p>
+                            </div>
+                        </div>
+
+                        <!-- Additional mock contact cards for layout testing -->
+                        <div class="row mt-3 g-3">
+                            <div class="col-md-6">
+                                <div class="card p-3">
+                                    <div class="contact-row d-flex justify-content-between">
+                                        <span class="fw-bold text-muted">Maintainer</span>
+                                        <span>Anna Müller</span>
+                                    </div>
+                                    <div class="contact-row d-flex justify-content-between">
+                                        <span class="fw-bold text-muted">Role</span>
+                                        <span>Frontend Lead</span>
+                                    </div>
+                                    <div class="contact-row d-flex justify-content-between">
+                                        <span class="fw-bold text-muted">Email</span>
+                                        <span>anna@example.org</span>
+                                    </div>
+                                    <div class="contact-row d-flex justify-content-between border-0">
+                                        <span class="fw-bold text-muted">Onsite</span>
+                                        <span>Yes</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="card p-3">
+                                    <div class="contact-row d-flex justify-content-between">
+                                        <span class="fw-bold text-muted">Maintainer</span>
+                                        <span>John Carter</span>
+                                    </div>
+                                    <div class="contact-row d-flex justify-content-between">
+                                        <span class="fw-bold text-muted">Role</span>
+                                        <span>Hardware Engineer</span>
+                                    </div>
+                                    <div class="contact-row d-flex justify-content-between">
+                                        <span class="fw-bold text-muted">Phone</span>
+                                        <span>+123 1234 5678</span>
+                                    </div>
+                                    <div class="contact-row d-flex justify-content-between border-0">
+                                        <span class="fw-bold text-muted">Location</span>
+                                        <span>Workshop B</span>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
