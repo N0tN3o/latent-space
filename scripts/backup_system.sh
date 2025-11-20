@@ -75,5 +75,9 @@ rsync -avz --delete \
 # For daily snapshots, you would rsync to a dated folder
 # and use 'find' to delete folders older than 7 days.
 
+# Prune old PDFs (older than 1 day)
+find /home/art/LatentSpace/shared_output/docs -name "print_*.pdf" -mtime +1 -delete
+log "Pruned old PDF prints."
+
 log "====== Backup Finished ======"
 exit 0

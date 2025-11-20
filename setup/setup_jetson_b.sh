@@ -49,7 +49,7 @@ apt update && apt upgrade -y
 
 log_info "Installing system dependencies..."
 apt install -y \
-    python3.10 python3.10-venv python3-pip nfs-kernel-server \
+    python3.10 python3.10-venv python3-pip python3-tk nfs-kernel-server \
     openssh-server rsync git curl wget vim htop \
     iptables-persistent net-tools chromium-browser
 
