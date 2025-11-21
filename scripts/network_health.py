@@ -43,7 +43,7 @@ class NetworkHealth:
     After timeout, displays error screen and stops operations.
     """
     
-    def __init__(self, role, nfs_mount="/home/art/LatentSpace/shared_output"):
+    def __init__(self, role, nfs_mount="~/art/LatentSpace/shared_output"):
         """
         Initialize network health checker
         
@@ -70,7 +70,7 @@ class NetworkHealth:
         }
         
         # Setup logging
-        log_dir = Path("/home/art/LatentSpace/logs")
+        log_dir = Path("~/art/LatentSpace/logs")
         log_dir.mkdir(parents=True, exist_ok=True)
         
         logging.basicConfig(
@@ -217,7 +217,7 @@ class NetworkHealth:
         Returns:
             bool: True if rsync executed successfully, False otherwise
         """
-        sync_script = Path("/home/art/LatentSpace/scripts/sync_fallback.sh")
+        sync_script = Path("~/art/LatentSpace/scripts/sync_fallback.sh")
         
         if not sync_script.exists():
             self.logger.error(f"Sync fallback script not found: {sync_script}")
@@ -394,7 +394,7 @@ class NetworkHealth:
         self.logger.critical("Analysis watcher STOPPED. Waiting for manual restart.")
         
         # Create marker file that can be detected by monitoring tools
-        marker_path = Path("/home/art/LatentSpace/logs/SYSTEM_STOPPED.flag")
+        marker_path = Path("~/art/LatentSpace/logs/SYSTEM_STOPPED.flag")
         with open(marker_path, 'w') as f:
             f.write(f"System stopped at {datetime.now()}\n")
             f.write(f"Reason: Network failure timeout ({self.TOTAL_TIMEOUT}s)\n")
@@ -425,7 +425,7 @@ class NetworkHealth:
         # Create marker file that PyQt5 UI will detect
         self.logger.critical("Print service STOPPED")
         
-        marker_path = Path("/home/art/LatentSpace/logs/PRINT_SERVICE_STOPPED.flag")
+        marker_path = Path("~/art/LatentSpace/logs/PRINT_SERVICE_STOPPED.flag")
         with open(marker_path, 'w') as f:
             f.write(f"Print service stopped at {datetime.now()}\n")
             f.write(f"Reason: Cannot access shared documents\n")

@@ -5,7 +5,7 @@
 ### Check System Status
 ```bash
 # Run on each device to get quick overview
-cd /home/art/LatentSpace/setup
+cd ~/art/LatentSpace/setup
 ./verify_installation.sh
 ```
 
@@ -22,7 +22,7 @@ journalctl -u web-server -f
 journalctl -u print-service -f
 
 # Network health (all devices)
-tail -f /home/art/LatentSpace/logs/*_network.log
+tail -f ~/art/LatentSpace/logs/*_network.log
 ```
 
 ---
@@ -66,8 +66,8 @@ sudo mount -a
 **Solution 2: Manual Mount**
 ```bash
 # On client
-sudo mount -t nfs 192.168.1.11:/home/art/LatentSpace/shared_output \
-                   /home/art/LatentSpace/shared_output
+sudo mount -t nfs 192.168.1.11:~/art/LatentSpace/shared_output \
+                   ~/art/LatentSpace/shared_output
 ```
 
 **Solution 3: Check /etc/fstab**
@@ -76,7 +76,7 @@ sudo mount -t nfs 192.168.1.11:/home/art/LatentSpace/shared_output \
 cat /etc/fstab | grep shared_output
 
 # Should contain:
-# 192.168.1.11:/home/art/LatentSpace/shared_output /home/art/LatentSpace/shared_output nfs defaults,_netdev,hard,intr 0 0
+# 192.168.1.11:~/art/LatentSpace/shared_output ~/art/LatentSpace/shared_output nfs defaults,_netdev,hard,intr 0 0
 
 # If missing, add it and mount:
 sudo nano /etc/fstab
@@ -161,12 +161,12 @@ sudo udevadm trigger
 **Diagnosis:**
 ```bash
 # Check network health logs
-cat /home/art/LatentSpace/logs/jetson_a_network.log
-cat /home/art/LatentSpace/logs/jetson_b_network.log
-cat /home/art/LatentSpace/logs/rpi4_network.log
+cat ~/art/LatentSpace/logs/jetson_a_network.log
+cat ~/art/LatentSpace/logs/jetson_b_network.log
+cat ~/art/LatentSpace/logs/rpi4_network.log
 
 # Check if stop flags exist
-ls -l /home/art/LatentSpace/logs/*.flag
+ls -l ~/art/LatentSpace/logs/*.flag
 
 # Test network connectivity
 ping 192.168.1.1  # Router
@@ -197,7 +197,7 @@ sudo mount -a
 **Solution 3: Manual Service Recovery**
 ```bash
 # Remove stop flags
-rm /home/art/LatentSpace/logs/*.flag
+rm ~/art/LatentSpace/logs/*.flag
 
 # Restart services
 sudo systemctl restart gaze-painter  # Jetson A
@@ -270,7 +270,7 @@ lsusb  # Should show printer
 **Solution 5: Update Printer Name in Code**
 ```bash
 # If printer name changed
-nano /home/art/LatentSpace/print_service/print_kiosk_ui.py
+nano ~/art/LatentSpace/print_service/print_kiosk_ui.py
 
 # Update line:
 # PRINTER_NAME = "your-actual-printer-name"
@@ -348,7 +348,7 @@ ls -l ~/.Xauthority
 sudo systemctl restart display-manager
 
 # Manual start to see errors
-cd /home/art/LatentSpace/gaze-painter
+cd ~/art/LatentSpace/gaze-painter
 source venv/bin/activate
 DISPLAY=:0 python3 run_gaze_painter.py
 ```
@@ -371,11 +371,11 @@ DISPLAY=:0 python3 run_gaze_painter.py
 mount | grep shared_output
 
 # Check write permissions
-touch /home/art/LatentSpace/shared_output/test.txt
-rm /home/art/LatentSpace/shared_output/test.txt
+touch ~/art/LatentSpace/shared_output/test.txt
+rm ~/art/LatentSpace/shared_output/test.txt
 
 # Check disk space
-df -h /home/art/LatentSpace/shared_output
+df -h ~/art/LatentSpace/shared_output
 ```
 
 ---
@@ -394,10 +394,10 @@ sudo systemctl status analysis-watcher
 journalctl -u analysis-watcher -n 50
 
 # Check if watching correct file
-ls -l /home/art/LatentSpace/shared_output/image.png
+ls -l ~/art/LatentSpace/shared_output/image.png
 
 # Manual test
-cd /home/art/LatentSpace/analysis_watcher
+cd ~/art/LatentSpace/analysis_watcher
 source venv/bin/activate
 python3 run_analysis_watcher.py
 ```
@@ -429,7 +429,7 @@ journalctl -u analysis-watcher | grep "ERROR"
 **Check:**
 ```bash
 # Check Playwright installation
-cd /home/art/LatentSpace/analysis_watcher
+cd ~/art/LatentSpace/analysis_watcher
 source venv/bin/activate
 python3 -c "from playwright.sync_api import sync_playwright; print('OK')"
 
@@ -437,13 +437,13 @@ python3 -c "from playwright.sync_api import sync_playwright; print('OK')"
 curl http://localhost:8000/index.html
 
 # Check docs directory permissions
-ls -ld /home/art/LatentSpace/shared_output/docs/
+ls -ld ~/art/LatentSpace/shared_output/docs/
 ```
 
 **Solutions:**
 ```bash
 # Reinstall Playwright
-cd /home/art/LatentSpace/analysis_watcher
+cd ~/art/LatentSpace/analysis_watcher
 source venv/bin/activate
 playwright install chromium
 playwright install-deps
@@ -474,7 +474,7 @@ cat /etc/systemd/system/getty@tty1.service.d/autologin.conf
 sudo systemctl restart print-service
 
 # Manual start to see errors
-cd /home/art/LatentSpace/print_service
+cd ~/art/LatentSpace/print_service
 source venv/bin/activate
 DISPLAY=:0 python3 print_kiosk_ui.py
 ```
@@ -497,10 +497,10 @@ DISPLAY=:0 python3 print_kiosk_ui.py
 mount | grep shared_output
 
 # Check PDF exists
-ls -l /home/art/LatentSpace/shared_output/docs/print_*.pdf
+ls -l ~/art/LatentSpace/shared_output/docs/print_*.pdf
 
 # Check file permissions
-ls -l /home/art/LatentSpace/shared_output/docs/
+ls -l ~/art/LatentSpace/shared_output/docs/
 ```
 
 **Solutions:**
@@ -519,7 +519,7 @@ sudo systemctl restart print-service
 ### Clear Old PDFs
 ```bash
 # On Jetson B
-cd /home/art/LatentSpace/shared_output/docs
+cd ~/art/LatentSpace/shared_output/docs
 
 # Archive old PDFs
 mkdir -p archive
@@ -535,19 +535,19 @@ find . -name "print_*.pdf" -mtime +1 -delete
 df -h
 
 # Check shared_output size
-du -sh /home/art/LatentSpace/shared_output
+du -sh ~/art/LatentSpace/shared_output
 
 # Clean if needed
-rm /home/art/LatentSpace/shared_output/docs/print_*.pdf
+rm ~/art/LatentSpace/shared_output/docs/print_*.pdf
 ```
 
 ### Rotate Logs
 ```bash
 # View log sizes
-du -sh /home/art/LatentSpace/logs/*.log
+du -sh ~/art/LatentSpace/logs/*.log
 
 # Archive old logs
-cd /home/art/LatentSpace/logs
+cd ~/art/LatentSpace/logs
 tar -czf logs_$(date +%Y%m%d).tar.gz *.log
 rm *.log
 
@@ -558,7 +558,7 @@ rm *.log
 If you need different timeout values:
 
 ```bash
-nano /home/art/LatentSpace/scripts/network_health.py
+nano ~/art/LatentSpace/scripts/network_health.py
 
 # Modify these values:
 # self.NFS_TIMEOUT = 30  # Seconds before SSH fallback
@@ -593,8 +593,8 @@ ssh art@192.168.1.11 'sudo systemctl stop analysis-watcher web-server'
 ssh art@192.168.1.12 'sudo systemctl stop print-service'
 
 # CLEAR SHARED DATA (on Jetson B)
-ssh art@192.168.1.11 'rm -rf /home/art/LatentSpace/shared_output/*.png'
-ssh art@192.168.1.11 'rm -rf /home/art/LatentSpace/shared_output/*.json'
+ssh art@192.168.1.11 'rm -rf ~/art/LatentSpace/shared_output/*.png'
+ssh art@192.168.1.11 'rm -rf ~/art/LatentSpace/shared_output/*.json'
 
 # RESTART NFS (on Jetson B)
 ssh art@192.168.1.11 'sudo systemctl restart nfs-kernel-server'

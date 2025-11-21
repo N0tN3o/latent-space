@@ -28,7 +28,7 @@ class NetworkStatus(Enum):
     STOPPED = "stopped"      # Hard stop, show error
 
 class NetworkHealth:
-    def __init__(self, role, nfs_mount="/home/art/shared_output"):
+    def __init__(self, role, nfs_mount="~/art/shared_output"):
         """
         Initialize network health checker
         
@@ -56,7 +56,7 @@ class NetworkHealth:
         
         # Setup logging
         logging.basicConfig(
-            filename=f'/home/art/logs/{role}_network.log',
+            filename=f'~/art/logs/{role}_network.log',
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
@@ -238,7 +238,7 @@ class NetworkHealth:
         self.logger.critical("Analysis watcher STOPPED. Waiting for manual restart.")
         
         # Create a marker file that kui/ can detect
-        marker_path = "/home/art/logs/SYSTEM_STOPPED.flag"
+        marker_path = "~/art/logs/SYSTEM_STOPPED.flag"
         with open(marker_path, 'w') as f:
             f.write(f"System stopped at {datetime.now()}\n")
             f.write("Reason: Network failure timeout\n")
@@ -259,7 +259,7 @@ class NetworkHealth:
         # For now, create a marker file
         self.logger.critical("Print service STOPPED")
         
-        marker_path = "/home/art/logs/PRINT_SERVICE_STOPPED.flag"
+        marker_path = "~/art/logs/PRINT_SERVICE_STOPPED.flag"
         with open(marker_path, 'w') as f:
             f.write(f"Print service stopped at {datetime.now()}\n")
             f.write("Reason: Cannot access shared documents\n")
@@ -383,7 +383,7 @@ def integrate_into_rpi_print_service():
     
     from scripts.network_health import NetworkHealth, NetworkStatus
     
-    health = NetworkHealth(role="rpi4", nfs_mount="/home/art/shared_output")
+    health = NetworkHealth(role="rpi4", nfs_mount="~/art/shared_output")
     
     # In PyQt5 UI main loop:
     # def check_network_status(self):

@@ -32,8 +32,8 @@
 Jetson B is the NFS server, so it must be configured before the other devices.
 
 ```bash
-# 1. Copy the LatentSpace folder to /home/art/
-cd /home/art
+# 1. Copy the LatentSpace folder to ~/art/
+cd ~/art
 git clone <repository> LatentSpace  # or copy via USB
 
 # 2. Navigate to setup scripts
@@ -70,7 +70,7 @@ sudo systemctl status nfs-kernel-server
 
 # Check NFS exports
 showmount -e localhost
-# Should show: /home/art/LatentSpace/shared_output
+# Should show: ~/art/LatentSpace/shared_output
 
 # Test connectivity
 ping 192.168.1.1  # Router
@@ -82,7 +82,7 @@ ping 192.168.1.1  # Router
 
 ```bash
 # 1. Copy LatentSpace folder
-cd /home/art
+cd ~/art
 # (Copy from USB or clone repo)
 
 # 2. Navigate to setup
@@ -105,13 +105,13 @@ nano ~/.ssh/authorized_keys
 
 # 7. Back on Jetson A, verify NFS mount
 mount | grep shared_output
-# Should show: 192.168.1.11:/home/art/LatentSpace/shared_output
+# Should show: 192.168.1.11:~/art/LatentSpace/shared_output
 
 # 8. Test NFS write access
-touch /home/art/LatentSpace/shared_output/test.txt
-ls -l /home/art/LatentSpace/shared_output/
+touch ~/art/LatentSpace/shared_output/test.txt
+ls -l ~/art/LatentSpace/shared_output/
 # If successful, delete test file
-rm /home/art/LatentSpace/shared_output/test.txt
+rm ~/art/LatentSpace/shared_output/test.txt
 
 # 9. Connect hardware
 # - USB camera
@@ -136,7 +136,7 @@ journalctl -u gaze-painter -f
 
 ```bash
 # 1. Copy LatentSpace folder
-cd /home/art
+cd ~/art
 # (Copy from USB or clone repo)
 
 # 2. Navigate to setup
@@ -166,7 +166,7 @@ mount | grep shared_output
 # Note the printer name (e.g., "HP_LaserJet")
 
 # 9. Update printer name in UI script
-nano /home/art/LatentSpace/print_service/print_kiosk_ui.py
+nano ~/art/LatentSpace/print_service/print_kiosk_ui.py
 # Find line: PRINTER_NAME = "default"
 # Change to: PRINTER_NAME = "HP_LaserJet" (your printer name)
 
@@ -222,7 +222,7 @@ Both should be active.
 2. **File Creation:**
    ```bash
    # On Jetson B, watch for new files:
-   watch -n 1 ls -lh /home/art/LatentSpace/shared_output/
+   watch -n 1 ls -lh ~/art/LatentSpace/shared_output/
    ```
    You should see `image.png` appear/update after drawing
 
@@ -236,7 +236,7 @@ Both should be active.
 4. **PDF Generation:**
    ```bash
    # Check if PDF was created:
-   ls -lh /home/art/LatentSpace/shared_output/docs/
+   ls -lh ~/art/LatentSpace/shared_output/docs/
    ```
    Should show `print_YYYYMMDD_HHMMSS.pdf`
 
@@ -251,9 +251,9 @@ Both should be active.
 
 Check network health logs on any device:
 ```bash
-tail -f /home/art/LatentSpace/logs/jetson_a_network.log
-tail -f /home/art/LatentSpace/logs/jetson_b_network.log
-tail -f /home/art/LatentSpace/logs/rpi4_network.log
+tail -f ~/art/LatentSpace/logs/jetson_a_network.log
+tail -f ~/art/LatentSpace/logs/jetson_b_network.log
+tail -f ~/art/LatentSpace/logs/rpi4_network.log
 ```
 
 Status indicators:
@@ -278,7 +278,7 @@ sudo exportfs -ra
 showmount -e localhost
 
 # On client (Jetson A or RPi4), try manual mount:
-sudo mount -t nfs 192.168.1.11:/home/art/LatentSpace/shared_output /home/art/LatentSpace/shared_output
+sudo mount -t nfs 192.168.1.11:~/art/LatentSpace/shared_output ~/art/LatentSpace/shared_output
 
 # Check firewall:
 sudo iptables -L -n | grep 2049
@@ -314,7 +314,7 @@ v4l2-ctl --list-devices
 journalctl -u <service-name> --since today
 
 # Try manual start:
-cd /home/art/LatentSpace/gaze-painter  # or analysis_watcher, print_service
+cd ~/art/LatentSpace/gaze-painter  # or analysis_watcher, print_service
 source venv/bin/activate
 python3 run_gaze_painter.py  # or run_analysis_watcher.py, print_kiosk_ui.py
 
@@ -360,7 +360,7 @@ echo "Test page" | lp
 xrandr --listmonitors
 
 # Manually configure:
-nano /home/art/LatentSpace/scripts/display_manager.sh
+nano ~/art/LatentSpace/scripts/display_manager.sh
 
 # Adjust xrandr commands for your setup
 # Then restart service:
@@ -379,7 +379,7 @@ journalctl -u analysis-watcher -f
 journalctl -u print-service -f
 
 # Network health:
-tail -f /home/art/LatentSpace/logs/*_network.log
+tail -f ~/art/LatentSpace/logs/*_network.log
 
 # System resources:
 htop
@@ -391,11 +391,11 @@ tegrastats
 ### Clear Old Data
 ```bash
 # On Jetson B, clear old PDFs:
-rm /home/art/LatentSpace/shared_output/docs/print_*.pdf
+rm ~/art/LatentSpace/shared_output/docs/print_*.pdf
 
 # Or move to archive:
-mkdir -p /home/art/archive
-mv /home/art/LatentSpace/shared_output/docs/print_*.pdf /home/art/archive/
+mkdir -p ~/art/archive
+mv ~/art/LatentSpace/shared_output/docs/print_*.pdf ~/art/archive/
 ```
 
 ### Restart Services
@@ -421,7 +421,7 @@ ssh art@192.168.1.12 'sudo systemctl restart print-service'
 sudo systemctl stop gaze-painter analysis-watcher web-server print-service
 
 # Clear shared data:
-rm -rf /home/art/LatentSpace/shared_output/*
+rm -rf ~/art/LatentSpace/shared_output/*
 
 # Restart all services:
 sudo systemctl start gaze-painter analysis-watcher web-server print-service

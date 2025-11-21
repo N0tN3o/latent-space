@@ -19,13 +19,13 @@
 ### Layer 1: Primary - Secure NFS (NFSv4 + Kerberos)
 ```
 Jetson B (NFS Server)
-├── Exports: /home/art/shared_output
+├── Exports: ~/art/shared_output
 ├── Security: sec=krb5p (privacy + integrity)
 ├── Ports: 2049 (NFS), 111 (portmap) - firewalled
 └── Access: Certificate-based authentication
 
 Jetson A & RPi4 (NFS Clients)
-├── Mount: /home/art/shared_output
+├── Mount: ~/art/shared_output
 ├── Options: sec=krb5p,hard,intr,_netdev
 └── Fallback: auto-retry on network loss
 ```
@@ -50,14 +50,14 @@ Jetson A & RPi4 (NFS Clients)
 # Only activates if NFS mount check fails
 
 Jetson A → Jetson B
-rsync -avz -e "ssh -i /home/art/.ssh/id_rsa_sync" \
-  /home/art/shared_output/image.png \
-  art@192.168.1.11:/home/art/shared_output/
+rsync -avz -e "ssh -i ~/art/.ssh/id_rsa_sync" \
+  ~/art/shared_output/image.png \
+  art@192.168.1.11:~/art/shared_output/
 
 Jetson B → RPi4
-rsync -avz -e "ssh -i /home/art/.ssh/id_rsa_sync" \
-  /home/art/shared_output/docs/*.pdf \
-  art@192.168.1.12:/home/art/shared_output/docs/
+rsync -avz -e "ssh -i ~/art/.ssh/id_rsa_sync" \
+  ~/art/shared_output/docs/*.pdf \
+  art@192.168.1.12:~/art/shared_output/docs/
 ```
 
 **Security Features:**
@@ -69,7 +69,7 @@ rsync -avz -e "ssh -i /home/art/.ssh/id_rsa_sync" \
 **Activation Logic:**
 ```python
 # In each system's sync script
-if not os.path.ismount('/home/art/shared_output'):
+if not os.path.ismount('~/art/shared_output'):
     log("NFS mount failed, activating rsync fallback")
     run_rsync_sync()
 else:
@@ -84,16 +84,16 @@ else:
 Each device maintains local cache:
 
 Jetson A:
-├── /home/art/.cache/last_saved_image.png
-└── /home/art/.cache/last_calibration.json
+├── ~/art/.cache/last_saved_image.png
+└── ~/art/.cache/last_calibration.json
 
 Jetson B:
-├── /home/art/.cache/content.json
-└── /home/art/.cache/last_analysis_state.json
+├── ~/art/.cache/content.json
+└── ~/art/.cache/last_analysis_state.json
 
 RPi4:
-├── /home/art/.cache/pending_prints/
-└── /home/art/.cache/print_queue.json
+├── ~/art/.cache/pending_prints/
+└── ~/art/.cache/print_queue.json
 ```
 
 **Behavior on Total Network Failure:**
@@ -138,7 +138,7 @@ kadmin.local -q "addprinc -randkey host/rpi4.artinstall.local"
 kadmin.local -q "ktadd -k /etc/krb5.keytab nfs/jetson-b.artinstall.local"
 
 # Configure NFSv4 exports with security
-echo "/home/art/shared_output *(rw,sync,sec=krb5p,no_subtree_check)" >> /etc/exports
+echo "~/art/shared_output *(rw,sync,sec=krb5p,no_subtree_check)" >> /etc/exports
 ```
 
 **Alternative (Simpler but Less Secure):**
@@ -159,12 +159,12 @@ iptables -A INPUT -p tcp --dport 2049 -j DROP
 sudo useradd -m -s /bin/bash artsync
 
 # Generate SSH keys (no passphrase for automation)
-ssh-keygen -t ed25519 -f /home/art/.ssh/id_rsa_sync -N ""
+ssh-keygen -t ed25519 -f ~/art/.ssh/id_rsa_sync -N ""
 
 # Copy public keys to authorized_keys on all devices
 # Then restrict command execution:
 
-# On Jetson B /home/artsync/.ssh/authorized_keys:
+# On Jetson B ~/artsync/.ssh/authorized_keys:
 command="rsync --server --daemon .",no-port-forwarding,no-X11-forwarding,no-agent-forwarding ssh-ed25519 AAAAC3...
 
 # This ensures the key can ONLY run rsync, nothing else
@@ -186,8 +186,8 @@ AllowUsers artsync
 ```bash
 # Generate self-signed certificate for local network
 openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout /home/art/ssl/server.key \
-  -out /home/art/ssl/server.crt \
+  -keyout ~/art/ssl/server.key \
+  -out ~/art/ssl/server.crt \
   -subj "/CN=192.168.1.11"
 
 # Run Python HTTPS server instead of HTTP
@@ -202,8 +202,8 @@ import ssl
 httpd = http.server.HTTPServer(('0.0.0.0', 8443), 
                                 http.server.SimpleHTTPRequestHandler)
 httpd.socket = ssl.wrap_socket(httpd.socket,
-                                keyfile='/home/art/ssl/server.key',
-                                certfile='/home/art/ssl/server.crt',
+                                keyfile='~/art/ssl/server.key',
+                                certfile='~/art/ssl/server.crt',
                                 server_side=True)
 httpd.serve_forever()
 ```
@@ -236,15 +236,15 @@ rm /tmp/.env  # Clean up
 ### Redundancy Health Monitor (Optional but Recommended)
 
 ```python
-# /home/art/scripts/health_monitor.py
+# ~/art/scripts/health_monitor.py
 import os
 import time
 import logging
 
 def check_nfs_mount():
     """Check if NFS is mounted and responsive"""
-    return os.path.ismount('/home/art/shared_output') and \
-           os.access('/home/art/shared_output', os.W_OK)
+    return os.path.ismount('~/art/shared_output') and \
+           os.access('~/art/shared_output', os.W_OK)
 
 def check_ssh_connectivity(target_ip):
     """Check if SSH is reachable"""
@@ -268,7 +268,7 @@ def main():
         # Trigger fallbacks if needed
         if not status['nfs'] and status['ssh_jetson_b']:
             logging.warning("NFS down, activating rsync fallback")
-            os.system('/home/art/scripts/sync_fallback.sh')
+            os.system('~/art/scripts/sync_fallback.sh')
         
         time.sleep(30)
 
@@ -328,7 +328,7 @@ if __name__ == '__main__':
 ## Configuration Files Summary
 
 ```
-/home/art/
+~/art/
 ├── scripts/
 │   ├── setup_nfs_primary.sh       # Primary NFS setup
 │   ├── setup_ssh_fallback.sh      # SSH rsync fallback

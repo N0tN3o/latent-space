@@ -4,9 +4,9 @@
 # Runs via systemd timer on Jetson B
 #
 
-LOG_FILE="/home/art/LatentSpace/logs/backup.log"
+LOG_FILE="~/art/LatentSpace/logs/backup.log"
 BACKUP_DIR="/mnt/backup_drive/latent_space_backups" # <-- MUST BE MOUNTED
-SSH_KEY="/home/art/.ssh/id_rsa_sync"
+SSH_KEY="~/art/.ssh/id_rsa_sync"
 USER="art"
 JETSON_A="192.168.1.10"
 RPI4="192.168.1.12"
@@ -28,7 +28,7 @@ fi
 log "Backing up shared_output..."
 mkdir -p "$BACKUP_DIR/shared_output"
 rsync -avz --delete \
-    "/home/art/LatentSpace/shared_output/" \
+    "~/art/LatentSpace/shared_output/" \
     "$BACKUP_DIR/shared_output/" \
     >> "$LOG_FILE" 2>&1
 
@@ -40,7 +40,7 @@ rsync -avz --delete \
     --exclude '**/__pycache__' \
     --exclude '**/*.pyc' \
     --exclude 'venv' \
-    "/home/art/LatentSpace/" \
+    "~/art/LatentSpace/" \
     "$BACKUP_DIR/code/jetson_b/" \
     >> "$LOG_FILE" 2>&1
 
@@ -53,7 +53,7 @@ rsync -avz --delete \
     --exclude '**/__pycache__' \
     --exclude '**/*.pyc' \
     --exclude 'venv' \
-    "$USER@$JETSON_A:/home/art/LatentSpace/" \
+    "$USER@$JETSON_A:~/art/LatentSpace/" \
     "$BACKUP_DIR/code/jetson_a/" \
     >> "$LOG_FILE" 2>&1
 
@@ -66,7 +66,7 @@ rsync -avz --delete \
     --exclude '**/__pycache__' \
     --exclude '**/*.pyc' \
     --exclude 'venv' \
-    "$USER@$RPI4:/home/art/LatentSpace/" \
+    "$USER@$RPI4:~/art/LatentSpace/" \
     "$BACKUP_DIR/code/rpi4/" \
     >> "$LOG_FILE" 2>&1
 
@@ -76,7 +76,7 @@ rsync -avz --delete \
 # and use 'find' to delete folders older than 7 days.
 
 # Prune old PDFs (older than 1 day)
-find /home/art/LatentSpace/shared_output/docs -name "print_*.pdf" -mtime +1 -delete
+find ~/art/LatentSpace/shared_output/docs -name "print_*.pdf" -mtime +1 -delete
 log "Pruned old PDF prints."
 
 log "====== Backup Finished ======"

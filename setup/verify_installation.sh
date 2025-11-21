@@ -27,13 +27,13 @@ echo "=========================================="
 echo ""
 
 # Detect device type
-if [ -d "/home/art/LatentSpace/gaze-painter" ]; then
+if [ -d "~/art/LatentSpace/gaze-painter" ]; then
     DEVICE="jetson_a"
     echo "Device: Jetson A (Gaze Painter)"
-elif [ -d "/home/art/LatentSpace/analysis_watcher" ]; then
+elif [ -d "~/art/LatentSpace/analysis_watcher" ]; then
     DEVICE="jetson_b"
     echo "Device: Jetson B (Analysis Watcher)"
-elif [ -d "/home/art/LatentSpace/print_service" ]; then
+elif [ -d "~/art/LatentSpace/print_service" ]; then
     DEVICE="rpi4"
     echo "Device: Raspberry Pi 4 (Print Service)"
 else
@@ -47,10 +47,10 @@ echo ""
 
 # Check 1: Python environment
 echo "1. Python Environment:"
-if [ -d "/home/art/LatentSpace/$DEVICE/venv" ] || \
-   [ -d "/home/art/LatentSpace/gaze-painter/venv" ] || \
-   [ -d "/home/art/LatentSpace/analysis_watcher/venv" ] || \
-   [ -d "/home/art/LatentSpace/print_service/venv" ]; then
+if [ -d "~/art/LatentSpace/$DEVICE/venv" ] || \
+   [ -d "~/art/LatentSpace/gaze-painter/venv" ] || \
+   [ -d "~/art/LatentSpace/analysis_watcher/venv" ] || \
+   [ -d "~/art/LatentSpace/print_service/venv" ]; then
     pass "Virtual environment exists"
 else
     fail "Virtual environment not found"
@@ -72,7 +72,7 @@ fi
 
 # Check 3: SSH keys
 echo "3. SSH Keys:"
-if [ -f "/home/art/.ssh/id_rsa_sync" ]; then
+if [ -f "~/art/.ssh/id_rsa_sync" ]; then
     pass "Sync SSH key exists"
 else
     fail "Sync SSH key not found"
@@ -160,9 +160,9 @@ fi
 
 # Check 7: Logs directory
 echo "7. Logs:"
-if [ -d "/home/art/LatentSpace/logs" ]; then
+if [ -d "~/art/LatentSpace/logs" ]; then
     pass "Logs directory exists"
-    ls -lh /home/art/LatentSpace/logs/
+    ls -lh ~/art/LatentSpace/logs/
 else
     fail "Logs directory missing"
 fi
@@ -198,7 +198,7 @@ case "$DEVICE" in
         fi
         
         # Check if Playwright installed
-        if [ -f "/home/art/LatentSpace/analysis_watcher/venv/bin/playwright" ]; then
+        if [ -f "~/art/LatentSpace/analysis_watcher/venv/bin/playwright" ]; then
             pass "Playwright installed"
         else
             warn "Playwright may not be installed"
