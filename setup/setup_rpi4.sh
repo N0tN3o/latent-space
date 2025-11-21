@@ -20,19 +20,40 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-if [ "$EUID" -ne 0 ]; then log_error "Run as root" && exit 1; fi
-
+# --- CONFIGURATION ---
+# Detect the actual user (prefer SUDO_USER when run via sudo)
 ACTUAL_USER=${SUDO_USER:-$USER}
-if [ "$ACTUAL_USER" = "root" ]; then ACTUAL_USER="art"; fi
+if [ "$ACTUAL_USER" = "root" ]; then
+    echo "Error: Cannot determine actual user. Please run as 'sudo -u <username> ./setup_rpi4.sh' or ensure SUDO_USER is set."
+    exit 1
+fi
 
-log_info "Installing as user: $ACTUAL_USER"
-
+# ABSOLUTE PATHS (Crucial for Sudo usage)
 HOME_DIR="/home/$ACTUAL_USER"
-PROJECT_DIR="$HOME_DIR/LatentSpace"
+# UPDATED PATH per request: /home/<user>/art/LatentSpace
+PROJECT_ROOT="$HOME_DIR/art"
+PROJECT_DIR="$PROJECT_ROOT/LatentSpace"
+
 SHARED_DIR="$PROJECT_DIR/shared_output"
 LOGS_DIR="$PROJECT_DIR/logs"
 SCRIPTS_DIR="$PROJECT_DIR/scripts"
 
+echo "Installing for user: $ACTUAL_USER"
+echo "Project Directory: $PROJECT_DIR"
+
+# ============================================
+# 1. Fix Permissions First (Crucial)
+# ============================================
+echo "Ensuring directory permissions..."
+mkdir -p "$PROJECT_ROOT"
+# Ensure the user owns their own folder so sudo isn't needed for python
+chown -R "$ACTUAL_USER:$ACTUAL_USER" "$PROJECT_ROOT"
+
+# Create the project directories if missing (keeps rest of script safe)
+mkdir -p "$PROJECT_DIR"
+chown -R "$ACTUAL_USER:$ACTUAL_USER" "$PROJECT_DIR"
+
+# If the user account doesn't exist, create it (preserves prior behavior)
 if ! id "$ACTUAL_USER" &>/dev/null; then
     log_info "Creating user: $ACTUAL_USER"
     useradd -m -s /bin/bash "$ACTUAL_USER"
@@ -160,7 +181,7 @@ Wants=network-online.target
 Type=simple
 User=$ACTUAL_USER
 Environment="DISPLAY=:0"
-Environment="XAUTHORITY=/home/$ACTUAL_USER/.Xauthority"
+Environment="XAUTHORITY=$HOME_DIR/.Xauthority"
 Environment="LATENT_PROJECT_ROOT=$PROJECT_DIR"
 Environment="LATENT_QUIT_PASSWORD=LatentSpace2025"
 WorkingDirectory=$PROJECT_DIR/print_service
