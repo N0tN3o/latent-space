@@ -12,7 +12,7 @@ from collections import Counter
 import sys
 
 # --- INTEGRATION FIX: Add analysis_watcher to path so we can import chat ---
-# Assumes this file is in /art/LatentSpace/admin_ui/
+# Assumes this file is in /home/art/LatentSpace/admin_ui/
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.append(str(PROJECT_ROOT / "analysis_watcher"))
 

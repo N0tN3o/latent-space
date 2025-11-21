@@ -16,7 +16,7 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 
-PROJECT_ROOT="~/art/LatentSpace"
+PROJECT_ROOT="/home/art/LatentSpace"
 
 echo "==========================================="
 echo "  Latent Space - Migration & Cleanup"
@@ -106,14 +106,14 @@ log_step "Phase 4: Creating/updating scripts..."
 cat > "$PROJECT_ROOT/scripts/sync_fallback.sh" << 'EOFSYNC'
 #!/bin/bash
 # Unified Sync Fallback Script
-SCRIPTS_DIR="~/art/LatentSpace/scripts"
+SCRIPTS_DIR="/home/art/LatentSpace/scripts"
 HOSTNAME=$(hostname)
 
-if [ -d "~/art/LatentSpace/gaze-painter" ] || [[ "$HOSTNAME" == *"jetson-a"* ]]; then
+if [ -d "/home/art/LatentSpace/gaze-painter" ] || [[ "$HOSTNAME" == *"jetson-a"* ]]; then
     ROLE="jetson_a"
-elif [ -d "~/art/LatentSpace/analysis_watcher" ] || [[ "$HOSTNAME" == *"jetson-b"* ]]; then
+elif [ -d "/home/art/LatentSpace/analysis_watcher" ] || [[ "$HOSTNAME" == *"jetson-b"* ]]; then
     ROLE="jetson_b"
-elif [ -d "~/art/LatentSpace/print_service" ] || [[ "$HOSTNAME" == *"rpi"* ]]; then
+elif [ -d "/home/art/LatentSpace/print_service" ] || [[ "$HOSTNAME" == *"rpi"* ]]; then
     ROLE="rpi4"
 else
     echo "ERROR: Cannot determine device role"
@@ -142,12 +142,12 @@ log_info "Created: scripts/sync_fallback.sh"
 cat > "$PROJECT_ROOT/scripts/sync_fallback_rpi.sh" << 'EOFRPI'
 #!/bin/bash
 # Rsync fallback for RPi4 - pulls PDFs from Jetson B
-SHARED_DIR="~/art/LatentSpace/shared_output"
+SHARED_DIR="/home/art/LatentSpace/shared_output"
 JETSON_B="art@192.168.1.11"
-SSH_KEY="~/art/.ssh/id_rsa_sync"
+SSH_KEY="/home/art/.ssh/id_rsa_sync"
 
 rsync -avz -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
-    "$JETSON_B:~/art/LatentSpace/shared_output/docs/" \
+    "$JETSON_B:/home/art/LatentSpace/shared_output/docs/" \
     "$SHARED_DIR/docs/" \
     2>/dev/null
 

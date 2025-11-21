@@ -212,7 +212,7 @@ except ImportError:
     NetworkHealth = None
     NetworkStatus = None
 
-SHARED_DIR = Path("~/art/LatentSpace/shared_output")
+SHARED_DIR = Path("/home/art/LatentSpace/shared_output")
 DOCS_DIR = SHARED_DIR / "docs"
 PRINTED_DIR = DOCS_DIR / "printed"
 PRINT_LOG = DOCS_DIR / "print_history.json"

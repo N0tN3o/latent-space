@@ -171,13 +171,13 @@ cat > "$SCRIPTS_DIR/sync_fallback.sh" << 'EOFSYNC'
 #!/bin/bash
 # Generic sync fallback - detects role and dispatches
 HOSTNAME=$(hostname)
-SCRIPTS_DIR="~/art/LatentSpace/scripts"
+SCRIPTS_DIR="/home/art/LatentSpace/scripts"
 
-if [[ "$HOSTNAME" == *"jetson-a"* ]] || [ -d "~/art/LatentSpace/gaze-painter" ]; then
+if [[ "$HOSTNAME" == *"jetson-a"* ]] || [ -d "/home/art/LatentSpace/gaze-painter" ]; then
     bash "$SCRIPTS_DIR/sync_fallback_a.sh"
-elif [[ "$HOSTNAME" == *"jetson-b"* ]] || [ -d "~/art/LatentSpace/analysis_watcher" ]; then
+elif [[ "$HOSTNAME" == *"jetson-b"* ]] || [ -d "/home/art/LatentSpace/analysis_watcher" ]; then
     bash "$SCRIPTS_DIR/sync_fallback_b.sh"
-elif [[ "$HOSTNAME" == *"rpi"* ]] || [ -d "~/art/LatentSpace/print_service" ]; then
+elif [[ "$HOSTNAME" == *"rpi"* ]] || [ -d "/home/art/LatentSpace/print_service" ]; then
     bash "$SCRIPTS_DIR/sync_fallback_rpi.sh"
 else
     echo "Unknown role, cannot determine sync target"
@@ -189,17 +189,17 @@ EOFSYNC
 cat > "$SCRIPTS_DIR/sync_fallback_b.sh" << 'EOFSYNCA'
 #!/bin/bash
 # Rsync fallback for Jetson B - pulls from Jetson A
-SHARED_DIR="~/art/LatentSpace/shared_output"
+SHARED_DIR="/home/art/LatentSpace/shared_output"
 JETSON_A="art@192.168.1.10"
-SSH_KEY="~/art/.ssh/id_rsa_sync"
+SSH_KEY="/home/art/.ssh/id_rsa_sync"
 
 rsync -avz -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
-    "$JETSON_A:~/art/LatentSpace/shared_output/image.png" \
+    "$JETSON_A:/home/art/LatentSpace/shared_output/image.png" \
     "$SHARED_DIR/" \
     2>/dev/null
 
 rsync -avz -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
-    "$JETSON_A:~/art/LatentSpace/shared_output/heatmap.png" \
+    "$JETSON_A:/home/art/LatentSpace/shared_output/heatmap.png" \
     "$SHARED_DIR/" \
     2>/dev/null
 

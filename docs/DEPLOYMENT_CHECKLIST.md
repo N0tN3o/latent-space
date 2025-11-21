@@ -81,7 +81,7 @@
 
 4. **Copy SSH Public Key**
    ```bash
-   cat ~/art/.ssh/id_rsa_sync.pub
+   cat /home/art/.ssh/id_rsa_sync.pub
    ```
    - [ ] Key copied to secure location (will need for other devices)
 
@@ -114,7 +114,7 @@
 #### Steps:
 1. **Run Setup Script**
    ```bash
-   cd ~/art/LatentSpace/setup
+   cd /home/art/LatentSpace/setup
    sudo ./setup_jetson_a.sh
    ```
    - [ ] Script completed without errors
@@ -140,12 +140,12 @@
 4. **Verify NFS Mount**
    ```bash
    mount | grep shared_output
-   # Should show: 192.168.1.11:~/art/LatentSpace/shared_output
+   # Should show: 192.168.1.11:/home/art/LatentSpace/shared_output
    
    # Test write access
-   touch ~/art/LatentSpace/shared_output/test.txt
-   ls -l ~/art/LatentSpace/shared_output/test.txt
-   rm ~/art/LatentSpace/shared_output/test.txt
+   touch /home/art/LatentSpace/shared_output/test.txt
+   ls -l /home/art/LatentSpace/shared_output/test.txt
+   rm /home/art/LatentSpace/shared_output/test.txt
    ```
    - [ ] NFS mounted
    - [ ] Write access confirmed
@@ -196,7 +196,7 @@
 #### Steps:
 1. **Run Setup Script**
    ```bash
-   cd ~/art/LatentSpace/setup
+   cd /home/art/LatentSpace/setup
    sudo ./setup_rpi4.sh
    ```
    - [ ] Script completed without errors
@@ -216,7 +216,7 @@
    mount | grep shared_output
    
    # Test read access
-   ls -l ~/art/LatentSpace/shared_output/
+   ls -l /home/art/LatentSpace/shared_output/
    ```
    - [ ] NFS mounted
    - [ ] Can read shared files
@@ -231,7 +231,7 @@
 
 5. **Update Print Service**
    ```bash
-   nano ~/art/LatentSpace/print_service/print_kiosk_ui.py
+   nano /home/art/LatentSpace/print_service/print_kiosk_ui.py
    # Find: PRINTER_NAME = "default"
    # Change to actual printer name
    ```
@@ -276,7 +276,7 @@
 2. **Verify File Creation (Jetson B)**
    ```bash
    # On Jetson B, watch for file
-   watch -n 1 ls -lh ~/art/LatentSpace/shared_output/
+   watch -n 1 ls -lh /home/art/LatentSpace/shared_output/
    ```
    - [ ] `image.png` appears
    - [ ] File timestamp updates
@@ -321,7 +321,7 @@
 1. **Baseline Check**
    ```bash
    # On all devices:
-   tail -f ~/art/LatentSpace/logs/*_network.log
+   tail -f /home/art/LatentSpace/logs/*_network.log
    ```
    - [ ] All show "PRIMARY" status
 
@@ -382,7 +382,7 @@
    - [ ] Service stops gracefully
 
 3. **Monitor Jetson B**
-   - [ ] Creates `~/art/LatentSpace/logs/SYSTEM_STOPPED.flag`
+   - [ ] Creates `/home/art/LatentSpace/logs/SYSTEM_STOPPED.flag`
    - [ ] Logs critical error
    - [ ] Waits for manual recovery
 
@@ -555,7 +555,7 @@
 - [ ] Full system reboot test
 - [ ] End-to-end workflow test × 3
 - [ ] Print 10 test pages
-- [ ] Clear all old PDFs: `rm ~/art/LatentSpace/shared_output/docs/print_*.pdf`
+- [ ] Clear all old PDFs: `rm /home/art/LatentSpace/shared_output/docs/print_*.pdf`
 - [ ] Verify disk space: `df -h` (should have > 10GB free)
 
 **1 Hour Before Event:**
@@ -570,13 +570,13 @@
 **During Event - Monitoring:**
 - [ ] Check logs every 30 minutes:
   ```bash
-  tail -f ~/art/LatentSpace/logs/*_network.log
+  tail -f /home/art/LatentSpace/logs/*_network.log
   journalctl -u gaze-painter -n 20
   journalctl -u analysis-watcher -n 20
   journalctl -u print-service -n 20
   ```
 - [ ] Monitor printer paper level
-- [ ] Check disk space: `df -h ~/art/LatentSpace/shared_output`
+- [ ] Check disk space: `df -h /home/art/LatentSpace/shared_output`
 
 ---
 
@@ -587,7 +587,7 @@
 sudo systemctl status <service-name>
 journalctl -u <service-name> --since today
 # Try manual start:
-cd ~/art/LatentSpace/<directory>
+cd /home/art/LatentSpace/<directory>
 source venv/bin/activate
 python3 run_*.py
 ```
@@ -600,7 +600,7 @@ sudo systemctl restart nfs-kernel-server  # On Jetson B
 ```
 
 ### Issue: Network Indicator Shows Warning
-- Check: `tail -f ~/art/LatentSpace/logs/*_network.log`
+- Check: `tail -f /home/art/LatentSpace/logs/*_network.log`
 - If SECONDARY: SSH fallback active, performance may be slower
 - If DEGRADED: Network issues, check WiFi
 - If STOPPED: Service halted, check network/NFS
@@ -619,8 +619,8 @@ sudo systemctl restart cups
 sudo systemctl stop gaze-painter analysis-watcher web-server print-service
 
 # Clear shared data
-rm ~/art/LatentSpace/shared_output/*.png
-rm ~/art/LatentSpace/shared_output/*.json
+rm /home/art/LatentSpace/shared_output/*.png
+rm /home/art/LatentSpace/shared_output/*.json
 
 # Restart services
 sudo systemctl start nfs-kernel-server  # Jetson B first

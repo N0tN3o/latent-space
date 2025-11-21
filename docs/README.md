@@ -26,7 +26,7 @@ Mobile WiFi Router (192.168.1.1)
 
 #### 1. Jetson B (NFS Server) - Setup FIRST
 ```bash
-cd ~/art/LatentSpace/setup
+cd /home/art/LatentSpace/setup
 chmod +x setup_jetson_b.sh
 sudo ./setup_jetson_b.sh
 ```
@@ -34,7 +34,7 @@ Wait for completion (~15 min), then reboot.
 
 #### 2. Jetson A (Gaze Painter)
 ```bash
-cd ~/art/LatentSpace/setup
+cd /home/art/LatentSpace/setup
 chmod +x setup_jetson_a.sh
 sudo ./setup_jetson_a.sh
 ```
@@ -42,7 +42,7 @@ Wait for completion (~10 min), then reboot.
 
 #### 3. Raspberry Pi 4 (Print Service)
 ```bash
-cd ~/art/LatentSpace/setup
+cd /home/art/LatentSpace/setup
 chmod +x setup_rpi4.sh
 sudo ./setup_rpi4.sh
 ```
@@ -53,7 +53,7 @@ Wait for completion (~10 min), then reboot.
 ### Verify Setup
 ```bash
 # On any device
-cd ~/art/LatentSpace/setup
+cd /home/art/LatentSpace/setup
 ./verify_installation.sh
 ```
 
@@ -79,14 +79,14 @@ journalctl -u analysis-watcher -f
 journalctl -u print-service -f
 
 # Network health logs
-tail -f ~/art/logs/jetson_a_network.log
-tail -f ~/art/logs/jetson_b_network.log
-tail -f ~/art/logs/rpi4_network.log
+tail -f /home/art/logs/jetson_a_network.log
+tail -f /home/art/logs/jetson_b_network.log
+tail -f /home/art/logs/rpi4_network.log
 ```
 
 ## File Structure After Setup
 ```
-~/art/LatentSpace/
+/home/art/LatentSpace/
 ├── setup/
 │   ├── setup_jetson_a.sh
 │   ├── setup_jetson_b.sh
@@ -180,7 +180,7 @@ sudo systemctl status <service-name>
 journalctl -u <service-name> --since today
 
 # Manual test
-cd ~/art/LatentSpace/gaze-painter
+cd /home/art/LatentSpace/gaze-painter
 source venv/bin/activate
 python3 run_gaze_painter.py
 ```
@@ -214,14 +214,14 @@ sudo systemctl stop print-service     # RPi4
 ### Emergency Network Reset
 ```bash
 # On Jetson B (NFS server)
-cd ~/art/LatentSpace/setup
+cd /home/art/LatentSpace/setup
 sudo ./emergency_network_reset.sh
 ```
 
 ### Clear All Data (Fresh Start)
 ```bash
 # WARNING: Deletes all drawings/PDFs
-rm -rf ~/art/LatentSpace/shared_output/*
+rm -rf /home/art/LatentSpace/shared_output/*
 ```
 
 ## Performance Monitoring
@@ -241,7 +241,7 @@ iftop
 ### Network Health Status
 ```bash
 # Check current status
-cat ~/art/logs/jetson_a_network.log | tail -20
+cat /home/art/logs/jetson_a_network.log | tail -20
 ```
 
 ## Backup & Recovery
@@ -275,7 +275,7 @@ sudo systemctl disable print-service
 
 ### Run Manually
 ```bash
-cd ~/art/LatentSpace/gaze-painter
+cd /home/art/LatentSpace/gaze-painter
 source venv/bin/activate
 python3 run_gaze_painter.py
 ```

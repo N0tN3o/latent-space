@@ -80,7 +80,7 @@
 ### Jetson A
 - [ ] Camera connected: `/dev/video0`
 - [ ] Two displays: HDMI-0 (canvas) + HDMI-1 (eyes)
-- [ ] NFS mounted: `192.168.1.11:~/art/LatentSpace/shared_output`
+- [ ] NFS mounted: `192.168.1.11:/home/art/LatentSpace/shared_output`
 - [ ] SSH key shared with Jetson B
 - [ ] Service running: `gaze-painter`
 
@@ -96,7 +96,7 @@
 - [ ] Touchscreen connected
 - [ ] USB printer connected: `lsusb`
 - [ ] Printer configured: `http://192.168.1.12:631`
-- [ ] NFS mounted: `192.168.1.11:~/art/LatentSpace/shared_output`
+- [ ] NFS mounted: `192.168.1.11:/home/art/LatentSpace/shared_output`
 - [ ] SSH key shared with Jetson B
 - [ ] Service running: `print-service`
 - [ ] Auto-login enabled
@@ -120,7 +120,7 @@
 ### Check Status
 ```bash
 # On any device
-cd ~/art/LatentSpace/setup
+cd /home/art/LatentSpace/setup
 ./verify_installation.sh
 
 # Check specific service
@@ -137,13 +137,13 @@ journalctl -u analysis-watcher -f
 journalctl -u print-service -f
 
 # Network health
-tail -f ~/art/LatentSpace/logs/*_network.log
+tail -f /home/art/LatentSpace/logs/*_network.log
 ```
 
 ### Manual Sync (if NFS fails)
 ```bash
 # Run sync fallback manually
-cd ~/art/LatentSpace/scripts
+cd /home/art/LatentSpace/scripts
 ./sync_fallback.sh
 ```
 

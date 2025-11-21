@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Enhanced Print Kiosk Touch UI with Queue and Search
 - Browse all available PDFs

@@ -4,15 +4,15 @@
 # Detects device role and executes appropriate sync
 #
 
-SCRIPTS_DIR="~/art/LatentSpace/scripts"
+SCRIPTS_DIR="/home/art/LatentSpace/scripts"
 HOSTNAME=$(hostname)
 
 # Detect role by checking which directories exist
-if [ -d "~/art/LatentSpace/gaze-painter" ] || [[ "$HOSTNAME" == *"jetson-a"* ]]; then
+if [ -d "/home/art/LatentSpace/gaze-painter" ] || [[ "$HOSTNAME" == *"jetson-a"* ]]; then
     ROLE="jetson_a"
-elif [ -d "~/art/LatentSpace/analysis_watcher" ] || [[ "$HOSTNAME" == *"jetson-b"* ]]; then
+elif [ -d "/home/art/LatentSpace/analysis_watcher" ] || [[ "$HOSTNAME" == *"jetson-b"* ]]; then
     ROLE="jetson_b"
-elif [ -d "~/art/LatentSpace/print_service" ] || [[ "$HOSTNAME" == *"rpi"* ]]; then
+elif [ -d "/home/art/LatentSpace/print_service" ] || [[ "$HOSTNAME" == *"rpi"* ]]; then
     ROLE="rpi4"
 else
     echo "ERROR: Cannot determine device role"
