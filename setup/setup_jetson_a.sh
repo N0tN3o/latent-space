@@ -54,14 +54,15 @@ if ! id "$TARGET_USER" &>/dev/null; then
     usermod -aG sudo,video,render "$TARGET_USER"
 fi
 
-# 3. DEPENDENCIES
+# 3. DEPENDENCIES (Added wmctrl)
 log_info "Step 3: Installing dependencies..."
 apt update && apt upgrade -y
 apt install -y \
     python3.10 python3.10-venv python3-pip \
     nfs-common openssh-server rsync git curl wget \
     v4l-utils libopencv-dev python3-opencv \
-    libqt5multimedia5-plugins python3-pyqt5.qtmultimedia
+    libqt5multimedia5-plugins python3-pyqt5.qtmultimedia \
+    wmctrl
 
 # 4. FILE STRUCTURE & COPY
 log_info "Step 4: Setting up project files..."
@@ -96,7 +97,7 @@ MOUNT_ENTRY="$SERVER_IP:$SHARED_DIR $SHARED_DIR nfs defaults,_netdev,hard,intr 0
 if ! grep -q "$SERVER_IP" /etc/fstab; then
     echo "$MOUNT_ENTRY" >> /etc/fstab
 fi
-# Attempt mount (might fail if B isn't ready, which is fine)
+# Attempt mount
 mount -a || echo "Note: NFS mount failed (Server B might be offline). Will retry on boot."
 
 # 7. CAMERA PERMS
@@ -105,36 +106,81 @@ KERNEL=="video[0-9]*", MODE="0666", GROUP="video"
 EOF
 udevadm control --reload-rules
 
-# 8. DISPLAY SCRIPT (Handle Splitter)
-log_info "Step 8: Display Manager (Splitter Aware)..."
+# 8. DISPLAY MANAGER WRAPPER (The Fix)
+log_info "Step 8: Creating Display Manager Wrapper..."
 cat > "$SCRIPTS_DIR/display_manager.sh" << 'EOFDISPLAY'
 #!/bin/bash
+# Wrapper Script: Configures Screens -> Starts App -> Moves Windows
 export DISPLAY=:0
-sleep 5
-# Check connected displays
-CONNECTED=$(xrandr | grep " connected" | awk '{print $1}')
-COUNT=$(echo "$CONNECTED" | wc -l)
+export XAUTHORITY=/home/kasboek/.Xauthority
 
-echo "Detected $COUNT displays: $CONNECTED"
+# --- A. CONFIGURE SCREENS (xrandr) ---
+echo "Configuring screens..."
+# Detect displays and resolutions
+DISPLAYS=$(xrandr | grep " connected" | sed -e "s/\([A-Z0-9-]*\) connected.* \([0-9]*\)x\([0-9]*\)+.*/\1 \2 \3/")
 
-if [ "$COUNT" -ge 2 ]; then
-    # True Dual setup
-    PRIMARY=$(echo "$CONNECTED" | head -1)
-    SECONDARY=$(echo "$CONNECTED" | tail -1)
-    xrandr --output $PRIMARY --auto --primary
-    xrandr --output $SECONDARY --auto --right-of $PRIMARY
+# Sort by width (Largest is Canvas/Big, Smallest is Eyes/Small)
+BIG_SCREEN=$(echo "$DISPLAYS" | sort -k2 -nr | head -n1)
+SMALL_SCREEN=$(echo "$DISPLAYS" | sort -k2 -nr | tail -n1)
+
+BIG_NAME=$(echo $BIG_SCREEN | awk '{print $1}')
+BIG_WIDTH=$(echo $BIG_SCREEN | awk '{print $2}')
+SMALL_NAME=$(echo $SMALL_SCREEN | awk '{print $1}')
+
+echo "Canvas (Big): $BIG_NAME ($BIG_WIDTH px)"
+echo "Eyes (Small): $SMALL_NAME"
+
+# Apply Layout: Big = Primary, Small = Right of Big
+if [ "$BIG_NAME" != "$SMALL_NAME" ] && [ ! -z "$BIG_NAME" ]; then
+    xrandr --output "$BIG_NAME" --auto --primary --output "$SMALL_NAME" --auto --right-of "$BIG_NAME"
 else
-    # Splitter setup (Likely appears as 1 large monitor or just 1 output)
-    # Just ensure it is active and primary.
-    PRIMARY=$(echo "$CONNECTED" | head -1)
-    if [ ! -z "$PRIMARY" ]; then
-        xrandr --output $PRIMARY --auto --primary
-    fi
+    # Fallback for single screen or splitter
+    xrandr --auto
 fi
-EOFDISPLAY
-chmod +x "$SCRIPTS_DIR/display_manager.sh"
 
-# 9. SERVICE
+# --- B. START APPLICATION ---
+echo "Starting Gaze Painter..."
+cd /home/kasboek/LatentSpace/gaze-painter
+/home/kasboek/LatentSpace/gaze-painter/venv/bin/python3 run_gaze_painter.py &
+APP_PID=$!
+
+# --- C. MOVE & MAXIMIZE WINDOWS (Background Loop) ---
+(
+    MAX_RETRIES=45
+    count=0
+    echo "Waiting for windows..."
+    
+    while [ $count -lt $MAX_RETRIES ]; do
+        # Check if windows exist using wmctrl
+        if wmctrl -l | grep -q "Gaze Painter" && wmctrl -l | grep -q "Eyes"; then
+            sleep 3 # Wait for render
+            
+            # 1. Move Canvas (Gaze Painter) to Big Screen (0,0) and Maximize
+            echo "Maximizing Canvas..."
+            wmctrl -r "Gaze Painter" -e 0,0,0,-1,-1
+            wmctrl -r "Gaze Painter" -b add,maximized_vert,maximized_horz
+            
+            # 2. Move Eyes to Small Screen (Offset by Big Screen Width) and Maximize
+            echo "Maximizing Eyes..."
+            wmctrl -r "Eyes" -e 0,$BIG_WIDTH,0,-1,-1
+            wmctrl -r "Eyes" -b add,maximized_vert,maximized_horz
+            
+            break
+        fi
+        sleep 1
+        ((count++))
+    done
+) &
+
+# --- D. KEEP ALIVE ---
+wait $APP_PID
+EOFDISPLAY
+
+chmod +x "$SCRIPTS_DIR/display_manager.sh"
+chown "$TARGET_USER:$TARGET_USER" "$SCRIPTS_DIR/display_manager.sh"
+
+# 9. SERVICE (Updated to use Wrapper)
+log_info "Step 9: Creating Service..."
 cat > /etc/systemd/system/gaze-painter.service << EOF
 [Unit]
 Description=Latent Space - Gaze Painter
@@ -147,8 +193,8 @@ Environment="DISPLAY=:0"
 Environment="XAUTHORITY=/home/$TARGET_USER/.Xauthority"
 Environment="LATENT_PROJECT_ROOT=$PROJECT_DIR"
 WorkingDirectory=$PROJECT_DIR/gaze-painter
-ExecStartPre=$SCRIPTS_DIR/display_manager.sh
-ExecStart=$PROJECT_DIR/gaze-painter/venv/bin/python3 run_gaze_painter.py
+# Run the wrapper script which handles displays AND python execution
+ExecStart=$SCRIPTS_DIR/display_manager.sh
 Restart=on-failure
 RestartSec=5
 

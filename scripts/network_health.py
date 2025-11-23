@@ -43,7 +43,7 @@ class NetworkHealth:
     After timeout, displays error screen and stops operations.
     """
     
-    def __init__(self, role, nfs_mount="~/art/LatentSpace/shared_output"):
+    def __init__(self, role, nfs_mount="~/kasboek/LatentSpace/shared_output"):
         """
         Initialize network health checker
         
@@ -54,7 +54,7 @@ class NetworkHealth:
         self.role = role
         self.nfs_mount = nfs_mount
         self.status = NetworkStatus.PRIMARY
-        self.failure_start = None
+        self.failure_stkasboek = None
         self.retry_count = 0
         
         # Configuration timeouts
@@ -70,7 +70,7 @@ class NetworkHealth:
         }
         
         # Setup logging
-        log_dir = Path("~/art/LatentSpace/logs")
+        log_dir = Path("~/kasboek/LatentSpace/logs")
         log_dir.mkdir(parents=True, exist_ok=True)
         
         logging.basicConfig(
@@ -131,7 +131,7 @@ class NetworkHealth:
                 "-o", "BatchMode=yes",  # No password prompt
                 "-o", "ConnectTimeout=5",  # 5 second timeout
                 "-o", "StrictHostKeyChecking=no",  # Don't prompt for host key
-                f"art@{target_ip}",
+                f"kasboek@{target_ip}",
                 "exit"
             ]
             
@@ -217,7 +217,7 @@ class NetworkHealth:
         Returns:
             bool: True if rsync executed successfully, False otherwise
         """
-        sync_script = Path("~/art/LatentSpace/scripts/sync_fallback.sh")
+        sync_script = Path("~/kasboek/LatentSpace/scripts/sync_fallback.sh")
         
         if not sync_script.exists():
             self.logger.error(f"Sync fallback script not found: {sync_script}")
@@ -261,16 +261,16 @@ class NetworkHealth:
                 self.logger.info("✓ NFS restored! Returning to PRIMARY mode")
             
             self.status = NetworkStatus.PRIMARY
-            self.failure_start = None
+            self.failure_stkasboek = None
             self.retry_count = 0
             return self.status
         
-        # NFS failed - start tracking failure time
-        if self.failure_start is None:
-            self.failure_start = time.time()
-            self.logger.warning("✗ NFS failure detected, starting fallback procedures")
+        # NFS failed - stkasboek tracking failure time
+        if self.failure_stkasboek is None:
+            self.failure_stkasboek = time.time()
+            self.logger.warning("✗ NFS failure detected, stkasboeking fallback procedures")
         
-        failure_duration = time.time() - self.failure_start
+        failure_duration = time.time() - self.failure_stkasboek
         
         # Phase 1: Within first 30 seconds - Try remounting
         if failure_duration < self.NFS_TIMEOUT:
@@ -391,10 +391,10 @@ class NetworkHealth:
     def _display_error_jetson_b(self):
         """Error handling for analysis watcher (no display)"""
         # Jetson B doesn't have displays, just log and create marker
-        self.logger.critical("Analysis watcher STOPPED. Waiting for manual restart.")
+        self.logger.critical("Analysis watcher STOPPED. Waiting for manual restkasboek.")
         
         # Create marker file that can be detected by monitoring tools
-        marker_path = Path("~/art/LatentSpace/logs/SYSTEM_STOPPED.flag")
+        marker_path = Path("~/kasboek/LatentSpace/logs/SYSTEM_STOPPED.flag")
         with open(marker_path, 'w') as f:
             f.write(f"System stopped at {datetime.now()}\n")
             f.write(f"Reason: Network failure timeout ({self.TOTAL_TIMEOUT}s)\n")
@@ -425,7 +425,7 @@ class NetworkHealth:
         # Create marker file that PyQt5 UI will detect
         self.logger.critical("Print service STOPPED")
         
-        marker_path = Path("~/art/LatentSpace/logs/PRINT_SERVICE_STOPPED.flag")
+        marker_path = Path("~/kasboek/LatentSpace/logs/PRINT_SERVICE_STOPPED.flag")
         with open(marker_path, 'w') as f:
             f.write(f"Print service stopped at {datetime.now()}\n")
             f.write(f"Reason: Cannot access shared documents\n")
