@@ -17,26 +17,15 @@ from datetime import datetime
 from pathlib import Path
 import threading
 
-#sys.path.append(str(Path(__file__).parent.parent / "scripts"))
-
 from eye_tracking import EyeTracker
 from drawing import GazePainter
 from utils import save_calibration, load_calibration
 from eye_visualizer import EyeVisualizer
 
-try:
-    from network_health import NetworkHealth, NetworkStatus
-    NETWORK_HEALTH_AVAILABLE = True
-except ImportError:
-    print("WARNING: network_health module not found. Running without network monitoring.")
-    NETWORK_HEALTH_AVAILABLE = False
-    NetworkStatus = None
-
 # --- Configuration ---
 SHARED_OUTPUT_DIR = "../shared_output"
 DRAW_DURATION_SEC = 15.0
 GAZE_LOSS_TIMEOUT_SEC = 2.0
-NETWORK_CHECK_INTERVAL_SEC = 5
 
 # --- Application States ---
 STATE_SEARCHING = 0
@@ -46,7 +35,7 @@ STATE_SAVING = 3
 STATE_NETWORK_ERROR = 4
 
 class GazeTrackingPainter:
-    def __init__(self, cap_index=1):
+    def __init__(self, cap_index=0):
         self.cap = cv2.VideoCapture(cap_index)
         if not self.cap.isOpened():
             print(f"Error: Could not open camera {cap_index}")
@@ -82,107 +71,6 @@ class GazeTrackingPainter:
         if calibration:
             self.tracker.load_calibration(calibration)
             print("Existing calibration loaded.")
-        
-        if NETWORK_HEALTH_AVAILABLE:
-            self.network_health = NetworkHealth(role="jetson_a")
-            self.network_status = NetworkStatus.PRIMARY
-            # protect status across threads
-            self._network_lock = threading.Lock()
-            # start background thread to poll network health so it doesn't block main loop
-            self._network_thread = threading.Thread(target=self._network_monitor, daemon=True)
-            self._network_thread.start()
-            print("Network health monitoring enabled (background thread)")
-        else:
-            self.network_health = None
-            self.network_status = None
-    
-    def check_network_health(self):
-        # kept for compatibility; network checks are handled asynchronously
-        return True
-
-    def _network_monitor(self):
-        if not self.network_health:
-            return
-
-        prev = self.network_status
-        while self.running:
-            try:
-                status = self.network_health.check()
-                # update status with lock if available
-                lock = getattr(self, '_network_lock', None)
-                if lock:
-                    with lock:
-                        old = self.network_status
-                        self.network_status = status
-                else:
-                    old = self.network_status
-                    self.network_status = status
-
-                if status == NetworkStatus.STOPPED:
-                    print("Network failure - stopping operations")
-                    self.state = STATE_NETWORK_ERROR
-                    self.running = False
-                    break
-                elif status == NetworkStatus.SECONDARY and old == NetworkStatus.PRIMARY:
-                    print("Network degraded - using SSH fallback")
-                elif status == NetworkStatus.PRIMARY and old != NetworkStatus.PRIMARY:
-                    print("Network restored")
-            except Exception as e:
-                print(f"Network health monitor error: {e}")
-
-            time.sleep(NETWORK_CHECK_INTERVAL_SEC)
-    
-    def get_network_indicator_text(self):
-        if not NETWORK_HEALTH_AVAILABLE or self.network_status is None:
-            return None
-
-        # read status with optional lock to avoid races
-        lock = getattr(self, '_network_lock', None)
-        if lock:
-            with lock:
-                status = self.network_status
-        else:
-            status = self.network_status
-
-        if status == NetworkStatus.PRIMARY:
-            return None
-        elif status == NetworkStatus.SECONDARY:
-            return "Connection Slow"
-        elif status == NetworkStatus.DEGRADED:
-            return "Reconnecting..."
-        elif status == NetworkStatus.STOPPED:
-            return "Connection Lost"
-        return None
-    
-    def draw_network_indicator(self, frame):
-        indicator_text = self.get_network_indicator_text()
-        if indicator_text is None:
-            return frame
-        
-        if self.network_health:
-            color = self.network_health.get_status_color()
-        else:
-            color = (128, 128, 128)
-        
-        h, w = frame.shape[:2]
-        cv2.circle(frame, (w - 30, 30), 10, color, -1)
-        cv2.circle(frame, (w - 30, 30), 10, (255, 255, 255), 2)
-        
-        if self.network_status != NetworkStatus.PRIMARY:
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            text_size = cv2.getTextSize(indicator_text, font, 0.5, 1)[0]
-            text_x = w - text_size[0] - 10
-            text_y = 60
-            
-            cv2.rectangle(frame, 
-                         (text_x - 5, text_y - 20),
-                         (text_x + text_size[0] + 5, text_y + 5),
-                         (40, 40, 40), -1)
-            
-            cv2.putText(frame, indicator_text, (text_x, text_y),
-                       font, 0.5, (255, 255, 255), 1)
-        
-        return frame
     
     def get_calibration_progress_text(self):
         """Generate helpful calibration status text with instructions."""
@@ -285,13 +173,10 @@ class GazeTrackingPainter:
             
             eye_display = self.visualizer.create_eye_display(frame, face_results)
             eye_display_with_ui = self.visualizer.add_status_overlay(eye_display, self.status_text)
-            eye_display_with_ui = self.draw_network_indicator(eye_display_with_ui)
-            
             cv2.imshow(self.eyes_window, eye_display_with_ui)
             
             if self.state == STATE_DRAWING:
                 canvas_display = self.painter.get_display()
-                canvas_display = self.draw_network_indicator(canvas_display)
                 cv2.imshow(self.canvas_window, canvas_display)
 
             key = cv2.waitKey(1) & 0xFF
@@ -357,5 +242,5 @@ class GazeTrackingPainter:
         cv2.destroyAllWindows()
 
 if __name__ == '__main__':
-    app = GazeTrackingPainter(cap_index=1)
+    app = GazeTrackingPainter(cap_index=0)
     app.run()

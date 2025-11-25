@@ -1,9 +1,6 @@
 # Latent Space - Modified Deployment Checklist
 
 ## 📋 Pre-Install
-# Latent Space - Modified Deployment Checklist
-
-## 📋 Pre-Install
 **User for all devices:** `kasboek`  
 **Password:** `latentspace` (or your chosen password)  
 **Network:** Private Router (No Internet required for runtime, but needed for install)
