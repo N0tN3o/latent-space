@@ -7,7 +7,7 @@
     <style>
         @font-face {
             font-family: 'Korolev Medium';
-            src: url('korolev-medium.otf') format('opentype');
+            src: url('/korolev-medium.otf') format('opentype');
             font-weight: normal;
             font-style: normal;
         }
@@ -214,27 +214,50 @@ No two the same, yet all the same.</div>
         
         <!-- Logo at bottom right corner -->
         <div style="position: fixed; bottom: 20px; right: 20px;">
-            <img src="kasboek-logo.png" alt="Kasboek '25" style="max-width: 150px; height: auto; opacity: 0.8;">
+            <img src="/kasboek-logo.png" alt="Kasboek '25" style="max-width: 150px; height: auto; opacity: 0.8;">
         </div>
     </div>
     
     <script>
-        // Configuration - Update these paths to match your pipeline output
+        // Configuration - Updated for Google Drive served files
         const CONFIG = {
-            dataFile: 'content.json',  // Path to your JSON data file
-            refreshInterval: 5000,     // Check for updates every 5 seconds
+            // Files served from port 8002 or via proxy
+            baseUrl: window.location.port === '8000' ? '' : 'http://' + window.location.hostname + ':8002',
+            dataFile: '/shared_output/content.json',
+            refreshInterval: 5000,  // Check every 5 seconds
+            retryInterval: 10000,   // Retry failed requests after 10 seconds
         };
         
         let lastTimestamp = null;
+        let retryTimer = null;
         
-        // Load content from your pipeline's output
+        // Helper to build correct path
+        function buildPath(path) {
+            // If path starts with /, it's absolute
+            if (path && path.startsWith('/')) {
+                return CONFIG.baseUrl + path;
+            }
+            // If path starts with shared_output, prepend /
+            if (path && path.startsWith('shared_output')) {
+                return CONFIG.baseUrl + '/' + path;
+            }
+            // Otherwise prepend /shared_output/
+            return CONFIG.baseUrl + '/shared_output/' + path;
+        }
+        
+        // Load content from Google Drive shared output
         async function loadContent() {
             try {
-                // Add timestamp to prevent caching
-                const response = await fetch(CONFIG.dataFile + '?t=' + Date.now());
+                // Try to fetch from the monitoring server first (port 8001)
+                let dataUrl = window.location.port === '8001' 
+                    ? CONFIG.dataFile 
+                    : buildPath('content.json');
+                    
+                const response = await fetch(dataUrl + '?t=' + Date.now());
                 
                 if (!response.ok) {
-                    console.log('Waiting for pipeline to generate content.json...');
+                    console.log('Waiting for content.json... (may be syncing to Google Drive)');
+                    scheduleRetry();
                     return;
                 }
                 
@@ -242,18 +265,25 @@ No two the same, yet all the same.</div>
                 
                 // Check if content has changed
                 if (lastTimestamp === data.timestamp) {
-                    console.log('No new content, skipping update');
+                    console.log('No new content');
                     return;
                 }
                 
-                console.log('New content detected! Updating...');
+                console.log('New content detected! Updating display...');
                 lastTimestamp = data.timestamp;
+                
+                // Clear retry timer on successful load
+                if (retryTimer) {
+                    clearTimeout(retryTimer);
+                    retryTimer = null;
+                }
                 
                 // Update main scribble
                 if (data.scribblePath) {
                     const scribbleImg = document.getElementById('mainScribble');
-                    scribbleImg.src = data.scribblePath + '?t=' + Date.now();
-                    console.log('Scribble updated:', data.scribblePath);
+                    const imgPath = buildPath(data.scribblePath);
+                    scribbleImg.src = imgPath + '?t=' + Date.now();
+                    console.log('Scribble updated:', imgPath);
                 }
                 
                 // Update psychoanalysis
@@ -264,9 +294,9 @@ No two the same, yet all the same.</div>
                 // Update heatmap
                 if (data.heatmapPath) {
                     const heatmapImg = document.getElementById('heatmapImage');
-                    // Add timestamp to prevent caching
-                    heatmapImg.src = data.heatmapPath + '?t=' + Date.now();
-                    console.log('Heatmap updated:', data.heatmapPath);
+                    const imgPath = buildPath(data.heatmapPath);
+                    heatmapImg.src = imgPath + '?t=' + Date.now();
+                    console.log('Heatmap updated:', imgPath);
                 }
                 
                 // Update poem
@@ -274,24 +304,12 @@ No two the same, yet all the same.</div>
                     document.getElementById('poemText').textContent = data.poem;
                 }
                 
-                // Update audio files
-                //if (data.psychoanalysisAudio) {
-                //    const psychoAudio = document.getElementById('psychoanalysisAudio');
-                //    psychoAudio.src = data.psychoanalysisAudio + '?t=' + Date.now();
-                //    psychoAudio.load();
-                //    // Auto-play psychoanalysis audio
-                //    psychoAudio.play().catch(e => console.log('Auto-play blocked:', e));
-                //}
-                
+                // Update audio file if present
                 if (data.poemAudio) {
                     const poemAudio = document.getElementById('poemAudio');
-                    poemAudio.src = data.poemAudio + '?t=' + Date.now();
+                    const audioPath = buildPath(data.poemAudio);
+                    poemAudio.src = audioPath + '?t=' + Date.now();
                     poemAudio.load();
-                    // Auto-play poem audio after psychoanalysis finishes
-                    //const psychoAudio = document.getElementById('psychoanalysisAudio');
-                    //psychoAudio.onended = function() {
-                    //    poemAudio.play().catch(e => console.log('Auto-play blocked:', e));
-                    //};
                 }
                 
                 // Update timestamp
@@ -306,7 +324,18 @@ No two the same, yet all the same.</div>
                 
                 console.log('Content updated successfully');
             } catch (error) {
-                console.log('Waiting for content.json...', error.message);
+                console.log('Error loading content:', error.message);
+                scheduleRetry();
+            }
+        }
+        
+        // Schedule a retry for failed requests
+        function scheduleRetry() {
+            if (!retryTimer) {
+                retryTimer = setTimeout(() => {
+                    retryTimer = null;
+                    loadContent();
+                }, CONFIG.retryInterval);
             }
         }
         
@@ -315,30 +344,39 @@ No two the same, yet all the same.</div>
             setInterval(loadContent, CONFIG.refreshInterval);
         }
         
-        // Initialize
-        loadContent();
-        startAutoRefresh();
-        
         // Manual refresh button
         function manualRefresh() {
             const btn = document.querySelector('.refresh-btn');
-            btn.textContent = 'Refreshing...';
-            btn.disabled = true;
+            if (btn) {
+                btn.textContent = 'Refreshing...';
+                btn.disabled = true;
+            }
             
             // Force refresh by clearing last timestamp
             lastTimestamp = null;
             loadContent().then(() => {
-                btn.textContent = 'Refresh Content';
-                btn.disabled = false;
+                if (btn) {
+                    btn.textContent = 'Refresh Content';
+                    btn.disabled = false;
+                }
             });
         }
-    // Print functionality with 'P' key
-    document.addEventListener('keydown', function(event) {
-        if (event.key === 'p' || event.key === 'P') {
-        event.preventDefault(); // Prevent default browser print shortcut
-        window.print();
-    }
-});
+        
+        // Print functionality with 'P' key
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'p' || event.key === 'P') {
+                event.preventDefault();
+                window.print();
+            }
+        });
+        
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('Latent Space Gallery initialized');
+            console.log('Fetching from:', CONFIG.baseUrl || 'same origin');
+            loadContent();
+            startAutoRefresh();
+        });
     </script>
 </body>
 </html>

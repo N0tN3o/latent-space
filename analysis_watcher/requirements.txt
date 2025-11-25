@@ -6,3 +6,4 @@ requests
 matplotlib
 numpy
 elevenlabs
+pydub

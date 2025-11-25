@@ -29,19 +29,10 @@ from watchdog.events import FileSystemEventHandler
 
 sys.path.append(str(Path(__file__).parent.parent / "scripts"))
 
-try:
-    from network_health import NetworkHealth, NetworkStatus
-except ImportError:
-    NetworkHealth = None
-    NetworkStatus = None
-
 # Configuration
 INACTIVITY_TIMEOUT_SEC = 60  # Reset search after 60s of no activity
 
-SHARED_DIR = Path(os.environ.get(
-    "LATENT_SHARED_DIR",
-    str(Path(__file__).parent.parent / "shared_output")
-))
+SHARED_DIR = Path("/home/kasboek/LatentSpace/shared_output")
 DOCS_DIR = SHARED_DIR / "docs"
 PRINTED_DIR = DOCS_DIR / "printed"
 PRINT_LOG = DOCS_DIR / "print_history.json"
@@ -105,18 +96,6 @@ class PDFWatcher(FileSystemEventHandler):
         if event.src_path.endswith('.pdf') and 'print_' in event.src_path:
             self.callback(event.src_path)
 
-class NetworkMonitorThread(QThread):
-    status_changed = pyqtSignal(str)
-    def __init__(self):
-        super().__init__()
-        self.running = True
-        self.health = NetworkHealth(role="rpi4") if NetworkHealth else None
-    def run(self):
-        while self.running:
-            if self.health: self.status_changed.emit(self.health.check().value)
-            time.sleep(5)
-    def stop(self): self.running = False
-
 class PrintQueueItem(QWidget):
     print_clicked = pyqtSignal(object)
     def __init__(self, record: PrintRecord):
@@ -176,11 +155,6 @@ class EnhancedPrintKioskUI(QMainWindow):
         self.setup_ui()
         self.setup_file_watcher()
         
-        if NetworkHealth:
-            self.network_thread = NetworkMonitorThread()
-            self.network_thread.status_changed.connect(self.on_network_status_changed)
-            self.network_thread.start()
-        
         self.refresh_queue()
 
     def eventFilter(self, obj, event):
@@ -215,14 +189,10 @@ class EnhancedPrintKioskUI(QMainWindow):
         widget = QWidget()
         layout = QVBoxLayout()
         header = QHBoxLayout()
-        title = QLabel("Latent Space - Print Your Drawing")
+        title = QLabel("Print Your Drawing")
         title.setFont(QFont("Arial", 32, QFont.Bold))
         header.addWidget(title)
         header.addStretch()
-        self.network_indicator = QLabel("● Network: OK")
-        self.network_indicator.setFont(QFont("Arial", 14))
-        self.network_indicator.setStyleSheet("color: #00ff00;")
-        header.addWidget(self.network_indicator)
         layout.addLayout(header)
         
         search_layout = QHBoxLayout()
@@ -340,17 +310,8 @@ class EnhancedPrintKioskUI(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Print failed: {e}")
 
-    def on_network_status_changed(self, status):
-        self.network_status = status
-        if status == "stopped": self.stack.setCurrentIndex(1)
-        else:
-            self.stack.setCurrentIndex(0)
-            if status == "primary": self.network_indicator.setStyleSheet("color: #00ff00;")
-            else: self.network_indicator.setStyleSheet("color: #ffaa00;")
-
     def closeEvent(self, event):
         if hasattr(self, 'observer'): self.observer.stop()
-        if hasattr(self, 'network_thread'): self.network_thread.stop()
         event.accept()
 
 def main():

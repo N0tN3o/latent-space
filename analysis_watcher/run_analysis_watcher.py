@@ -13,7 +13,11 @@ from playwright.async_api import async_playwright
 import json
 from elevenlabs import ElevenLabs
 from postprocess_audio import *
+import shutil
 from preprocess_image import preprocess_image
+
+# Define shared path
+SHARED_PATH = Path("/home/kasboek/LatentSpace/shared_output")
 
 # Logger initialization
 main_logger = logging.getLogger("image_analysis_pipeline")
@@ -130,7 +134,10 @@ text-to-speech, heatmap generation, and updating the website
     start_time = datetime.now()
     main_logger.info(f"Started analysis pipeline at {start_time}")
 
-    image = preprocess_image()
+    image = preprocess_image(
+        input_filename=str(SHARED_PATH / 'image.png'),
+        output_filename=str(SHARED_PATH / 'image_processed.png')
+    )
 
     try:
         # Model setup
@@ -173,9 +180,9 @@ text-to-speech, heatmap generation, and updating the website
         # Text-to-speech
         main_logger.info("Starting text-to-speech")
         # Rae
-        #rae_filename = run_el_tts(client=client, voice_id='45QiOxkuEAY6ckHqLMe8', output='output_rae.mp3', text=poem, speed=1.2)
+        #rae_filename = run_el_tts(client=client, voice_id='45QiOxkuEAY6ckHqLMe8', output=str(SHARED_PATH / 'output_rae.mp3'), text=poem, speed=1.2)
         # Ryan
-        #ryan_filename = run_el_tts(client=client, voice_id='tJHJUEHzOkMoPmJJ5jo2', output='output_ryan.mp3', text=poem, speed=1.3)
+        #ryan_filename = run_el_tts(client=client, voice_id='tJHJUEHzOkMoPmJJ5jo2', output=str(SHARED_PATH / 'output_ryan.mp3'), text=poem, speed=1.3)
         main_logger.info("Text-to-speech complete")
 
         try:
@@ -188,20 +195,23 @@ text-to-speech, heatmap generation, and updating the website
 
         main_logger.info("Post-processing TTS")
         #decrease_volume(ryan_filename, dB=-10)
-        #poem_filename = overlay_audio(ryan_filename, rae_filename, output_name='output.mp3')
+        #poem_filename = overlay_audio(ryan_filename, rae_filename, output_name=str(SHARED_PATH / 'output.mp3'))
         main_logger.info("Post-processing TTS complete")
 
         # Generate heatmap
         main_logger.info("Generating heatmap")
-        heatmap_filename = draw_heatmap()
+        heatmap_filename = draw_heatmap(
+            scribble_filename=str(SHARED_PATH / 'image.png'),
+            heatmap_filename=str(SHARED_PATH / 'heatmap.png')
+        )
         main_logger.info("Heatmap complete")
 
         # Generate content.json for website
         poem_filename = 'output.mp3'
         main_logger.info("Updating website")
         website_data = {
-            "scribblePath": f'{image}',
-            "heatmapPath": heatmap_filename,
+            "scribblePath": "image_processed.png",
+            "heatmapPath": "heatmap.png",
             "psychoanalysis": analysis,
             "poem": poem,
             "poemAudio": poem_filename, # variable!
@@ -209,18 +219,28 @@ text-to-speech, heatmap generation, and updating the website
         }
         
         # Write data to a .json file
-        with open('content.json', 'w', encoding='utf-8') as f:
+        with open(SHARED_PATH / 'content.json', 'w') as f:
             json.dump(website_data, f, indent=2, ensure_ascii=False)
         
         main_logger.info("Website updated")
 
         # create print-view PDF and save into docs/
         main_logger.info("Rendering print version of the website")
-        pdf_file = save_print_pdf(URL, out_dir='docs')
+        pdf_file = save_print_pdf(URL, out_dir=str(SHARED_PATH / 'docs'))
         if pdf_file:
             main_logger.info(f"Saved print PDF: {pdf_file}")
-            website_data['printPDF'] = pdf_file.replace('\\', '/')
-            with open('content.json', 'w', encoding='utf-8') as f:
+            
+            # Save thumbnail for the kiosk (copy of the processed image)
+            try:
+                pdf_path = Path(pdf_file)
+                thumb_path = pdf_path.with_suffix('.png')
+                shutil.copy(str(SHARED_PATH / 'image_processed.png'), str(thumb_path))
+                main_logger.info(f"Saved thumbnail: {thumb_path}")
+            except Exception as e:
+                main_logger.error(f"Failed to save thumbnail: {e}")
+
+            website_data['printPDF'] = f"docs/{Path(pdf_file).name}"
+            with open(SHARED_PATH / 'content.json', 'w') as f:
                 json.dump(website_data, f, indent=2, ensure_ascii=False)
 
         main_logger.info(f"Program concluded in {datetime.now() - start_time}")
@@ -232,7 +252,7 @@ text-to-speech, heatmap generation, and updating the website
         return False
 
 if __name__ == "__main__":
-    image_path = r'image.png'
+    image_path = '/home/kasboek/LatentSpace/shared_output/image.png'
     last_modified_time = None
     
     print("Watching for changes in image.png... Press Ctrl+C to stop.")

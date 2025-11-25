@@ -1,10 +1,7 @@
 """
-SYSTEM A: Gaze Painter (Kiosk Mode) - MODIFIED with Full Canvas Calibration
-- Shows 'Eyes' window as the main UI.
-- 'Gaze Painter' canvas window is shown/hidden based on state.
-- Automatic calibration captures full eye movement range.
-- Gaze loss triggers save and reset.
-- Timer expiry triggers save and loop (if gaze present).
+SYSTEM A: Gaze Painter - Updated for Google Drive
+User: kasboek
+No systemd dependencies - just run with Python
 """
 
 import cv2
@@ -22,8 +19,9 @@ from drawing import GazePainter
 from utils import save_calibration, load_calibration
 from eye_visualizer import EyeVisualizer
 
-# --- Configuration ---
-SHARED_OUTPUT_DIR = "../shared_output"
+# --- Configuration for kasboek user ---
+USER = "kasboek"
+SHARED_OUTPUT_DIR = f"/home/{USER}/LatentSpace/shared_output"
 DRAW_DURATION_SEC = 15.0
 GAZE_LOSS_TIMEOUT_SEC = 2.0
 
@@ -32,14 +30,21 @@ STATE_SEARCHING = 0
 STATE_CALIBRATING = 1
 STATE_DRAWING = 2
 STATE_SAVING = 3
-STATE_NETWORK_ERROR = 4
 
 class GazeTrackingPainter:
     def __init__(self, cap_index=0):
         self.cap = cv2.VideoCapture(cap_index)
         if not self.cap.isOpened():
             print(f"Error: Could not open camera {cap_index}")
-            exit()
+            print("Trying alternative camera indices...")
+            for idx in [1, 2, -1]:
+                self.cap = cv2.VideoCapture(idx)
+                if self.cap.isOpened():
+                    print(f"Camera found at index {idx}")
+                    break
+            else:
+                print("No camera found! Please check connection.")
+                exit(1)
             
         self.w = 1280
         self.h = 720
@@ -65,12 +70,43 @@ class GazeTrackingPainter:
         self.eyes_window = "Eyes"
         self.canvas_window = "Gaze Painter"
         
-        os.makedirs(SHARED_OUTPUT_DIR, exist_ok=True)
+        # Ensure shared output directory exists
+        Path(SHARED_OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+        Path(f"{SHARED_OUTPUT_DIR}/docs").mkdir(parents=True, exist_ok=True)
         
+        # Load calibration if exists
         calibration = load_calibration()
         if calibration:
             self.tracker.load_calibration(calibration)
             print("Existing calibration loaded.")
+    
+    def check_gdrive_mount(self):
+        """Check if Google Drive is mounted"""
+        try:
+            # Simple check - can we write to the directory?
+            test_file = Path(SHARED_OUTPUT_DIR) / ".mount_test"
+            test_file.touch()
+            test_file.unlink()
+            return True
+        except:
+            return False
+    
+    def wait_for_gdrive(self):
+        """Wait for Google Drive to be mounted"""
+        print("Checking Google Drive mount...")
+        retry_count = 0
+        while retry_count < 10:
+            if self.check_gdrive_mount():
+                print("Google Drive is mounted and accessible!")
+                return True
+            
+            print(f"Google Drive not accessible, waiting... ({retry_count+1}/10)")
+            time.sleep(3)
+            retry_count += 1
+        
+        print("WARNING: Google Drive may not be properly mounted!")
+        print("Files will be saved locally to:", SHARED_OUTPUT_DIR)
+        return False
     
     def get_calibration_progress_text(self):
         """Generate helpful calibration status text with instructions."""
@@ -78,7 +114,6 @@ class GazeTrackingPainter:
         total = self.tracker.calibration_needed
         percentage = int((progress / total) * 100)
         
-        # Different messages based on progress
         if percentage < 33:
             instruction = "Move your eyes around the screen"
         elif percentage < 66:
@@ -88,14 +123,69 @@ class GazeTrackingPainter:
         
         return f"Calibrating {percentage}% - {instruction}"
     
+    def save_and_reset(self):
+        """Save drawing to Google Drive shared folder"""
+        print("Saving drawing to Google Drive...")
+        filepath = Path(SHARED_OUTPUT_DIR) / "image.png"
+        
+        try:
+            # Save the image
+            cv2.imwrite(str(filepath), self.painter.canvas)
+            
+            # Force sync to ensure it's written
+            os.sync()
+            
+            print(f"Drawing saved to {filepath}")
+            print("Analysis watcher will process it...")
+            
+            # Log for debugging
+            if filepath.exists():
+                size = filepath.stat().st_size
+                print(f"File size: {size} bytes")
+            
+        except Exception as e:
+            print(f"Error saving file: {e}")
+            # Try to save locally as backup
+            backup_path = Path(f"/home/{USER}/LatentSpace/local_backup")
+            backup_path.mkdir(exist_ok=True)
+            backup_file = backup_path / f"image_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            cv2.imwrite(str(backup_file), self.painter.canvas)
+            print(f"Saved backup to: {backup_file}")
+        
+        # Reset for next drawing
+        self.close_canvas()
+        self.painter.clear()
+        
+        now = time.time()
+        if self.last_gaze_time is not None and \
+           (now - self.last_gaze_time) < GAZE_LOSS_TIMEOUT_SEC:
+            print("Gaze present. Starting new drawing session.")
+            self.state = STATE_DRAWING
+            self.draw_start_time = now
+            self.open_canvas()
+        else:
+            print("Gaze lost. Returning to search state.")
+            self.state = STATE_SEARCHING
+            self.status_text = "Searching for gaze..."
+    
     def run(self):
-        print("Starting Gaze Painter (System A - Kiosk Mode)...")
+        print("="*60)
+        print("Gaze Painter for Latent Space Installation")
+        print(f"User: {USER}")
+        print(f"Output: {SHARED_OUTPUT_DIR}")
+        print("="*60)
         print("Controls: [q] Quit")
+        print()
+        
+        # Check Google Drive mount
+        self.wait_for_gdrive()
+        
         cv2.namedWindow(self.eyes_window)
 
         while self.running:
             ret, frame = self.cap.read()
             if not ret:
+                print("Failed to read from camera")
                 break
                 
             frame = cv2.flip(frame, 1)
@@ -104,10 +194,6 @@ class GazeTrackingPainter:
             self.dt = now - self.last_time
             self.last_time = now
             self.frame_count += 1
-            
-            # network health polling now runs in a background thread; avoid blocking here
-            if self.frame_count % 30 == 0:
-                pass
             
             _, gaze_info, face_results = self.tracker.process_frame(
                 frame, 
@@ -159,15 +245,8 @@ class GazeTrackingPainter:
                     self.status_text = "Saving..."
 
             elif self.state == STATE_SAVING:
-                self.status_text = "Saving..."
+                self.status_text = "Saving to Google Drive..."
                 self.save_and_reset()
-            
-            elif self.state == STATE_NETWORK_ERROR:
-                self.status_text = "Connection Lost"
-                if self.network_health:
-                    self.network_health.display_error()
-                self.running = False
-                break
             
             # --- Update Windows ---
             
@@ -195,30 +274,7 @@ class GazeTrackingPainter:
                 self.state = STATE_SAVING
                 self.status_text = "Saving..."
                 return True
-            elif self.state == STATE_SEARCHING:
-                return False
         return False
-        
-    def save_and_reset(self):
-        print("Saving drawing...")
-        filepath = os.path.join(SHARED_OUTPUT_DIR, "image.png")
-        cv2.imwrite(filepath, self.painter.canvas)
-        print(f"Drawing saved to {filepath}. Watcher will process it.")
-        
-        self.close_canvas()
-        self.painter.clear()
-        
-        now = time.time()
-        if self.last_gaze_time is not None and \
-           (now - self.last_gaze_time) < GAZE_LOSS_TIMEOUT_SEC:
-            print("Gaze present. Starting new drawing session.")
-            self.state = STATE_DRAWING
-            self.draw_start_time = now
-            self.open_canvas()
-        else:
-            print("Gaze lost. Returning to search state.")
-            self.state = STATE_SEARCHING
-            self.status_text = "Searching for gaze..."
 
     def open_canvas(self):
         try:
@@ -241,6 +297,16 @@ class GazeTrackingPainter:
         self.visualizer.release()
         cv2.destroyAllWindows()
 
-if __name__ == '__main__':
+
+def main():
+    print("Starting Gaze Painter...")
+    print("Make sure Google Drive is mounted first!")
+    print("Run: python3 start_everything.py")
+    print()
+    
     app = GazeTrackingPainter(cap_index=0)
     app.run()
+
+
+if __name__ == '__main__':
+    main()
