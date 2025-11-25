@@ -19,6 +19,11 @@ USER = "kasboek"
 PROJECT_DIR = f"/home/{USER}/LatentSpace"
 SHARED_OUTPUT = f"{PROJECT_DIR}/shared_output"
 
+# Virtual Environments
+# Define specific python executables for services to handle dependency conflicts
+ANALYSIS_PYTHON = f"{PROJECT_DIR}/analysis_watcher/virtual_environment/bin/python"
+GAZE_PYTHON = f"{PROJECT_DIR}/gaze_painter/virtual_environment/bin/python"
+
 class LatentSpaceStarter:
     def __init__(self):
         self.device_type = self.detect_device_type()
@@ -191,7 +196,8 @@ class LatentSpaceStarter:
         if Path(analysis_script).exists():
             # First, ensure we're in the right directory for .env file
             os.chdir(f"{PROJECT_DIR}/analysis_watcher")
-            cmd = [sys.executable, "run_analysis_watcher.py"]
+            # Use specific virtual environment
+            cmd = [ANALYSIS_PYTHON, "run_analysis_watcher.py"]
             self.run_command(cmd, "Analysis Watcher", cwd=f"{PROJECT_DIR}/analysis_watcher")
         else:
             print(f"⚠ Analysis script not found: {analysis_script}")
@@ -200,10 +206,18 @@ class LatentSpaceStarter:
         
         # 3. Start Gaze Painter (eye tracking and drawing)
         print("\n👁️ Starting Gaze Tracker...")
-        gaze_script = f"{PROJECT_DIR}/gaze-painter/run_gaze_painter.py"
+        # Check for gaze_painter (underscore) or gaze-painter (hyphen)
+        gaze_script = f"{PROJECT_DIR}/gaze_painter/run_gaze_painter.py"
+        gaze_dir = f"{PROJECT_DIR}/gaze_painter"
+        
+        if not Path(gaze_script).exists():
+            gaze_script = f"{PROJECT_DIR}/gaze-painter/run_gaze_painter.py"
+            gaze_dir = f"{PROJECT_DIR}/gaze-painter"
+
         if Path(gaze_script).exists():
-            cmd = [sys.executable, gaze_script]
-            self.run_command(cmd, "Gaze Painter", cwd=f"{PROJECT_DIR}/gaze-painter")
+            # Use specific virtual environment
+            cmd = [GAZE_PYTHON, gaze_script]
+            self.run_command(cmd, "Gaze Painter", cwd=gaze_dir)
         else:
             print(f"⚠ Gaze script not found: {gaze_script}")
         
