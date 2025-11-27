@@ -127,30 +127,72 @@ class GazeTrackingPainter:
         """Save drawing to Google Drive shared folder"""
         print("Saving drawing to Google Drive...")
         filepath = Path(SHARED_OUTPUT_DIR) / "image.png"
-        
+        # Validate that something was actually drawn before saving
         try:
+            if not getattr(self.painter, 'has_drawn', False):
+                print('Skipping save: no strokes recorded on canvas')
+                # Reset and return without writing
+                self.close_canvas()
+                self.painter.clear()
+                now = time.time()
+                if self.last_gaze_time is not None and \
+                   (now - self.last_gaze_time) < GAZE_LOSS_TIMEOUT_SEC:
+                    print('Gaze present. Starting new drawing session.')
+                    self.state = STATE_DRAWING
+                    self.draw_start_time = now
+                    self.open_canvas()
+                else:
+                    print('Gaze lost. Returning to search state.')
+                    self.state = STATE_SEARCHING
+                    self.status_text = 'Searching for gaze...'
+                return
+
+            # Safety-net: check for all-white (blank) canvas
+            if np.all(self.painter.canvas == 255):
+                print('Skipping save: canvas is blank (all white)')
+                self.close_canvas()
+                self.painter.clear()
+                now = time.time()
+                if self.last_gaze_time is not None and \
+                   (now - self.last_gaze_time) < GAZE_LOSS_TIMEOUT_SEC:
+                    print('Gaze present. Starting new drawing session.')
+                    self.state = STATE_DRAWING
+                    self.draw_start_time = now
+                    self.open_canvas()
+                else:
+                    print('Gaze lost. Returning to search state.')
+                    self.state = STATE_SEARCHING
+                    self.status_text = 'Searching for gaze...'
+                return
+
             # Save the image
             cv2.imwrite(str(filepath), self.painter.canvas)
-            
-            # Force sync to ensure it's written
-            os.sync()
-            
+
+            # Try to fsync the file system if available
+            try:
+                os.sync()
+            except Exception:
+                pass
+
             print(f"Drawing saved to {filepath}")
             print("Analysis watcher will process it...")
-            
+
             # Log for debugging
             if filepath.exists():
                 size = filepath.stat().st_size
                 print(f"File size: {size} bytes")
-            
+
         except Exception as e:
             print(f"Error saving file: {e}")
-            # Try to save locally as backup
-            backup_path = Path(f"/home/{USER}/LatentSpace/local_backup")
+            # Try to save locally as backup inside repository
+            backup_path = Path.cwd() / "local_backup"
             backup_path.mkdir(exist_ok=True)
             backup_file = backup_path / f"image_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-            cv2.imwrite(str(backup_file), self.painter.canvas)
-            print(f"Saved backup to: {backup_file}")
+            try:
+                cv2.imwrite(str(backup_file), self.painter.canvas)
+                print(f"Saved backup to: {backup_file}")
+            except Exception as e2:
+                print(f"Backup save failed: {e2}")
         
         # Reset for next drawing
         self.close_canvas()

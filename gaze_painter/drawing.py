@@ -17,6 +17,7 @@ class GazePainter:
         self.dwell_radius = dwell_radius
         self.stroke_color = (0, 0, 0)  # Black in BGR
         self.stroke_history = []  # Store stroke points for smoother lines
+        self.has_drawn = False
         
     def clear(self):
         """Clear the canvas"""
@@ -25,6 +26,7 @@ class GazePainter:
         self.prev_time = None
         self.dwell_time = 0.0
         self.stroke_history = []
+        self.has_drawn = False
     
     def save(self, filename='gaze_art.png'):
         """Save the canvas to a file in saved_images folder"""
@@ -32,7 +34,22 @@ class GazePainter:
         save_dir = './saved_images'
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
-        
+        # Don't save if nothing was drawn
+        try:
+            # Check explicit flag first (fast)
+            if not getattr(self, 'has_drawn', False):
+                print('Save skipped: no strokes recorded on canvas')
+                return None
+
+            # As a safety-net, check whether the canvas is all white (blank)
+            if np.all(self.canvas == 255):
+                print('Save skipped: canvas is blank (all white)')
+                return None
+        except Exception:
+            # If checks fail for any reason, avoid overwriting by skipping save
+            print('Save skipped: validation check failed')
+            return None
+
         filepath = os.path.join(save_dir, filename)
         cv2.imwrite(filepath, self.canvas)
         print(f'Saved drawing to {filepath}')
@@ -97,12 +114,16 @@ class GazePainter:
                             self.stroke_color[1],
                             min(255, self.stroke_color[2] + color_var//3))
                     cv2.line(self.canvas, tuple(pts[i]), tuple(pts[i+1]), color, line_width)
+                # Mark that we've drawn something
+                self.has_drawn = True
         else:
             # Simple line for initial points
             cv2.line(self.canvas, self.prev_point, cur_point, self.stroke_color, line_width)
+            self.has_drawn = True
         
         # Draw a small circle at current position for visual feedback
         cv2.circle(self.canvas, cur_point, max(1, line_width//2), self.stroke_color, -1)
+        self.has_drawn = True
         
         self.prev_point = cur_point
     
