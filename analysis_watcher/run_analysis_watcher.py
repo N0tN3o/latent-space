@@ -221,6 +221,8 @@ text-to-speech, heatmap generation, and updating the website
         # Write data to a .json file
         with open(SHARED_PATH / 'content.json', 'w') as f:
             json.dump(website_data, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
         
         main_logger.info("Website updated")
 
