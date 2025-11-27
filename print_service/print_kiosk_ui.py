@@ -1,31 +1,21 @@
-"""
-Enhanced Print Kiosk Touch UI with Queue and Search
-- Browse all available PDFs
-- Search by date/time
-- Print any drawing from history
-- Mark as printed (but keep in archive)
-- Show thumbnails of drawings
-- [NEW] Auto-reset search on inactivity (Poke-Yoke)
-"""
-
 import sys
 import os
 import subprocess
-import platform
 import time
 import json
 import shutil
-import webbrowser
 from datetime import datetime, timedelta
 from pathlib import Path
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                             QHBoxLayout, QPushButton, QLabel, QListWidget,
-                             QMessageBox, QStackedWidget, QLineEdit, QScrollArea,
-                             QListWidgetItem, QGridLayout, QInputDialog)
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QSize, QObject, QEvent
-from PyQt5.QtGui import QFont, QPixmap, QImage, QIcon
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+
+# --- PyQt6 Imports ---
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
+                             QHBoxLayout, QPushButton, QLabel, QMessageBox, 
+                             QStackedWidget, QLineEdit, QScrollArea, QGridLayout,
+                             QScroller)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize, QEvent
+from PyQt6.QtGui import QFont, QPixmap, QIcon
 
 sys.path.append(str(Path(__file__).parent.parent / "scripts"))
 
@@ -37,9 +27,6 @@ DOCS_DIR = SHARED_DIR / "docs"
 PRINTED_DIR = DOCS_DIR / "printed"
 PRINT_LOG = DOCS_DIR / "print_history.json"
 PRINTER_NAME = "default"
-
-# --- [Existing Classes: PrintRecord, PDFWatcher, NetworkMonitorThread remain unchanged] ---
-# (Including them here for context, but the modification is in the main UI class)
 
 class PrintRecord:
     """Represents a single print/drawing"""
@@ -81,19 +68,56 @@ class PrintRecord:
     def get_thumbnail(self, size=(200, 280)):
         png_path = self.path.with_suffix('.png')
         try:
+            # If a PNG already exists, load it
             if png_path.exists():
                 pixmap = QPixmap(str(png_path))
                 if not pixmap.isNull():
-                    return pixmap.scaled(size[0], size[1], Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        except Exception: pass
+                    return pixmap.scaled(size[0], size[1], Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+            # Try to generate a PNG from the PDF using common system tools
+            if self.path.exists():
+                generated = False
+                # Use pdftoppm (poppler) if available
+                try:
+                    if shutil.which('pdftoppm'):
+                        root = str(png_path.with_suffix(''))
+                        subprocess.run(['pdftoppm', '-png', '-singlefile', str(self.path), root], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        if png_path.exists():
+                            generated = True
+                except Exception:
+                    generated = False
+
+                # Fallback to ImageMagick `convert` if available
+                if not generated:
+                    try:
+                        if shutil.which('convert'):
+                            # render only the first page
+                            subprocess.run(['convert', f"{str(self.path)}[0]", str(png_path)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            if png_path.exists():
+                                generated = True
+                    except Exception:
+                        generated = False
+
+                # If generation succeeded, try loading it
+                if generated and png_path.exists():
+                    pixmap = QPixmap(str(png_path))
+                    if not pixmap.isNull():
+                        return pixmap.scaled(size[0], size[1], Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+        except Exception as e:
+            print(f"Thumbnail generation error for {self.path}: {e}")
+
+        # Final fallback: neutral placeholder
         pixmap = QPixmap(size[0], size[1])
-        pixmap.fill(Qt.lightGray)
+        pixmap.fill(Qt.GlobalColor.lightGray)
         return pixmap
 
 class PDFWatcher(FileSystemEventHandler):
     def __init__(self, callback): self.callback = callback
     def on_created(self, event):
-        if event.src_path.endswith('.pdf') and 'print_' in event.src_path:
+        # FIX 1: Listen for PDF OR PNG. 
+        is_valid_file = event.src_path.endswith('.pdf') or event.src_path.endswith('.png')
+        if is_valid_file and 'print_' in event.src_path:
             self.callback(event.src_path)
 
 class PrintQueueItem(QWidget):
@@ -111,7 +135,7 @@ class PrintQueueItem(QWidget):
         
         info_layout = QVBoxLayout()
         date_label = QLabel(record.timestamp.strftime("%B %d, %Y"))
-        date_label.setFont(QFont("Arial", 16, QFont.Bold))
+        date_label.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         info_layout.addWidget(date_label)
         time_label = QLabel(record.timestamp.strftime("%I:%M %p"))
         time_label.setFont(QFont("Arial", 14))
@@ -124,7 +148,7 @@ class PrintQueueItem(QWidget):
         layout.addLayout(info_layout, stretch=1)
         
         print_btn = QPushButton("🖨️ PRINT")
-        print_btn.setFont(QFont("Arial", 18, QFont.Bold))
+        print_btn.setFont(QFont("Arial", 18, QFont.Weight.Bold))
         print_btn.setFixedSize(150, 80)
         print_btn.clicked.connect(lambda: self.print_clicked.emit(self.record))
         layout.addWidget(print_btn)
@@ -140,36 +164,29 @@ class EnhancedPrintKioskUI(QMainWindow):
         # State
         self.records = []
         self.filtered_records = []
-        self.network_status = "primary"
         
-        # --- NEW: Inactivity Timer ---
+        # Timer
         self.inactivity_timer = QTimer(self)
         self.inactivity_timer.setInterval(INACTIVITY_TIMEOUT_SEC * 1000)
         self.inactivity_timer.timeout.connect(self.reset_on_inactivity)
         self.inactivity_timer.start()
         
-        # Install event filter to detect user activity
         QApplication.instance().installEventFilter(self)
-        # -----------------------------
         
         self.setup_ui()
         self.setup_file_watcher()
-        
         self.refresh_queue()
 
     def eventFilter(self, obj, event):
-        """Detect user interaction to reset timer"""
-        if event.type() in [QEvent.MouseButtonPress, QEvent.KeyPress, QEvent.TouchBegin, QEvent.Wheel]:
-            self.inactivity_timer.start()  # Reset the timer
+        if event.type() in [QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress, QEvent.Type.TouchBegin, QEvent.Type.Wheel]:
+            self.inactivity_timer.start()
         return super().eventFilter(obj, event)
 
     def reset_on_inactivity(self):
-        """Called when user has been idle"""
         if self.search_input.text():
             print("Inactivity detected - resetting search")
             self.search_input.clear()
-            # Optional: Scroll to top?
-            self.stack.setCurrentIndex(0) # Ensure we are on main screen
+            self.stack.setCurrentIndex(0)
 
     def setup_ui(self):
         central = QWidget()
@@ -183,14 +200,25 @@ class EnhancedPrintKioskUI(QMainWindow):
         layout.addWidget(self.stack)
         layout.setContentsMargins(0, 0, 0, 0)
         central.setLayout(layout)
-        self.setStyleSheet("QMainWindow { background-color: #1a1a1a; } QLabel { color: white; } QPushButton { background-color: #2a2a2a; color: white; border: 2px solid #444; border-radius: 10px; padding: 15px; font-size: 18px; } QPushButton:hover { background-color: #3a3a3a; } QLineEdit { background-color: #2a2a2a; color: white; border: 2px solid #444; border-radius: 5px; padding: 10px; font-size: 16px; } QScrollArea { border: none; }")
+        
+        # FIX 3: Updated Stylesheet to include QMessageBox colors
+        self.setStyleSheet("""
+            QMainWindow { background-color: #1a1a1a; } 
+            QLabel { color: white; } 
+            QPushButton { background-color: #2a2a2a; color: white; border: 2px solid #444; border-radius: 10px; padding: 15px; font-size: 18px; } 
+            QPushButton:hover { background-color: #3a3a3a; } 
+            QLineEdit { background-color: #2a2a2a; color: white; border: 2px solid #444; border-radius: 5px; padding: 10px; font-size: 16px; } 
+            QScrollArea { border: none; }
+            QMessageBox { background-color: #2a2a2a; }
+            QMessageBox QLabel { color: white; }
+        """)
 
     def create_main_screen(self):
         widget = QWidget()
         layout = QVBoxLayout()
         header = QHBoxLayout()
         title = QLabel("Print Your Drawing")
-        title.setFont(QFont("Arial", 32, QFont.Bold))
+        title.setFont(QFont("Arial", 32, QFont.Weight.Bold))
         header.addWidget(title)
         header.addStretch()
         layout.addLayout(header)
@@ -215,7 +243,11 @@ class EnhancedPrintKioskUI(QMainWindow):
         
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # FIX 2: Enable Kinetic/Touch Scrolling - CORRECTED ENUM
+        QScroller.grabGesture(scroll.viewport(), QScroller.ScrollerGestureType.TouchGesture)
+        
         self.queue_container = QWidget()
         self.queue_layout = QVBoxLayout()
         self.queue_layout.setSpacing(10)
@@ -231,13 +263,13 @@ class EnhancedPrintKioskUI(QMainWindow):
         layout = QVBoxLayout()
         layout.addStretch()
         error_title = QLabel("Service Temporarily Unavailable")
-        error_title.setAlignment(Qt.AlignCenter)
-        error_title.setFont(QFont("Arial", 36, QFont.Bold))
+        error_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        error_title.setFont(QFont("Arial", 36, QFont.Weight.Bold))
         error_title.setStyleSheet("color: #ff4444;")
         layout.addWidget(error_title)
         layout.addSpacing(40)
         error_msg = QLabel("We're experiencing technical difficulties.\nPlease contact staff.")
-        error_msg.setAlignment(Qt.AlignCenter)
+        error_msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
         error_msg.setFont(QFont("Arial", 24))
         error_msg.setWordWrap(True)
         layout.addWidget(error_msg)
@@ -256,7 +288,6 @@ class EnhancedPrintKioskUI(QMainWindow):
         if not DOCS_DIR.exists(): return
         pdf_files = sorted(DOCS_DIR.glob("print_*.pdf"), key=lambda x: x.stat().st_mtime, reverse=True)
         self.records = [PrintRecord(pdf) for pdf in pdf_files]
-        # Re-apply search filter if text exists, otherwise show all
         if self.search_input.text():
             self.on_search_changed(self.search_input.text())
         else:
@@ -293,15 +324,14 @@ class EnhancedPrintKioskUI(QMainWindow):
         self.queue_layout.addStretch()
 
     def on_new_pdf(self, pdf_path):
-        print(f"New PDF: {pdf_path}")
+        print(f"File Event Detected: {pdf_path}")
         self.refresh_queue()
 
     def print_pdf(self, record):
-        reply = QMessageBox.question(self, "Confirm Print", f"Print drawing from {record.timestamp.strftime('%H:%M')}?", QMessageBox.Yes | QMessageBox.No)
-        if reply != QMessageBox.Yes: return
+        reply = QMessageBox.question(self, "Confirm Print", f"Print drawing from {record.timestamp.strftime('%H:%M')}?", 
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes: return
         
-        # ... (Printing logic remains similar to your previous version) ...
-        # Simplified for brevity:
         try:
             subprocess.run(["lp", "-d", PRINTER_NAME, str(record.path)], check=True)
             record.mark_as_printed()
@@ -318,7 +348,7 @@ def main():
     app = QApplication(sys.argv)
     window = EnhancedPrintKioskUI()
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())
 
 if __name__ == "__main__":
     main()
