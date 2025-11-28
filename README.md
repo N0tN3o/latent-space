@@ -1,297 +1,228 @@
-# Latent Space Installation - Setup Package
+# Latent Space: Through the Eyes of the Algorithm
+
+An interactive art installation that transforms human gaze into AI-interpreted artwork, bridging the gap between human perception and machine understanding.
 
 ## Overview
-Complete automated setup for the Latent Space art installation across 3 devices:
-- **Jetson Orin Nano A**: Gaze tracking + drawing (real-time)
-- **Jetson Orin Nano B**: Analysis pipeline + web server (NFS server)
-- **Raspberry Pi 4**: Print kiosk (NFS client)
 
-## Network Architecture
+**Latent Space** is an interactive art installation where visitors create drawings simply by looking at a screen. Their eye movements are tracked in real-time, translated into visual strokes, and then analyzed by AI systems that generate psychoanalytical interpretations and poetry based on what they "see" in the abstract marks. The experience culminates in a physical thermal print that visitors can take home as a memento.
+
+The installation explores themes of observation, interpretation, and the increasingly blurred boundary between human creativity and artificial intelligence.
+
+## How It Works
+
+1. **Gaze Capture** — A camera tracks the visitor's eye movements using MediaPipe face mesh detection
+2. **Drawing** — Eye position is mapped to canvas coordinates, creating abstract strokes as the visitor looks around
+3. **AI Analysis** — The drawing is classified using ResNet50, then interpreted through custom LLM prompts
+4. **Poetry Generation** — A second AI model generates a poem inspired by the psychoanalytical interpretation
+5. **Web Display** — Results are displayed on a live web gallery with the artwork, analysis, heatmap, and audio
+6. **Print Service** — Visitors can print their unique artwork at a dedicated kiosk
+
+## Hardware Architecture
+
 ```
-Mobile WiFi Router (192.168.1.1)
-├── Jetson A: 192.168.1.10 (gaze-painter)
-├── Jetson B: 192.168.1.11 (analysis-watcher, NFS server)
-└── RPi4:     192.168.1.12 (print-service)
+┌────────────────────────────────────────────────────────────────┐
+│                      LATENT SPACE SYSTEM                       │
+├────────────────────────────────────────────────────────────────┤
+│                                                                │
+│   ┌─────────────────────┐         ┌─────────────────────┐      │
+│   │   JETSON ORIN NANO  │         │   RASPBERRY PI 4    │      │
+│   │   "The Eye & Brain" │         │    "The Hand"       │      │
+│   ├─────────────────────┤         ├─────────────────────┤      │
+│   │ • Gaze Tracking     │         │ • Print Kiosk UI    │      │
+│   │ • Drawing Canvas    │◄───────►│ • Thermal Printer   │      │
+│   │ • AI Analysis       │  Google │ • Touch Interface   │      │
+│   │ • Poem Generation   │  Drive  │                     │      │
+│   │ • TTS (ElevenLabs)  │  Sync   │                     │      │
+│   │ • Web Gallery       │         │                     │      │
+│   │ • Admin Dashboard   │         │                     │      │
+│   └─────────────────────┘         └─────────────────────┘      │
+│              │                                                 │
+│              ▼                                                 │
+│   ┌─────────────────────┐                                      │
+│   │    GOOGLE DRIVE     │                                      │
+│   │   (Shared Storage)  │                                      │
+│   ├─────────────────────┤                                      │
+│   │ • Drawings (PNG)    │                                      │
+│   │ • Heatmaps          │                                      │
+│   │ • Print PDFs        │                                      │
+│   │ • Audio files       │                                      │
+│   │ • content.json      │                                      │
+│   └─────────────────────┘                                      │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-## Quick Start
+## Project Structure
+
+```
+LatentSpace/
+├── gaze_painter/           # Eye tracking and drawing system
+│   ├── run_gaze_painter.py # Main gaze tracking application
+│   ├── eye_tracking.py     # MediaPipe-based eye detection
+│   ├── drawing.py          # Canvas and stroke rendering
+│   ├── eye_visualizer.py   # Visual feedback display
+│   └── calibrations/       # Stored calibration data
+│
+├── analysis_watcher/       # AI processing pipeline
+│   ├── run_analysis_watcher.py  # File watcher and orchestrator
+│   ├── analysis.py         # ResNet50 image classification
+│   ├── chat.py             # LLM API integration (BUas AI platform)
+│   ├── heatmap.py          # Attention visualization generator
+│   ├── preprocess_image.py # Image normalization
+│   ├── tts_el.py           # ElevenLabs text-to-speech
+│   └── tts_gc.py           # Google Cloud TTS (alternative)
+│
+├── print_service/          # Raspberry Pi print kiosk
+│   └── print_kiosk_ui.py   # PyQt6 touch interface for printing
+│
+├── admin_ui/               # Desktop admin tools
+│   ├── main.py             # Tkinter admin console
+│   └── delete_prints.py    # Print cleanup utilities
+│
+├── web_ui/                 # Web interfaces
+│   ├── admin.html          # Browser-based admin dashboard
+│   └── remote_ui.html      # Remote monitoring interface
+│
+├── index.html              # Main gallery web page
+├── monitoring_server.py    # Flask API for system monitoring
+├── start_everything.py     # Unified startup script
+└── shared_output/          # Google Drive mount point
+    ├── image.png           # Current drawing
+    ├── heatmap.png         # Attention heatmap
+    ├── content.json        # Gallery content data
+    └── docs/               # Generated print PDFs
+```
+
+## Key Components
+
+### Gaze Painter (`gaze_painter/`)
+The eye tracking system uses MediaPipe's face mesh to detect iris positions. After an automatic calibration phase, eye movements are mapped to canvas coordinates where strokes are rendered with variable thickness based on dwell time and movement speed.
+
+### Analysis Pipeline (`analysis_watcher/`)
+Monitors the shared output folder for new drawings. When detected:
+- Preprocesses the image (crops, resizes to 224×224)
+- Classifies using ResNet50 pretrained on ImageNet
+- Sends the classification to an LLM for psychoanalytical interpretation
+- Generates a poem from the interpretation
+- Creates a heatmap showing stroke density
+- Optionally generates audio narration via ElevenLabs
+- Updates `content.json` for the web gallery
+
+### Print Kiosk (`print_service/`)
+A PyQt6 touch-friendly interface running on the Raspberry Pi. Displays available prints with thumbnails, supports date-based search, and handles thermal printing via CUPS.
+
+### Web Gallery (`index.html`)
+Auto-refreshing web page displaying the current artwork, AI analysis, poem, heatmap, and audio player. Designed for large display screens at the installation.
+
+### Admin Dashboard (`web_ui/admin.html`, `monitoring_server.py`)
+Browser-based control panel for:
+- Monitoring system health and service status
+- Configuring AI model parameters
+- Managing print files
+- Viewing system logs
+- Troubleshooting guide
+
+## Setup & Installation
 
 ### Prerequisites
-1. All devices on same WiFi network
-2. Internet connection for package downloads
-3. Fresh Ubuntu installation (or Jetson/Raspbian OS)
-4. User account: `art` (will be created if not exists)
+- Jetson Orin Nano with JetPack
+- Raspberry Pi 4 with thermal printer
+- USB webcam
+- Google Drive account with rclone configured
+- Python 3.8+
 
-### Installation Order
+### Quick Start
 
-#### 1. Jetson B (NFS Server) - Setup FIRST
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url> /home/kasboek/LatentSpace
+   cd /home/kasboek/LatentSpace
+   ```
+
+2. **Configure rclone for Google Drive**
+   ```bash
+   rclone config
+   # Create a remote named "latent_space" for Google Drive
+   ```
+
+3. **Set up environment files**
+   ```bash
+   # In analysis_watcher/.env
+   API_KEY=your_elevenlabs_key
+   ACCESS_TOKEN=your_buas_ai_token
+   USER_KEY=your_buas_user_key
+   ```
+
+4. **Install dependencies**
+   ```bash
+   # Jetson - Gaze Painter
+   cd gaze_painter
+   python3 -m venv virtual_environment
+   source virtual_environment/bin/activate
+   pip install -r requirements.txt
+
+   # Jetson - Analysis
+   cd ../analysis_watcher
+   python3 -m venv virtual_environment
+   source virtual_environment/bin/activate
+   pip install -r requirements.txt
+
+   # Raspberry Pi - Print Service
+   cd ../print_service
+   pip install -r requirements.txt
+   ```
+
+5. **Start the system** (run on each device from the root `LatentSpace` folder)
+   ```bash
+   python3 start_everything.py
+   ```
+
+## Web Endpoints
+
+| Port | Service | Description |
+|------|---------|-------------|
+| 8000 | Gallery | Public-facing artwork display |
+| 8001 | Admin API | Monitoring and control API |
+| 8002 | File Server | Direct access to shared files |
+
+## Configuration
+
+### AI Models
+The installation uses two LLM assistants via the BUas AI platform:
+- **Analysis Model** — Interprets drawings psychoanalytically
+- **Poem Model** — Generates poetry from interpretations
+
+Configure via the Admin Dashboard or directly through the API.
+
+### Calibration
+Eye tracking calibration is stored in `gaze_painter/calibrations/calibration.json`. The system performs automatic calibration when a new user is detected.
+
+## Maintenance
+
+### Automatic Cleanup
+Old print files are automatically deleted at 23:59 each day if and while the admin app runs. For production, consider setting up a cron job.
+
+### Manual Cleanup
 ```bash
-cd /home/art/LatentSpace/setup
-chmod +x setup_jetson_b.sh
-sudo ./setup_jetson_b.sh
-```
-Wait for completion (~15 min), then reboot.
-
-#### 2. Jetson A (Gaze Painter)
-```bash
-cd /home/art/LatentSpace/setup
-chmod +x setup_jetson_a.sh
-sudo ./setup_jetson_a.sh
-```
-Wait for completion (~10 min), then reboot.
-
-#### 3. Raspberry Pi 4 (Print Service)
-```bash
-cd /home/art/LatentSpace/setup
-chmod +x setup_rpi4.sh
-sudo ./setup_rpi4.sh
-```
-Wait for completion (~10 min), then reboot.
-
-## Post-Installation
-
-### Verify Setup
-```bash
-# On any device
-cd /home/art/LatentSpace/setup
-./verify_installation.sh
+python3 admin_ui/delete_prints.py
 ```
 
-### Manual Service Control
-```bash
-# Jetson A
-sudo systemctl status gaze-painter
-sudo systemctl restart gaze-painter
-
-# Jetson B
-sudo systemctl status analysis-watcher
-sudo systemctl status web-server
-
-# RPi4
-sudo systemctl status print-service
-```
-
-### View Logs
-```bash
-# Real-time logs
-journalctl -u gaze-painter -f
-journalctl -u analysis-watcher -f
-journalctl -u print-service -f
-
-# Network health logs
-tail -f /home/art/logs/jetson_a_network.log
-tail -f /home/art/logs/jetson_b_network.log
-tail -f /home/art/logs/rpi4_network.log
-```
-
-## File Structure After Setup
-```
-/home/art/LatentSpace/
-├── setup/
-│   ├── setup_jetson_a.sh
-│   ├── setup_jetson_b.sh
-│   ├── setup_rpi4.sh
-│   ├── verify_installation.sh
-│   └── README.md (this file)
-├── gaze-painter/
-│   ├── venv/
-│   ├── run_gaze_painter.py (modified with network health)
-│   └── ... (other files)
-├── analysis_watcher/
-│   ├── venv/
-│   ├── run_analysis_watcher.py (modified with network health)
-│   └── ... (other files)
-├── print_service/
-│   ├── venv/
-│   ├── print_kiosk_ui.py (NEW)
-│   └── requirements.txt
-├── shared_output/ (NFS mount point)
-│   ├── image.png
-│   ├── heatmap.png
-│   ├── content.json
-│   └── docs/
-├── scripts/
-│   ├── network_health.py
-│   ├── display_manager.sh
-│   ├── sync_fallback.sh
-│   └── firewall_rules.sh
-├── logs/
-│   ├── jetson_a_network.log
-│   ├── jetson_b_network.log
-│   ├── rpi4_network.log
-│   └── installation.log
-└── .ssh/
-    ├── id_rsa_sync (SSH key for rsync fallback)
-    └── id_rsa_sync.pub
-```
-
-## Network Configuration
-
-### Static IP Assignment (Router DHCP Reservation)
-Configure your WiFi router to reserve:
-- `192.168.1.10` → Jetson A MAC address
-- `192.168.1.11` → Jetson B MAC address
-- `192.168.1.12` → RPi4 MAC address
-
-### Firewall Rules (Auto-configured)
-- NFS (port 2049): Only devices 10, 11, 12
-- SSH (port 22): Only devices 10, 11, 12
-- Web (port 8000): Local network only
+### Logs
+- `analysis_watcher/installation.log` — Main system log
+- `analysis_watcher/predictions.csv` — Classification history
+- `analysis_watcher/credits.csv` — ElevenLabs usage tracking
 
 ## Troubleshooting
 
-### NFS Mount Issues
-```bash
-# Check mount status
-mount | grep shared_output
+| Issue | Solution |
+|-------|----------|
+| No gaze detected | Check camera connection and lighting |
+| Google Drive not syncing | Verify rclone mount with `mountpoint -q /path/to/shared_output` |
+| Printer not working | Check CUPS status: `sudo systemctl status cups` |
+| AI analysis failing | Verify `.env` credentials and network connectivity |
 
-# Manual remount
-sudo mount -a
+## Credits
 
-# Check NFS server (on Jetson B)
-sudo systemctl status nfs-kernel-server
-showmount -e localhost
-```
-
-### SSH Key Issues
-```bash
-# Regenerate sync keys
-ssh-keygen -t ed25519 -f ~/.ssh/id_rsa_sync -N ""
-
-# Copy to other devices
-ssh-copy-id -i ~/.ssh/id_rsa_sync.pub art@192.168.1.11
-```
-
-### Display Assignment Issues (Jetson A)
-```bash
-# List displays
-xrandr --listmonitors
-
-# Manually assign windows
-DISPLAY=:0 python3 run_gaze_painter.py
-```
-
-### Service Won't Start
-```bash
-# Check service status
-sudo systemctl status <service-name>
-
-# Check logs
-journalctl -u <service-name> --since today
-
-# Manual test
-cd /home/art/LatentSpace/gaze-painter
-source venv/bin/activate
-python3 run_gaze_painter.py
-```
-
-## Security Notes
-
-### SSH Keys
-- Dedicated key for rsync: `~/.ssh/id_rsa_sync`
-- No passphrase (for automation)
-- Restricted to rsync command only
-
-### Firewall
-- Only allows traffic between known devices
-- All other external access blocked
-
-### File Permissions
-- NFS exports with `no_root_squash` for art user only
-- All scripts owned by art:art
-
-## Manual Operations
-
-### Stop All Services
-```bash
-# Run on each device
-sudo systemctl stop gaze-painter      # Jetson A
-sudo systemctl stop analysis-watcher  # Jetson B
-sudo systemctl stop web-server        # Jetson B
-sudo systemctl stop print-service     # RPi4
-```
-
-### Emergency Network Reset
-```bash
-# On Jetson B (NFS server)
-cd /home/art/LatentSpace/setup
-sudo ./emergency_network_reset.sh
-```
-
-### Clear All Data (Fresh Start)
-```bash
-# WARNING: Deletes all drawings/PDFs
-rm -rf /home/art/LatentSpace/shared_output/*
-```
-
-## Performance Monitoring
-
-### System Resources
-```bash
-# CPU/Memory usage
-htop
-
-# GPU usage (Jetson only)
-tegrastats
-
-# Network usage
-iftop
-```
-
-### Network Health Status
-```bash
-# Check current status
-cat /home/art/logs/jetson_a_network.log | tail -20
-```
-
-## Backup & Recovery
-
-### Backup Configuration
-```bash
-# Backup SSH keys and configs
-tar -czf latent_backup_$(date +%Y%m%d).tar.gz \
-  ~/.ssh/id_rsa_sync* \
-  /etc/exports \
-  /etc/fstab \
-  /etc/systemd/system/gaze-painter.service \
-  /etc/systemd/system/analysis-watcher.service \
-  /etc/systemd/system/print-service.service
-```
-
-### Restore After Crash
-```bash
-# Re-run setup script for affected device
-sudo ./setup_jetson_a.sh  # or _b, _rpi4
-```
-
-## Development Mode
-
-### Disable Auto-Start (for testing)
-```bash
-sudo systemctl disable gaze-painter
-sudo systemctl disable analysis-watcher
-sudo systemctl disable print-service
-```
-
-### Run Manually
-```bash
-cd /home/art/LatentSpace/gaze-painter
-source venv/bin/activate
-python3 run_gaze_painter.py
-```
-
-### Re-enable Auto-Start
-```bash
-sudo systemctl enable gaze-painter
-sudo systemctl start gaze-painter
-```
-
-## Contact & Support
-For issues during exhibition, check logs first:
-```bash
-journalctl -u <service> --since "10 minutes ago"
-```
-
-Created by: Latent Space Installation Team
-Version: 1.0
-Date: 2025
+**Project:** Latent Space '25  
+**Maintainer:** Vince Németh, Bence Papp, Cristina Jadanov, Bendek Vass
+**Location:** BUas Innovation Lab

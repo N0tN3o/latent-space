@@ -16,8 +16,10 @@ from postprocess_audio import *
 import shutil
 from preprocess_image import preprocess_image
 
+USER = ""
+
 # Define shared path
-SHARED_PATH = Path("/home/kasboek/LatentSpace/shared_output")
+SHARED_PATH = Path(f"/home/{USER}/LatentSpace/shared_output")
 
 # Logger initialization
 main_logger = logging.getLogger("image_analysis_pipeline")
@@ -148,7 +150,7 @@ text-to-speech, heatmap generation, and updating the website
         response_logger.info(init_response_a)
         init_response_p = poem_model.initialize()
         response_logger.info(init_response_p)
-        client = el_tts_setup('kui/.env')
+        client = el_tts_setup('.env')
         main_logger.info("Setup complete")
 
         # Run classification
@@ -168,7 +170,7 @@ text-to-speech, heatmap generation, and updating the website
         main_logger.info("Poem complete")
 
         try:
-            with open('kui/.env', 'r') as env:
+            with open('.env', 'r') as env:
                 api_key = env.readlines()[0].split('=')[1].strip()
             el_client = ElevenLabs(api_key=api_key)
             user_before = el_client.user.get()
@@ -254,7 +256,7 @@ text-to-speech, heatmap generation, and updating the website
         return False
 
 if __name__ == "__main__":
-    image_path = '/home/kasboek/LatentSpace/shared_output/image.png'
+    image_path = f'/home/{USER}/LatentSpace/shared_output/image.png'
     last_modified_time = None
     
     print("Watching for changes in image.png... Press Ctrl+C to stop.")

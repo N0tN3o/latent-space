@@ -1,9 +1,3 @@
-"""
-SYSTEM A: Gaze Painter - Updated for Google Drive
-User: kasboek
-No systemd dependencies - just run with Python
-"""
-
 import cv2
 import time
 import numpy as np
@@ -19,8 +13,8 @@ from drawing import GazePainter
 from utils import save_calibration, load_calibration
 from eye_visualizer import EyeVisualizer
 
-# --- Configuration for kasboek user ---
-USER = "kasboek"
+# --- Configuration for <username> user ---
+USER = ""
 SHARED_OUTPUT_DIR = f"/home/{USER}/LatentSpace/shared_output"
 DRAW_DURATION_SEC = 15.0
 GAZE_LOSS_TIMEOUT_SEC = 2.0
