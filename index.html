@@ -41,7 +41,7 @@
             flex-wrap: wrap;
             gap: 6px;
             z-index: 100;
-            opacity: 0.3;
+            opacity: 0.25;
             transition: opacity 0.25s ease;
         }
         .floating-nav:hover {
@@ -52,11 +52,14 @@
             color: #fff;
             text-decoration: none;
             border: none;
-            padding: 6px 11px;
+            padding: 6px 12px;
             border-radius: 6px;
             font-size: 0.76rem;
             cursor: pointer;
             font-family: inherit;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
         }
         .floating-nav a:hover, .floating-nav button:hover {
             background: #3a3a3a;
@@ -200,7 +203,7 @@
             border-top: 1px solid #ddd;
         }
 
-        /* Dynamic Attribution Box */
+        /* Dynamic Attribution Box (Hidden by default unless enabled in Admin) */
         .attribution-section {
             display: none;
             margin-top: 14px;
@@ -222,6 +225,7 @@
         }
 
         .attribution-logo {
+            display: none;
             max-width: 115px;
             height: auto;
             opacity: 0.9;
@@ -270,13 +274,13 @@
 </head>
 <body>
     <nav class="floating-nav">
-        <button onclick="stepHistory(1)" title="Older Artwork (Left Arrow)">◀ Prev</button>
-        <button id="liveModeBtn" class="live-active" onclick="returnToLive()" title="Return to Live Feed">🔴 Live</button>
-        <button onclick="stepHistory(-1)" title="Newer Artwork (Right Arrow)">Next ▶</button>
-        <a href="/draw">👁️ Gaze Draw</a>
-        <a href="/kiosk">🖨️ Print Kiosk</a>
-        <a href="/admin">🎛️ Admin</a>
-        <button onclick="window.print()">📄 Print</button>
+        <button onclick="stepHistory(1)" title="Older Artwork (Left Arrow)">Prev</button>
+        <button id="liveModeBtn" class="live-active" onclick="returnToLive()" title="Return to Live Feed">Live</button>
+        <button onclick="stepHistory(-1)" title="Newer Artwork (Right Arrow)">Next</button>
+        <a href="/draw">Gaze Draw</a>
+        <a href="/kiosk">Print Kiosk</a>
+        <a href="/admin">Admin</a>
+        <button onclick="window.print()">Print</button>
     </nav>
 
     <div class="container">
@@ -342,10 +346,10 @@ No two the same, yet all the same.</div>
                 <p><span id="lastUpdate">Waiting for data...</span></p>
             </div>
 
-            <!-- Dynamic Kasboek Attribution (Controlled by Admin Switch) -->
-            <div class="attribution-section" id="attributionSection">
+            <!-- Dynamic Kasboek Attribution (Controlled by Admin Switch - hidden by default) -->
+            <div class="attribution-section" id="attributionSection" style="display: none;">
                 <div class="attribution-inner">
-                    <img id="attributionLogo" class="attribution-logo" src="/kasboek-logo.jpg" alt="Kasboek Logo">
+                    <img id="attributionLogo" class="attribution-logo" alt="Kasboek Logo" style="display: none;">
                     <div class="attribution-text" id="attributionText"></div>
                 </div>
             </div>
@@ -429,15 +433,19 @@ No two the same, yet all the same.</div>
 
             if (!attr || !attr.enabled) {
                 section.style.display = 'none';
+                logo.style.display = 'none';
+                logo.removeAttribute('src');
+                textEl.innerHTML = '';
                 return;
             }
 
             section.style.display = 'block';
             if (attr.show_logo !== false) {
+                logo.src = (attr.logo_path || '/kasboek-logo.jpg') + '?t=' + Date.now();
                 logo.style.display = 'block';
-                logo.src = attr.logo_path || '/kasboek-logo.jpg';
             } else {
                 logo.style.display = 'none';
+                logo.removeAttribute('src');
             }
 
             const intro = escapeHtml(attr.intro_text || 'Made possible by Kasboek.');
@@ -486,6 +494,20 @@ No two the same, yet all the same.</div>
             }
 
             textEl.innerHTML = html;
+        }
+
+        async function refreshAttributions() {
+            try {
+                const attrRes = await fetch(CONFIG.attributionsApi + '?t=' + Date.now());
+                if (attrRes.ok) {
+                    const attrData = await attrRes.json();
+                    const attrSig = JSON.stringify(attrData);
+                    if (attrSig !== lastAttrSignature) {
+                        lastAttrSignature = attrSig;
+                        renderAttribution(attrData);
+                    }
+                }
+            } catch (_) {}
         }
 
         function applyViewData(data, isHistorical = false) {
@@ -570,9 +592,9 @@ No two the same, yet all the same.</div>
         }
         
         async function loadContent() {
+            await refreshAttributions();
             if (historyIdx !== -1) return; // Paused while browsing archive
             try {
-                // Discover LAN IP once so QR codes work when scanned by phones on Wi-Fi
                 if (lanBaseUrl.includes('localhost') || lanBaseUrl.includes('127.0.0.1')) {
                     try {
                         const st = await fetch(CONFIG.statusApi);
@@ -598,25 +620,6 @@ No two the same, yet all the same.</div>
                     if (sig !== lastContentSignature) {
                         lastContentSignature = sig;
                         applyViewData(data, false);
-                    }
-
-                    // Check live attribution settings from API (or fallback to content.json)
-                    try {
-                        const attrRes = await fetch(CONFIG.attributionsApi + '?t=' + Date.now());
-                        if (attrRes.ok) {
-                            const attrData = await attrRes.json();
-                            const attrSig = JSON.stringify(attrData);
-                            if (attrSig !== lastAttrSignature) {
-                                lastAttrSignature = attrSig;
-                                renderAttribution(attrData);
-                            }
-                        } else if (data.attributions) {
-                            renderAttribution(data.attributions);
-                        }
-                    } catch (_) {
-                        if (data.attributions) {
-                            renderAttribution(data.attributions);
-                        }
                     }
                 }
             } catch (error) {

@@ -94,12 +94,6 @@
             background: var(--accent-hover);
         }
 
-        .btn-secondary {
-            background: var(--secondary);
-            border-color: var(--secondary);
-            color: #fff;
-        }
-
         .toolbar {
             max-width: 1400px;
             width: 100%;
@@ -294,13 +288,13 @@
 <body>
     <header>
         <div class="brand">
-            <h1>🖨️ Latent Space — Print Kiosk</h1>
+            <h1>Latent Space — Print Kiosk</h1>
             <span id="queueCount" style="color: var(--text-muted); font-size: 0.9rem;">Loading...</span>
         </div>
         <div class="nav-links">
-            <a href="/" class="btn">🖼️ Gallery</a>
-            <a href="/draw" class="btn">👁️ Gaze Draw</a>
-            <a href="/admin" class="btn">🎛️ Admin</a>
+            <a href="/" class="btn">Gallery</a>
+            <a href="/draw" class="btn">Gaze Draw</a>
+            <a href="/admin" class="btn">Admin</a>
         </div>
     </header>
 
@@ -309,11 +303,11 @@
             <input type="text" id="searchInput" placeholder="Search by time, date, or 'today'..." oninput="renderGrid()">
             <button class="btn" onclick="setFilter('today')">Today</button>
             <button class="btn" onclick="setFilter('')">All</button>
-            <button class="btn" onclick="loadPrints()">🔄 Refresh</button>
+            <button class="btn" onclick="loadPrints()">Refresh</button>
         </div>
         <label class="autoprint-pill" title="Automatically send new drawings to the printer as soon as they are created">
             <input type="checkbox" id="autoPrintToggle" onchange="toggleAutoPrint(this.checked)">
-            <span>⚡ Auto-Print New Drawings</span>
+            <span>Auto-Print New Drawings</span>
         </label>
     </div>
 
@@ -322,16 +316,12 @@
     </div>
 
     <footer>
-        <div>Tap any artwork to open or print its full A4 memento sheet.</div>
+        <div>Select any artwork to open or print its full A4 memento sheet.</div>
         <div class="kiosk-attribution" id="kioskAttribution"></div>
     </footer>
 
-    <!-- Hidden iframe for seamless browser print dialog -->
-    <iframe id="printFrame" style="display:none;"></iframe>
-
     <script>
         let allPrints = [];
-        let knownLatestPrint = null;
 
         async function loadPrints() {
             try {
@@ -347,8 +337,8 @@
         async function loadSettings() {
             try {
                 const [printRes, attrRes] = await Promise.all([
-                    fetch('/api/settings/printing'),
-                    fetch('/api/settings/attributions')
+                    fetch('/api/settings/printing?t=' + Date.now()),
+                    fetch('/api/settings/attributions?t=' + Date.now())
                 ]);
                 if (printRes.ok) {
                     const p = await printRes.json();
@@ -367,6 +357,7 @@
             const el = document.getElementById('kioskAttribution');
             if (!attr || !attr.enabled) {
                 el.style.display = 'none';
+                el.innerHTML = '';
                 return;
             }
             el.style.display = 'block';
@@ -429,7 +420,7 @@
                     <div class="thumb-wrapper" onclick="window.open('${item.pdf_url}', '_blank')">
                         <img src="${item.thumb_url}?t=${item.timestamp}" alt="${item.name}">
                         <span class="status-pill ${item.printed ? 'status-printed' : 'status-available'}">
-                            ${item.printed ? '✓ Printed' : '● Available'}
+                            ${item.printed ? 'Printed' : 'Available'}
                         </span>
                     </div>
                     <div class="card-body">
@@ -441,10 +432,10 @@
                         ${item.poem ? `<div class="poem-preview">${item.poem}</div>` : ''}
                         <div class="card-actions">
                             <button class="btn btn-primary" onclick="browserPrint('${item.name}', '${item.pdf_url}')">
-                                🖨️ Print Sheet
+                                Print Sheet
                             </button>
                             <button class="btn" onclick="hostPrint('${item.name}')" title="Print directly on the server's connected printer">
-                                ⚡ Host Print
+                                Host Print
                             </button>
                         </div>
                     </div>
@@ -453,7 +444,6 @@
         }
 
         async function browserPrint(filename, pdfUrl) {
-            // Mark as printed in history and open browser print dialog for PDF
             try {
                 await fetch('/api/files/print', {
                     method: 'POST',
@@ -480,7 +470,7 @@
                 });
                 const data = await res.json();
                 if (res.ok && data.status === 'success') {
-                    alert('Sent print job to host printer!');
+                    alert('Sent print job to host printer.');
                     loadPrints();
                 } else {
                     alert('Host printer error: ' + (data.error || 'Unknown error. Try "Print Sheet" for browser printing.'));
@@ -493,6 +483,7 @@
         loadSettings();
         loadPrints();
         setInterval(loadPrints, 5000);
+        setInterval(loadSettings, 5000);
     </script>
 </body>
 </html>

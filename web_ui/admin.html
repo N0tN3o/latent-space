@@ -118,22 +118,22 @@
 <div class="container py-4">
     <header class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-3">
         <div>
-            <h3 class="mb-0">🎛️ Latent Space <span class="text-muted fs-6">Command Center</span></h3>
+            <h3 class="mb-0">Latent Space <span class="text-muted fs-6">Command Center</span></h3>
         </div>
         <div class="d-flex flex-wrap align-items-center gap-2">
-            <a href="/" class="btn btn-sm btn-outline-light">🖼️ Gallery</a>
-            <a href="/draw" class="btn btn-sm btn-outline-success">👁️ Browser Gaze Draw</a>
-            <a href="/kiosk" class="btn btn-sm btn-outline-info">🖨️ Web Print Kiosk</a>
+            <a href="/" class="btn btn-sm btn-outline-light">Gallery</a>
+            <a href="/draw" class="btn btn-sm btn-outline-success">Browser Gaze Draw</a>
+            <a href="/kiosk" class="btn btn-sm btn-outline-info">Web Print Kiosk</a>
             <span class="badge bg-secondary py-2 px-3" id="lastUpdate">Connecting...</span>
         </div>
     </header>
 
     <ul class="nav nav-tabs mb-0" id="adminTabs">
-        <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-monitor">📡 Monitor</a></li>
-        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-ai">🧠 AI & Vision</a></li>
-        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-attributions">🏷️ Attributions (Kasboek)</a></li>
-        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-files">🖨️ Prints & Auto-Print</a></li>
-        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-logs">📝 Logs</a></li>
+        <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-monitor">Monitor</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-ai">AI &amp; Vision</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-attributions">Attributions (Kasboek)</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-files">Prints &amp; Auto-Print</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-logs">Logs</a></li>
     </ul>
 
     <div class="card border-top-0 rounded-0 rounded-bottom p-4">
@@ -142,10 +142,10 @@
             <!-- 1. MONITOR TAB -->
             <div class="tab-pane fade show active" id="tab-monitor">
                 <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
-                    <h5 class="mb-0">System & Pipeline Overview</h5>
+                    <h5 class="mb-0">System &amp; Pipeline Overview</h5>
                     <div class="d-flex gap-2">
-                        <button class="btn btn-sm btn-success" onclick="triggerPipelineNow()" id="runPipelineBtn">⚡ Run Analysis on Current Drawing</button>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="updateMonitor()">🔄 Refresh</button>
+                        <button class="btn btn-sm btn-success" onclick="triggerPipelineNow()" id="runPipelineBtn">Run Analysis on Current Drawing</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="updateMonitor()">Refresh</button>
                     </div>
                 </div>
 
@@ -194,24 +194,24 @@
                     <div class="col-md-4">
                         <label class="form-label text-muted">1. Select Assistant Role</label>
                         <select id="aiModelType" class="form-select" onchange="loadAIConfig()">
-                            <option value="analysis">🎨 Analysis (Psychoanalyst / Vision)</option>
-                            <option value="poem">✍️ Poet (Lyrical Writer)</option>
+                            <option value="analysis">Analysis (Psychoanalyst / Vision)</option>
+                            <option value="poem">Poet (Lyrical Writer)</option>
                         </select>
                     </div>
                     <div class="col-md-5">
                         <label class="form-label text-muted">2. Self-Hosted Abstract Art Perception Mode</label>
                         <select id="aiVisionMode" class="form-select">
-                            <option value="auto">✨ Auto (Direct Vision LLM + Self-Hosted Fractal & Rorschach Geometry)</option>
-                            <option value="ollama_vision">🦙 Self-Hosted Ollama Vision (moondream / llava) + Fractal Geometry</option>
-                            <option value="siglip">🎨 Self-Hosted Google SigLIP Zero-Shot Abstract Art + Fractal Geometry</option>
-                            <option value="clip">🎭 Self-Hosted OpenAI CLIP Zero-Shot Abstract Art + Fractal Geometry</option>
-                            <option value="stroke_metrics">📐 Self-Hosted Fractal Dimension, Entropy & Rorschach Geometry Only</option>
-                            <option value="vision">👁️ Direct Cloud/Local Vision LLM + Fractal Geometry</option>
-                            <option value="resnet50">🏛️ Legacy ImageNet ResNet50 + Fractal Geometry</option>
+                            <option value="auto">Auto (Direct Vision LLM + Self-Hosted Fractal &amp; Rorschach Geometry)</option>
+                            <option value="ollama_vision">Self-Hosted Ollama Vision (moondream / llava) + Fractal Geometry</option>
+                            <option value="siglip">Self-Hosted Google SigLIP Zero-Shot Abstract Art + Fractal Geometry</option>
+                            <option value="clip">Self-Hosted OpenAI CLIP Zero-Shot Abstract Art + Fractal Geometry</option>
+                            <option value="stroke_metrics">Self-Hosted Fractal Dimension, Entropy &amp; Rorschach Geometry Only</option>
+                            <option value="vision">Direct Cloud/Local Vision LLM + Fractal Geometry</option>
+                            <option value="resnet50">Legacy ImageNet ResNet50 + Fractal Geometry</option>
                         </select>
                     </div>
                     <div class="col-md-3">
-                        <button class="btn btn-outline-light w-100" onclick="loadAIConfig()">🔄 Reload Config</button>
+                        <button class="btn btn-outline-light w-100" onclick="loadAIConfig()">Reload Config</button>
                     </div>
                 </div>
 
@@ -271,8 +271,8 @@
                     </div>
 
                     <div class="d-flex flex-wrap gap-2 align-items-center">
-                        <button class="btn btn-success" onclick="saveAIConfig()">💾 Save AI Configuration</button>
-                        <button class="btn btn-outline-info" onclick="testAIConnection()">🧪 Test Model Connection</button>
+                        <button class="btn btn-success" onclick="saveAIConfig()">Save AI Configuration</button>
+                        <button class="btn btn-outline-info" onclick="testAIConnection()">Test Model Connection</button>
                         <span id="aiTestResult" class="ms-2 small"></span>
                     </div>
                 </div>
@@ -282,12 +282,12 @@
             <div class="tab-pane fade" id="tab-attributions">
                 <div class="d-flex justify-content-between align-items-center mb-3">
                     <div>
-                        <h5 class="mb-1">🏷️ Kasboek Attributions & Branding Switch</h5>
+                        <h5 class="mb-1">Kasboek Attributions &amp; Branding Switch</h5>
                         <p class="text-muted small mb-0">
                             Toggle whether the Kasboek logo and attribution credits are shown on the Gallery, Print Kiosk, and PDF prints.
                         </p>
                     </div>
-                    <button class="btn btn-success" onclick="saveAttributions()">💾 Save Attribution Settings</button>
+                    <button class="btn btn-success" onclick="saveAttributions()">Save Attribution Settings</button>
                 </div>
 
                 <div class="row g-4">
@@ -373,7 +373,7 @@
                     </div>
 
                     <div class="col-lg-5">
-                        <label class="form-label text-muted">Live Gallery & Print Footer Preview</label>
+                        <label class="form-label text-muted">Live Gallery &amp; Print Footer Preview</label>
                         <div class="attr-preview-box" id="attrLivePreview">
                             <!-- Populated by JS -->
                         </div>
@@ -389,7 +389,7 @@
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="printAutoToggle" onchange="savePrintSettings()">
                                 <label class="form-check-label fw-bold" for="printAutoToggle">
-                                    ⚡ Auto-Print Every New Drawing
+                                    Auto-Print Every New Drawing
                                 </label>
                             </div>
                             <div class="small text-muted mt-1">
@@ -408,10 +408,10 @@
 
                 <div class="d-flex flex-wrap justify-content-between mb-3 gap-2">
                     <div class="d-flex gap-2">
-                        <button class="btn btn-primary btn-sm" onclick="loadFiles()">🔄 Refresh List</button>
-                        <a href="/kiosk" target="_blank" class="btn btn-outline-info btn-sm">📱 Open Tablet/Web Kiosk (/kiosk)</a>
+                        <button class="btn btn-primary btn-sm" onclick="loadFiles()">Refresh List</button>
+                        <a href="/kiosk" target="_blank" class="btn btn-outline-info btn-sm">Open Tablet/Web Kiosk (/kiosk)</a>
                     </div>
-                    <button class="btn btn-outline-danger btn-sm" onclick="deleteFiles('all')">🗑️ Prune Old Prints (Older than today)</button>
+                    <button class="btn btn-outline-danger btn-sm" onclick="deleteFiles('all')">Prune Old Prints (Older than today)</button>
                 </div>
 
                 <div class="table-responsive">
@@ -435,10 +435,10 @@
             <!-- 5. LOGS TAB -->
             <div class="tab-pane fade" id="tab-logs">
                 <div class="mb-3 d-flex flex-wrap gap-2">
-                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('installation')">📋 Pipeline Log (installation.log)</button>
-                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('responses')">🤖 AI Responses Log</button>
-                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('predictions')">🎭 Archetype Predictions (CSV)</button>
-                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('credits')">🎙️ TTS Credits Log</button>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('installation')">Pipeline Log (installation.log)</button>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('responses')">AI Responses Log</button>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('predictions')">Archetype Predictions (CSV)</button>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('credits')">TTS Credits Log</button>
                 </div>
                 <pre id="logViewer">Select a log file above to view detailed system output...</pre>
             </div>
@@ -455,9 +455,8 @@
             const res = await fetch('/api/status?t=' + Date.now());
             const data = await res.json();
 
-            // KPIs
             const pipeState = data.pipeline || {};
-            document.getElementById('kpiPipeline').textContent = pipeState.running ? '⏳ Running' : '✅ Ready';
+            document.getElementById('kpiPipeline').textContent = pipeState.running ? 'Running' : 'Ready';
             document.getElementById('kpiPipelineSub').textContent = pipeState.last_run
                 ? `Last run: ${new Date(pipeState.last_run).toLocaleTimeString()} (${pipeState.last_status})`
                 : `Status: ${pipeState.last_status || 'idle'}`;
@@ -475,7 +474,6 @@
             attrEl.textContent = attrOn ? 'ON (Active)' : 'OFF (Hidden)';
             attrEl.style.color = attrOn ? '#10b981' : '#9ca3af';
 
-            // Services & System Resources Card
             let servicesHtml = '';
             for (const [svc, state] of Object.entries(data.services || {})) {
                 const isUp = state.includes('running') || state.includes('ready');
@@ -491,7 +489,7 @@
             document.getElementById('monitor-container').innerHTML = `
                 <div class="col-md-6">
                     <div class="card h-100 p-3">
-                        <h6 class="text-muted text-uppercase small mb-3">Active Modules & Endpoints</h6>
+                        <h6 class="text-muted text-uppercase small mb-3">Active Modules &amp; Endpoints</h6>
                         ${servicesHtml}
                     </div>
                 </div>
@@ -523,7 +521,7 @@
     async function triggerPipelineNow() {
         const btn = document.getElementById('runPipelineBtn');
         btn.disabled = true;
-        btn.textContent = '⏳ Starting Pipeline...';
+        btn.textContent = 'Starting Pipeline...';
         try {
             const res = await fetch('/api/pipeline/run', { method: 'POST' });
             const data = await res.json();
@@ -536,7 +534,7 @@
         } finally {
             setTimeout(() => {
                 btn.disabled = false;
-                btn.textContent = '⚡ Run Analysis on Current Drawing';
+                btn.textContent = 'Run Analysis on Current Drawing';
             }, 2000);
         }
     }
@@ -565,7 +563,7 @@
                 document.getElementById('aiVisionMode').value = c.vision_mode || 'auto';
                 document.getElementById('aiApiKey').value = '';
                 document.getElementById('apiKeyStatus').textContent = c.has_api_key
-                    ? '(✓ API key saved — leave blank to keep current key)'
+                    ? '(API key saved — leave blank to keep current key)'
                     : '(Leave blank for local Ollama or if set in .env)';
             }
         } catch (e) {
@@ -597,7 +595,7 @@
             });
             const data = await res.json();
             if (data.status === 'Success') {
-                document.getElementById('aiTestResult').innerHTML = '<span class="text-success">✓ Configuration saved!</span>';
+                document.getElementById('aiTestResult').innerHTML = '<span class="text-success">Configuration saved.</span>';
                 loadAIConfig();
                 updateMonitor();
             } else {
@@ -612,7 +610,7 @@
         await saveAIConfig();
         const type = document.getElementById('aiModelType').value;
         const out = document.getElementById('aiTestResult');
-        out.innerHTML = '<span class="text-info">⏳ Testing connection...</span>';
+        out.innerHTML = '<span class="text-info">Testing connection...</span>';
         try {
             const res = await fetch('/api/ai/test', {
                 method: 'POST',
@@ -621,12 +619,12 @@
             });
             const data = await res.json();
             if (res.ok && data.status === 'success') {
-                out.innerHTML = `<span class="text-success">✓ [${data.provider} / ${data.model}]: "${data.reply}"</span>`;
+                out.innerHTML = `<span class="text-success">[${data.provider} / ${data.model}]: "${data.reply}"</span>`;
             } else {
-                out.innerHTML = `<span class="text-danger">✗ Error: ${data.error || 'Connection failed'}</span>`;
+                out.innerHTML = `<span class="text-danger">Error: ${data.error || 'Connection failed'}</span>`;
             }
         } catch (e) {
-            out.innerHTML = `<span class="text-danger">✗ Error: ${e}</span>`;
+            out.innerHTML = `<span class="text-danger">Error: ${e}</span>`;
         }
     }
 
@@ -669,7 +667,7 @@
 
         box.innerHTML = `
             <div class="d-flex flex-column align-items-center gap-2">
-                ${attr.show_logo ? `<img src="/kasboek-logo.jpg" alt="Kasboek" style="max-width: 110px; height: auto;">` : ''}
+                ${attr.show_logo ? `<img src="/kasboek-logo.jpg?preview=1" alt="Kasboek" style="max-width: 110px; height: auto;">` : ''}
                 <div style="font-size: 0.88rem;">
                     <div><strong>${attr.intro_text}</strong> ${links.length ? `${attr.learn_more_text} ${links.join(' &middot; ')}.` : ''}</div>
                     ${founders.length ? `<div class="mt-1">${attr.thanks_text} ${founders.join(' &middot; ')}</div>` : ''}
@@ -712,7 +710,7 @@
                 body: JSON.stringify(payload)
             });
             if (res.ok) {
-                alert('Attribution settings saved and live on the Gallery!');
+                alert('Attribution settings saved and live on the Gallery.');
                 updateMonitor();
             }
         } catch (e) {
@@ -774,14 +772,14 @@
                     <td><span class="badge bg-dark border border-secondary">${f.archetype || '-'}</span></td>
                     <td>
                         <span class="badge ${f.printed ? 'bg-secondary' : 'bg-success'}">
-                            ${f.printed ? '✓ Printed' : 'Available'}
+                            ${f.printed ? 'Printed' : 'Available'}
                         </span>
                     </td>
                     <td>${f.size}</td>
                     <td class="text-end">
-                        <a href="${f.pdf_url}" target="_blank" class="btn btn-sm btn-outline-light me-1" title="Open PDF">📄</a>
-                        <button class="btn btn-sm btn-outline-success me-1" onclick="printOnHost('${f.name}')" title="Print on Host Printer">🖨️</button>
-                        <button class="btn btn-sm btn-outline-danger" onclick="deleteFiles('specific', '${f.name}')" title="Delete">×</button>
+                        <a href="${f.pdf_url}" target="_blank" class="btn btn-sm btn-outline-light me-1" title="Open PDF">View</a>
+                        <button class="btn btn-sm btn-outline-success me-1" onclick="printOnHost('${f.name}')" title="Print on Host Printer">Print</button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="deleteFiles('specific', '${f.name}')" title="Delete">Delete</button>
                     </td>
                 </tr>
             `).join('');
@@ -799,7 +797,7 @@
             });
             const data = await res.json();
             if (res.ok && data.status === 'success') {
-                alert('Print job sent to host printer!');
+                alert('Print job sent to host printer.');
                 loadFiles();
             } else {
                 alert('Host print failed: ' + (data.error || 'Unknown error'));

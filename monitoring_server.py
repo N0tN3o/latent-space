@@ -347,6 +347,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
         self._send_cors_headers()
         self.end_headers()
@@ -385,6 +386,13 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         if path in ("/remote", "/remote_ui.html"):
             return self._send_file(WEB_UI_DIR / "remote_ui.html")
         if path == "/kasboek-logo.jpg":
+            is_preview = (query.get("preview") or [""])[0] == "1"
+            attr_cfg = load_settings().get("attributions", {})
+            if not is_preview and not (attr_cfg.get("enabled", False) and attr_cfg.get("show_logo", True)):
+                self.send_response(204)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
             return self._send_file(PROJECT_DIR / "kasboek-logo.jpg")
         if path == "/korolev-medium.otf":
             return self._send_file(PROJECT_DIR / "korolev-medium.otf")
