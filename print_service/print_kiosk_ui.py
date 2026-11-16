@@ -155,6 +155,8 @@ class PrintQueueItem(QWidget):
         self.setStyleSheet("QWidget { background-color: #2a2a2a; border: 2px solid #444; border-radius: 10px; margin: 5px; } QPushButton { background-color: #4CAF50; color: white; border: none; border-radius: 10px; } QPushButton:hover { background-color: #45a049; }")
 
 class EnhancedPrintKioskUI(QMainWindow):
+    file_event_signal = pyqtSignal(str)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Latent Space - Print Service")
@@ -163,6 +165,9 @@ class EnhancedPrintKioskUI(QMainWindow):
         # State
         self.records = []
         self.filtered_records = []
+        
+        # Connect thread-safe signal from watchdog background thread to GUI slot
+        self.file_event_signal.connect(self.on_new_pdf)
         
         # Timer
         self.inactivity_timer = QTimer(self)
@@ -280,7 +285,7 @@ class EnhancedPrintKioskUI(QMainWindow):
         DOCS_DIR.mkdir(parents=True, exist_ok=True)
         PRINTED_DIR.mkdir(parents=True, exist_ok=True)
         self.observer = Observer()
-        self.observer.schedule(PDFWatcher(self.on_new_pdf), str(DOCS_DIR), recursive=False)
+        self.observer.schedule(PDFWatcher(lambda p: self.file_event_signal.emit(p)), str(DOCS_DIR), recursive=False)
         self.observer.start()
 
     def refresh_queue(self):

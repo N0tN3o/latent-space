@@ -48,10 +48,11 @@ if not HAVE_CHAT:
             return {'status': 'Failure', 'message': "LLMModel unavailable"}
 
 # --- CONFIGURATION ---
-SHARED_OUTPUT = PROJECT_ROOT / "shared_output"
-LOGS_DIR = PROJECT_ROOT / "logs"
-CREDITS_CSV = PROJECT_ROOT / "logs" / "credits.csv" # Assuming you save credit logs here
-PREDICTIONS_CSV = PROJECT_ROOT / "logs" / "predictions.csv" # Assuming you save labels here
+sys.path.insert(0, str(PROJECT_ROOT))
+from config_manager import SHARED_DIR as SHARED_OUTPUT, LOGS_DIR
+
+CREDITS_CSV = LOGS_DIR / "credits.csv" if (LOGS_DIR / "credits.csv").exists() else PROJECT_ROOT / "analysis_watcher" / "credits.csv"
+PREDICTIONS_CSV = LOGS_DIR / "predictions.csv" if (LOGS_DIR / "predictions.csv").exists() else PROJECT_ROOT / "analysis_watcher" / "predictions.csv"
 
 class ArtInstallationApp:
     def __init__(self, root):
@@ -324,8 +325,9 @@ class ArtInstallationApp:
 
     def load_logs(self):
         """Load logs from file"""
-        # Updated path
-        logs_path = LOGS_DIR / "installation.log" # Or jetson_b_network.log depending on what you want
+        logs_path = LOGS_DIR / "installation.log"
+        if not logs_path.exists():
+            logs_path = PROJECT_ROOT / "analysis_watcher" / "installation.log"
         self.logs_text.config(state='normal')
         self.logs_text.delete('1.0', tk.END)
         if logs_path.exists():
@@ -441,19 +443,6 @@ class ArtInstallationApp:
         del_all_btn = ttk.Button(btn_frame, text="Delete ALL (Older than today)", command=self.delete_all_prints)
         del_all_btn.pack(side=tk.RIGHT, padx=5)
 
-    def setup_contact_page(self):
-        """Setup contact info page"""
-        back_button = ttk.Button(self.contact_frame, text="← Back", command=self.show_main_page)
-        back_button.pack(anchor='nw', padx=10, pady=10)
-        
-        info_frame = ttk.Frame(self.contact_frame)
-        info_frame.pack(expand=True)
-        
-        ttk.Label(info_frame, text="Technical Support", font=('Arial', 20, 'bold')).pack(pady=20)
-        ttk.Label(info_frame, text="Name: Vince Németh", font=('Arial', 14)).pack(pady=5)
-        ttk.Label(info_frame, text="Role: Maintainer", font=('Arial', 12)).pack(pady=5)
-        # Add more info as needed
-
     # Helper methods for the docs page
     def open_selected_doc(self):
         selection = self.docs_listbox.curselection()
@@ -471,15 +460,33 @@ class ArtInstallationApp:
         
         filename = self.docs_listbox.get(selection[0])
         try:
-            (SHARED_OUTPUT / "docs" / filename).unlink()
+            base = SHARED_OUTPUT / "docs" / filename
+            for suffix in (".pdf", ".png", ".json"):
+                p = base.with_suffix(suffix)
+                if p.exists():
+                    p.unlink()
             self.load_docs()
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
     def delete_all_prints(self):
         if not messagebox.askyesno("Confirm", "Delete ALL files older than today?"): return
-        # Re-use the logic from start_automatic_deletion but run immediately
-        # ... logic to delete old files ...
+        prints_location = SHARED_OUTPUT / 'docs'
+        date_int = int(datetime.now().strftime('%Y%m%d'))
+        deleted = 0
+        if prints_location.exists():
+            for file in prints_location.glob("print_*.pdf"):
+                try:
+                    file_date = int(file.name.split('_')[1])
+                    if file_date < date_int:
+                        for suffix in (".pdf", ".png", ".json"):
+                            p = file.with_suffix(suffix)
+                            if p.exists():
+                                p.unlink()
+                        deleted += 1
+                except Exception as e:
+                    print(f"Error deleting {file.name}: {e}")
+        messagebox.showinfo("Prune Complete", f"Deleted {deleted} old print(s).")
         self.load_docs()
     
     # Page switching methods
