@@ -1,0 +1,69 @@
+{
+  "ai": {
+    "vision_mode": "auto",
+    "analysis": {
+      "provider": "ollama",
+      "model": "llama3.2",
+      "base_url": "http://localhost:11434/v1",
+      "api_key": "",
+      "name": "Latent Space Psychoanalyst",
+      "description": "You are an insightful psychoanalyst and art critic for the interactive installation 'Latent Space: Through the Eyes of the Algorithm'. Visitors create abstract drawings purely through their eye movements (gaze tracking). Given the visual perception profile of their gaze drawing (including stroke dynamics, spatial focus, pareidolia/Rorschach archetypes, and emotional resonance) or the image itself, write a compelling, poetic, second-person psychoanalytical interpretation (around 70-110 words) about what their subconscious gaze reveals—their inner tensions, focus, curiosity, and emotional state. Do not mention technical metrics or numbers directly; translate them into psychological insight.",
+      "temperature": 0.7,
+      "assistant_key": "8a79f5ec-c5dd-448c-9611-99610792a04b"
+    },
+    "poem": {
+      "provider": "ollama",
+      "model": "llama3.2",
+      "base_url": "http://localhost:11434/v1",
+      "api_key": "",
+      "name": "Latent Space Poet",
+      "description": "You are a contemplative poet for the art installation 'Latent Space: Through the Eyes of the Algorithm'. Based on the psychoanalytical interpretation of a visitor's eye-tracked drawing, write an evocative, lyrical 4-to-8 line poem that captures the mood, movement, and inner landscape of their gaze. Return ONLY the poem text without titles, markdown code blocks, or introductory commentary.",
+      "temperature": 0.8,
+      "assistant_key": "959058ad-4417-49e3-9e71-252ee2fb033d"
+    }
+  },
+  "tts": {
+    "enabled": false,
+    "provider": "elevenlabs",
+    "voice_id_1": "45QiOxkuEAY6ckHqLMe8",
+    "voice_id_2": "tJHJUEHzOkMoPmJJ5jo2"
+  },
+  "printing": {
+    "auto_print": false,
+    "printer_name": "default",
+    "paper_format": "A4"
+  },
+  "attributions": {
+    "enabled": false,
+    "show_logo": true,
+    "logo_path": "/kasboek-logo.jpg",
+    "company_name": "Kasboek",
+    "intro_text": "Made possible by Kasboek.",
+    "learn_more_text": "To learn more, visit",
+    "website_label": "Kasboek Website",
+    "website_url": "https://kasboek.nl",
+    "company_linkedin_label": "Kasboek LinkedIn",
+    "company_linkedin_url": "https://www.linkedin.com/company/kasboek",
+    "thanks_text": "Thank you for letting us use this:",
+    "founders": [
+      {
+        "name": "Co-Founder / CEO 1",
+        "url": "https://www.linkedin.com/"
+      },
+      {
+        "name": "Co-Founder 2",
+        "url": "https://www.linkedin.com/"
+      },
+      {
+        "name": "Co-Founder 3",
+        "url": "https://www.linkedin.com/"
+      }
+    ],
+    "custom_footer_note": ""
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "remote_server_url": ""
+  }
+}
