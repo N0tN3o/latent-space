@@ -1,56 +1,53 @@
-from elevenlabs.client import ElevenLabs
 import os
+import platform
+import subprocess
+import sys
+from pathlib import Path
+from elevenlabs.client import ElevenLabs
 
-def el_tts_setup(location):
-    '''
-    Initialize ElevenLabs client
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-    Params:
-        None
-    
-    Returns:
-        client: ElevenLabs client
-    '''
+from config_manager import load_env_vars
 
-    with open(location, 'r') as env:
-        api_key = env.readlines()[0].split('=')[1].strip()
-    client = ElevenLabs(api_key=api_key)
 
-    return client
+def el_tts_setup(location=None):
+    """Initialize ElevenLabs client using config_manager or .env file."""
+    env = load_env_vars()
+    api_key = env.get("API_KEY") or env.get("ELEVENLABS_API_KEY") or ""
+    if not api_key and location and Path(location).exists():
+        for line in Path(location).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                if k.strip() in ("API_KEY", "ELEVENLABS_API_KEY"):
+                    api_key = v.strip().strip('"').strip("'")
+                    break
+    return ElevenLabs(api_key=api_key)
+
 
 def run_el_tts(client, text: str, voice_id='R8MYc5Q5y0TurlOQoX88', output='output.mp3', speed=1.0):
-    '''
-    Convert text to speech
-
-    Params:
-        client: ElevenLabs client obtained from the tts_setup function
-        text: response of the LLM
-        voice_id: ID of the ElevenLabs vocie
-        output: filename including the filetype extension
-
-    Returns:
-        output: filename including the filetype extension
-    '''
+    """Convert text to speech via ElevenLabs."""
     voice_settings = {'speed': speed}
-    print(voice_settings)
-
-    audio = client.text_to_speech.convert(text=text, voice_id=voice_id, model_id="eleven_v3", output_format="mp3_44100_128", voice_settings=voice_settings)
-    with open(f'{output}', 'wb') as file:
+    audio = client.text_to_speech.convert(
+        text=text,
+        voice_id=voice_id,
+        model_id="eleven_v3",
+        output_format="mp3_44100_128",
+        voice_settings=voice_settings,
+    )
+    with open(str(output), 'wb') as file:
         for chunk in audio:
             file.write(chunk)
+    return str(output)
 
-    return output
 
 def open_audio_file(filename: str):
-    '''
-    Open audio file and play
-    
-    Params:
-        filename: name of the audio file to be played with the filetype extension
-    
-    Returns:
-        None
-    '''
-
-    # Open the audio in the default audio player
-    os.open(f"{filename}")
+    """Open audio file in the system default audio player across Windows, macOS, and Linux."""
+    if platform.system() == 'Windows':
+        os.startfile(str(filename))
+    elif platform.system() == 'Darwin':
+        subprocess.run(['open', str(filename)], check=False)
+    else:
+        subprocess.run(['xdg-open', str(filename)], check=False)

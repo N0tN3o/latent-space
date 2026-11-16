@@ -28,6 +28,6 @@ def overlay_audio(audio1='output_ryan.mp3', audio2='output_rae.mp3', output_name
     audio2 = pydub.AudioSegment.from_file(audio2)
     output = audio2.overlay(audio1)
 
-    output.export('output.mp3', format='mp3')
+    output.export(str(output_name), format='mp3')
 
     return output_name

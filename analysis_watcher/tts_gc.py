@@ -69,15 +69,12 @@ def run_gc_tts(client, voice, audio_config, text: str, output: str):
     return filename
 
 def open_audio_file(filename: str):
-    '''
-    Open audio file and play
-    
-    Params:
-        filename: name of the audio file to be played with the filetype extension
-    
-    Returns:
-        None
-    '''
-
-    # Open the audio in the default audio player
-    os.open(f"{filename}")
+    """Open audio file in the system default audio player across Windows, macOS, and Linux."""
+    import platform
+    import subprocess
+    if platform.system() == 'Windows':
+        os.startfile(str(filename))
+    elif platform.system() == 'Darwin':
+        subprocess.run(['open', str(filename)], check=False)
+    else:
+        subprocess.run(['xdg-open', str(filename)], check=False)
