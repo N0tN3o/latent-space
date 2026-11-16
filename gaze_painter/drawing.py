@@ -30,10 +30,9 @@ class GazePainter:
     
     def save(self, filename='gaze_art.png'):
         """Save the canvas to a file in saved_images folder"""
-        # Create saved_images directory if it doesn't exist
-        save_dir = './saved_images'
+        save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'saved_images')
         if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
+            os.makedirs(save_dir, exist_ok=True)
         # Don't save if nothing was drawn
         try:
             # Check explicit flag first (fast)

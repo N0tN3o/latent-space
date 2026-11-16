@@ -1,10 +1,12 @@
 import json
 import os
+from pathlib import Path
 import numpy as np
 
-# Define folder paths
-CALIBRATION_DIR = './calibrations'
-CALIBRATION_JSON = os.path.join(CALIBRATION_DIR, 'calibration.json')
+# Define folder paths anchored to gaze_painter directory (not CWD)
+BASE_DIR = Path(__file__).resolve().parent
+CALIBRATION_DIR = str(BASE_DIR / 'calibrations')
+CALIBRATION_JSON = str(BASE_DIR / 'calibrations' / 'calibration.json')
 
 def ensure_directories():
     """Ensure required directories exist"""

@@ -74,6 +74,7 @@ class EyeTracker:
         self.saccade_count = 0
         self.horiz_thr = DEFAULT_HORIZ_THRESHOLD
         self.vert_thr = DEFAULT_VERT_THRESHOLD
+        self.deadzone = DEADZONE
         self.logging = False
         self.logfile = None
         
@@ -132,19 +133,17 @@ class EyeTracker:
         self.range_min = np.percentile(arr, 5, axis=0)   # 5th percentile
         self.range_max = np.percentile(arr, 95, axis=0)  # 95th percentile
         
-        # Add padding to ensure we can reach edges (20% expansion)
-        range_span = self.range_max - self.range_min
+        # Add padding to ensure we can reach edges (20% expansion), with minimum span guard
+        range_span = np.maximum(self.range_max - self.range_min, 0.02)
         padding = range_span * 0.2
-        self.range_min -= padding
-        self.range_max += padding
+        self.range_min = self.range_min - padding
+        self.range_max = self.range_max + padding
         
-        # Update thresholds
+        # Update thresholds on instance (do not mutate global constant across sessions)
         stds = arr.std(axis=0)
-        self.horiz_thr = max(DEFAULT_HORIZ_THRESHOLD, stds[0] * 3.0)
-        self.vert_thr = max(DEFAULT_VERT_THRESHOLD, stds[1] * 3.0)
-        
-        global DEADZONE
-        DEADZONE = max(DEADZONE, np.mean(stds) * 2.0)
+        self.horiz_thr = max(DEFAULT_HORIZ_THRESHOLD, float(stds[0]) * 3.0)
+        self.vert_thr = max(DEFAULT_VERT_THRESHOLD, float(stds[1]) * 3.0)
+        self.deadzone = max(DEADZONE, float(np.mean(stds)) * 2.0)
         
         self.is_calibrating = False
         print(f"Calibration complete!")
@@ -182,14 +181,15 @@ class EyeTracker:
         
         raw_norm = gaze_info['smoothed_norm']
         
-        # Map from observed range to [0, 1] canvas coordinates
-        # Formula: (value - min) / (max - min)
-        calib_x = (raw_norm[0] - self.range_min[0]) / (self.range_max[0] - self.range_min[0])
-        calib_y = (raw_norm[1] - self.range_min[1]) / (self.range_max[1] - self.range_min[1])
+        # Map from observed range to [0, 1] canvas coordinates with zero-division guard
+        span_x = max(float(self.range_max[0] - self.range_min[0]), 1e-4)
+        span_y = max(float(self.range_max[1] - self.range_min[1]), 1e-4)
+        calib_x = (float(raw_norm[0]) - float(self.range_min[0])) / span_x
+        calib_y = (float(raw_norm[1]) - float(self.range_min[1])) / span_y
         
-        # Clamp to [0, 1] range
-        calib_x = np.clip(calib_x, 0.0, 1.0)
-        calib_y = np.clip(calib_y, 0.0, 1.0)
+        # Clamp to [0, 1] range and guard against NaN/Inf
+        calib_x = float(np.clip(np.nan_to_num(calib_x, nan=0.5), 0.0, 1.0))
+        calib_y = float(np.clip(np.nan_to_num(calib_y, nan=0.5), 0.0, 1.0))
         
         return (calib_x, calib_y)
 
@@ -247,7 +247,7 @@ class EyeTracker:
                 sacc_speed = 0.0
             self.prev = self.smoothed.copy()
             
-            direction = classify_gaze(self.smoothed, self.horiz_thr, self.vert_thr, DEADZONE)
+            direction = classify_gaze(self.smoothed, self.horiz_thr, self.vert_thr, self.deadzone)
 
             gaze_info = {
                 'left_center': left_center, 

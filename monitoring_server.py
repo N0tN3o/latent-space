@@ -429,6 +429,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/drawings":
             target_path = SHARED_DIR / "image.png"
+            tmp_path = SHARED_DIR / "image.tmp.png"
             ctype = self.headers.get("Content-Type", "")
             try:
                 if "multipart/form-data" in ctype:
@@ -440,7 +441,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                     if "file" not in form:
                         return self._send_json({"status": "error", "error": "Missing file field"}, 400)
                     file_item = form["file"]
-                    target_path.write_bytes(file_item.file.read())
+                    tmp_path.write_bytes(file_item.file.read())
                 else:
                     data = self._read_json_body()
                     img_data = data.get("image", "")
@@ -448,7 +449,9 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                         return self._send_json({"status": "error", "error": "No image provided"}, 400)
                     if "," in img_data:
                         img_data = img_data.split(",", 1)[1]
-                    target_path.write_bytes(base64.b64decode(img_data))
+                    tmp_path.write_bytes(base64.b64decode(img_data))
+
+                os.replace(str(tmp_path), str(target_path))
 
                 if (query.get("sync") or [""])[0] == "1" and AI_AVAILABLE:
                     ok = run_analysis_pipeline()

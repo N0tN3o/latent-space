@@ -74,9 +74,11 @@ class GazeTrackingPainter:
         self.canvas_window = "Gaze Painter"
 
         calibration = load_calibration()
+        self.has_calibration = False
         if calibration:
             self.tracker.load_calibration(calibration)
-            print("Existing calibration loaded.")
+            self.has_calibration = True
+            print("Existing calibration loaded (press [c] at any time to recalibrate).")
 
     def get_calibration_progress_text(self):
         progress = len(self.tracker.calibration_samples)
@@ -108,16 +110,18 @@ class GazeTrackingPainter:
             print(f"Warning: could not upload to remote server ({self.remote_url}): {e}")
 
     def save_and_reset(self):
-        """Save drawing locally to shared_output/image.png (and optionally upload via HTTP)."""
+        """Save drawing atomically to shared_output/image.png (and optionally upload via HTTP)."""
         print("Saving drawing...")
         filepath = SHARED_DIR / "image.png"
+        tmp_path = SHARED_DIR / "image.tmp.png"
         try:
             if not getattr(self.painter, "has_drawn", False) or np.all(self.painter.canvas == 255):
                 print("Skipping save: canvas is blank")
                 self._reset_after_save()
                 return
 
-            cv2.imwrite(str(filepath), self.painter.canvas)
+            cv2.imwrite(str(tmp_path), self.painter.canvas)
+            os.replace(str(tmp_path), str(filepath))
             print(f"Drawing saved to {filepath} ({filepath.stat().st_size} bytes)")
             self._upload_to_remote(filepath)
 
@@ -185,9 +189,15 @@ class GazeTrackingPainter:
                 self.close_canvas()
 
                 if gaze_info is not None:
-                    self.state = STATE_CALIBRATING
-                    self.tracker.start_auto_calibration()
-                    self.status_text = self.get_calibration_progress_text()
+                    if self.has_calibration:
+                        self.state = STATE_DRAWING
+                        self.draw_start_time = now
+                        self.painter.clear()
+                        self.open_canvas()
+                    else:
+                        self.state = STATE_CALIBRATING
+                        self.tracker.start_auto_calibration()
+                        self.status_text = self.get_calibration_progress_text()
 
             elif self.state == STATE_CALIBRATING:
                 if self.check_gaze_loss(now):
@@ -197,6 +207,7 @@ class GazeTrackingPainter:
                 calibration_done = self.tracker.add_calibration_sample(gaze_info)
 
                 if calibration_done:
+                    self.has_calibration = True
                     self.state = STATE_DRAWING
                     self.draw_start_time = now
                     self.painter.clear()
@@ -231,16 +242,29 @@ class GazeTrackingPainter:
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 self.running = False
+            elif key == ord("c"):
+                print("Manual recalibration triggered.")
+                self.has_calibration = False
+                self.state = STATE_CALIBRATING
+                self.tracker.start_auto_calibration()
+                self.close_canvas()
 
         self.release()
 
     def check_gaze_loss(self, current_time):
         gaze_lost = self.last_gaze_time is None or (current_time - self.last_gaze_time) > GAZE_LOSS_TIMEOUT_SEC
-        if gaze_lost and self.state in (STATE_DRAWING, STATE_CALIBRATING):
-            print("Gaze lost. Saving and resetting.")
-            self.state = STATE_SAVING
-            self.status_text = "Saving..."
-            return True
+        if gaze_lost:
+            if self.state == STATE_CALIBRATING:
+                print("Gaze lost during calibration. Returning to search state.")
+                self.tracker.is_calibrating = False
+                self.state = STATE_SEARCHING
+                self.status_text = "Searching for gaze..."
+                return True
+            elif self.state == STATE_DRAWING:
+                print("Gaze lost during drawing. Saving and resetting.")
+                self.state = STATE_SAVING
+                self.status_text = "Saving..."
+                return True
         return False
 
     def open_canvas(self):

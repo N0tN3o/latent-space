@@ -5,19 +5,13 @@ Visual display for eye tracking
 
 import cv2
 import numpy as np
-import time
-from collections import deque
-from eye_tracking import EyeTracker
 
 
 class EyeVisualizer:
     """Create visual displays of eye tracking"""
 
     def __init__(self):
-        self.eye_tracker = EyeTracker(flip=True)
-        # We don't need the gaze_trail here anymore
-        # self.gaze_trail = deque(maxlen=100)
-        self.display_size = (400, 200) # Size for the eye region
+        self.display_size = (400, 200)  # Size for the eye region
 
     def extract_eye_region(self, frame, face_results):
         """Extract BOTH eyes in one region"""
@@ -47,7 +41,12 @@ class EyeVisualizer:
         y_min = max(0, min(ys) - padding_y)
         y_max = min(h, max(ys) + padding_y)
 
+        if x_max <= x_min or y_max <= y_min:
+            return None
+
         eye_region = frame[y_min:y_max, x_min:x_max].copy()
+        if eye_region.size == 0:
+            return None
         return eye_region
 
     def apply_filter(self, eye_img, filter_type="neon"):
@@ -108,4 +107,4 @@ class EyeVisualizer:
 
     def release(self):
         """Release resources"""
-        self.eye_tracker.release()
+        pass
