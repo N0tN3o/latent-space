@@ -1,402 +1,595 @@
 #!/usr/bin/env python3
 """
-Simplified Monitoring Server for Single Jetson Setup
-Combines all monitoring and control in one place
-Port: 8001
+Unified Latent Space Server (Zero External Web Framework Dependencies)
+Uses Python's built-in ThreadingHTTPServer so it runs out-of-the-box in any environment
+(Windows, macOS, Linux, Docker, or existing .venv without requiring Flask).
+
+Serves:
+  - / or /index.html          -> Main Gallery (index.html)
+  - /draw or /draw.html       -> Browser Gaze Painter (web_ui/draw.html)
+  - /kiosk or /kiosk.html     -> Web Print Kiosk (web_ui/kiosk.html)
+  - /admin or /admin.html     -> Admin Command Center (web_ui/admin.html)
+  - /shared_output/*          -> Drawings, heatmaps, PDFs, audio, content.json
+  - /api/*                    -> Status, AI config, attributions, drawings, printing, logs
 """
 
+import base64
+import cgi
+import io
+import json
+import mimetypes
 import os
 import sys
-import json
+import threading
 import time
-import psutil
-import subprocess
-from pathlib import Path
 from datetime import datetime
-from flask import Flask, jsonify, request, send_from_directory, send_file
-from flask_cors import CORS
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs, unquote
 
-# Configuration for kasboek user
-USER = "kasboek"
-PROJECT_DIR = Path(f"/home/{USER}/LatentSpace")
-SHARED_DIR = PROJECT_DIR / "shared_output"
-DOCS_DIR = SHARED_DIR / "docs"
-LOGS_DIR = PROJECT_DIR / "logs"
-WEB_UI_DIR = PROJECT_DIR / "web_ui"
+try:
+    import psutil
+except ImportError:
+    psutil = None
 
-# Ensure directories exist
-SHARED_DIR.mkdir(parents=True, exist_ok=True)
-DOCS_DIR.mkdir(parents=True, exist_ok=True)
-LOGS_DIR.mkdir(parents=True, exist_ok=True)
+PROJECT_DIR = Path(__file__).resolve().parent
+ANALYSIS_DIR = PROJECT_DIR / "analysis_watcher"
+for p in (str(PROJECT_DIR), str(ANALYSIS_DIR)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
-# Add analysis_watcher to path for AI config
-sys.path.append(str(PROJECT_DIR / "analysis_watcher"))
+from config_manager import (
+    SHARED_DIR,
+    DOCS_DIR,
+    LOGS_DIR,
+    WEB_UI_DIR,
+    load_settings,
+    save_settings,
+    update_settings_section,
+    ensure_directories,
+)
 
-# Try to import AI modules
+ensure_directories()
+
 try:
     from chat import LLMModel
+    from run_analysis_watcher import (
+        run_analysis_pipeline,
+        send_pdf_to_printer,
+        mark_file_printed,
+        watch_loop,
+    )
     AI_AVAILABLE = True
-except ImportError as e:
-    print(f"Note: AI config disabled - modules not found ({e})")
+except Exception as e:
+    print(f"[monitoring_server] Warning: pipeline import issue: {e}")
     AI_AVAILABLE = False
 
-# Flask setup
-app = Flask(__name__, static_folder=str(WEB_UI_DIR))
-CORS(app)
+_pipeline_lock = threading.Lock()
+_pipeline_state = {
+    "running": False,
+    "last_run": None,
+    "last_status": "idle",
+    "last_error": None,
+}
+_watcher_thread = None
+_watcher_stop = threading.Event()
 
-# --- Helper Functions ---
 
-def get_service_status(service_name):
-    """Check if a Python process is running"""
-    try:
-        # Check by process name
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                cmdline = ' '.join(proc.info.get('cmdline', []))
-                if service_name in cmdline:
-                    return "running"
-            except:
-                pass
-        return "stopped"
-    except:
-        return "unknown"
-
-def check_gdrive_mount():
-    """Check if Google Drive is mounted"""
-    try:
-        result = subprocess.run(
-            ["mountpoint", "-q", str(SHARED_DIR)],
-            capture_output=True
-        )
-        return result.returncode == 0
-    except:
+def trigger_pipeline_async():
+    """Run the analysis pipeline in a background thread if not already running."""
+    if _pipeline_state["running"]:
         return False
 
-def get_system_stats():
-    """Get system performance stats"""
+    def _worker():
+        with _pipeline_lock:
+            _pipeline_state["running"] = True
+            _pipeline_state["last_status"] = "running"
+            _pipeline_state["last_error"] = None
+            try:
+                ok = run_analysis_pipeline()
+                _pipeline_state["last_status"] = "success" if ok else "failed"
+                _pipeline_state["last_run"] = datetime.now().isoformat()
+            except Exception as exc:
+                _pipeline_state["last_status"] = "error"
+                _pipeline_state["last_error"] = str(exc)
+            finally:
+                _pipeline_state["running"] = False
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    return True
+
+
+def start_background_watcher():
+    """Start the file watcher in a daemon thread if not already running externally."""
+    global _watcher_thread
+    if _watcher_thread is not None and _watcher_thread.is_alive():
+        return
+    if get_service_status("run_analysis_watcher") == "running":
+        return
+    if AI_AVAILABLE:
+        _watcher_stop.clear()
+        _watcher_thread = threading.Thread(target=watch_loop, args=(_watcher_stop,), daemon=True)
+        _watcher_thread.start()
+
+
+def get_service_status(service_name: str) -> str:
+    if service_name == "run_analysis_watcher" and _watcher_thread and _watcher_thread.is_alive():
+        return "running (in-process)"
+    if psutil is None:
+        return "ready"
+    try:
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                cmdline = " ".join(proc.info.get("cmdline") or [])
+                if service_name in cmdline:
+                    return "running"
+            except Exception:
+                pass
+        return "stopped"
+    except Exception:
+        return "unknown"
+
+
+def get_system_stats() -> dict:
+    if psutil is None:
+        return {"cpu_percent": 0, "memory_percent": 0, "disk_usage": 0, "temperature": get_device_temp()}
     try:
         return {
-            "cpu_percent": psutil.cpu_percent(interval=1),
+            "cpu_percent": psutil.cpu_percent(interval=0.1),
             "memory_percent": psutil.virtual_memory().percent,
             "disk_usage": psutil.disk_usage(str(SHARED_DIR)).percent if SHARED_DIR.exists() else 0,
-            "temperature": get_jetson_temp()
+            "temperature": get_device_temp(),
         }
-    except:
-        return {"cpu_percent": 0, "memory_percent": 0, "disk_usage": 0}
+    except Exception:
+        return {"cpu_percent": 0, "memory_percent": 0, "disk_usage": 0, "temperature": "N/A"}
 
-def get_jetson_temp():
-    """Get Jetson temperature if available"""
+
+def get_device_temp() -> str:
     try:
-        # Try Jetson thermal zone
         thermal_file = Path("/sys/devices/virtual/thermal/thermal_zone0/temp")
         if thermal_file.exists():
             temp = int(thermal_file.read_text()) / 1000.0
             return f"{temp:.1f}°C"
-    except:
+    except Exception:
         pass
     return "N/A"
 
-# --- Routes ---
 
-@app.route('/')
-def index():
-    """Serve admin dashboard"""
-    admin_file = WEB_UI_DIR / "admin.html"
-    if admin_file.exists():
-        return send_from_directory(WEB_UI_DIR, 'admin.html')
-    else:
-        return """
-        <html>
-        <body style="font-family: Arial; padding: 20px;">
-        <h1>Latent Space Admin</h1>
-        <p>Admin interface file not found.</p>
-        <h3>Quick Status:</h3>
-        <ul>
-            <li><a href="/api/status">System Status (JSON)</a></li>
-            <li><a href="/api/files/prints">List Prints</a></li>
-            <li><a href="http://localhost:8000">Gallery (Port 8000)</a></li>
-        </ul>
-        </body>
-        </html>
-        """
-
-@app.route('/api/status')
-def system_status():
-    """Complete system status"""
-    
-    # Check all services
-    services = {
-        "gaze_painter": get_service_status("run_gaze_painter"),
-        "analysis_watcher": get_service_status("run_analysis_watcher"),
-        "web_gallery": get_service_status("8000"),
-        "google_drive": "mounted" if check_gdrive_mount() else "unmounted"
-    }
-    
-    # Count recent files
+def _get_printed_set() -> set:
+    print_log = DOCS_DIR / "print_history.json"
+    if not print_log.exists():
+        return set()
     try:
-        today_files = len(list(DOCS_DIR.glob("print_*.pdf")))
-        total_images = len(list(SHARED_DIR.glob("*.png")))
-    except:
+        data = json.loads(print_log.read_text(encoding="utf-8"))
+        return set(data.get("printed", []))
+    except Exception:
+        return set()
+
+
+def _sync_attributions_to_content_json(attr_data: dict):
+    content_file = SHARED_DIR / "content.json"
+    if content_file.exists():
+        try:
+            content = json.loads(content_file.read_text(encoding="utf-8"))
+            content["attributions"] = attr_data
+            content_file.write_text(json.dumps(content, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+
+# --- Core API Business Logic ---
+
+def api_get_status() -> dict:
+    settings = load_settings()
+    services = {
+        "web_server": "running",
+        "analysis_watcher": get_service_status("run_analysis_watcher"),
+        "desktop_gaze_painter": get_service_status("run_gaze_painter"),
+        "browser_gaze_painter": "ready (/draw)",
+        "web_print_kiosk": "ready (/kiosk)",
+    }
+
+    try:
+        all_pdfs = list(DOCS_DIR.glob("print_*.pdf"))
+        today_prefix = f"print_{datetime.now().strftime('%Y%m%d')}"
+        today_files = sum(1 for f in all_pdfs if f.name.startswith(today_prefix))
+        printed_count = len(_get_printed_set())
+    except Exception:
+        all_pdfs = []
         today_files = 0
-        total_images = 0
-    
-    return jsonify({
-        "device": "Jetson (All-in-One)",
+        printed_count = 0
+
+    host_name = os.environ.get("COMPUTERNAME") or (os.uname().nodename if hasattr(os, "uname") else "Local Host")
+    return {
+        "device": host_name,
         "services": services,
+        "pipeline": _pipeline_state,
         "system": get_system_stats(),
+        "ai_summary": {
+            "vision_mode": settings.get("ai", {}).get("vision_mode", "auto"),
+            "analysis_provider": settings.get("ai", {}).get("analysis", {}).get("provider", "ollama"),
+            "analysis_model": settings.get("ai", {}).get("analysis", {}).get("model", ""),
+            "poem_provider": settings.get("ai", {}).get("poem", {}).get("provider", "ollama"),
+            "poem_model": settings.get("ai", {}).get("poem", {}).get("model", ""),
+        },
+        "printing": settings.get("printing", {}),
+        "attributions": {
+            "enabled": settings.get("attributions", {}).get("enabled", False),
+            "show_logo": settings.get("attributions", {}).get("show_logo", True),
+        },
         "statistics": {
             "prints_today": today_files,
-            "total_images": total_images,
-            "google_drive": check_gdrive_mount()
+            "total_prints": len(all_pdfs),
+            "printed_count": printed_count,
         },
-        "timestamp": datetime.now().isoformat()
-    })
-
-@app.route('/api/monitoring')
-def monitoring():
-    """Monitoring endpoint for compatibility"""
-    status = system_status()
-    return status
-
-@app.route('/api/service/<action>/<service>', methods=['POST'])
-def control_service(action, service):
-    """Control services (restart/stop/start)"""
-    
-    allowed_services = {
-        "gaze": f"{PROJECT_DIR}/gaze-painter/run_gaze_painter.py",
-        "analysis": f"{PROJECT_DIR}/analysis_watcher/run_analysis_watcher.py",
-        "gdrive": "gdrive_mount"
+        "timestamp": datetime.now().isoformat(),
     }
-    
-    if service not in allowed_services:
-        return jsonify({"error": "Unknown service"}), 404
-    
-    if action == "restart":
-        # Find and kill existing process
-        script_name = allowed_services[service]
-        for proc in psutil.process_iter(['pid', 'cmdline']):
-            try:
-                if script_name in ' '.join(proc.info.get('cmdline', [])):
-                    proc.kill()
-                    time.sleep(1)
-                    break
-            except:
-                pass
-        
-        # Start new process
-        if service == "gdrive":
-            subprocess.Popen(["rclone", "mount", "latent_space:", 
-                            str(SHARED_DIR), "--daemon"])
-        else:
-            subprocess.Popen([sys.executable, script_name])
-        
-        return jsonify({"status": "success", "action": action, "service": service})
-    
-    return jsonify({"error": "Action not implemented"}), 501
 
-@app.route('/api/files/prints', methods=['GET'])
-def list_prints():
-    """List all PDF prints"""
+
+def api_list_prints() -> list:
     if not DOCS_DIR.exists():
-        return jsonify([])
-    
+        return []
+    printed_set = _get_printed_set()
     files = []
+    for f in sorted(DOCS_DIR.glob("print_*.pdf"), key=lambda x: x.stat().st_mtime, reverse=True):
+        thumb_file = f.with_suffix(".png")
+        meta_file = f.with_suffix(".json")
+        meta = {}
+        if meta_file.exists():
+            try:
+                meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        mtime = f.stat().st_mtime
+        dt = datetime.fromtimestamp(mtime)
+        files.append({
+            "name": f.name,
+            "pdf_url": f"/shared_output/docs/{f.name}",
+            "thumb_url": f"/shared_output/docs/{thumb_file.name}" if thumb_file.exists() else "/shared_output/image.png",
+            "size": f"{f.stat().st_size / 1024:.1f} KB",
+            "timestamp": mtime,
+            "date": dt.strftime("%Y-%m-%d %H:%M"),
+            "display_date": dt.strftime("%B %d, %Y"),
+            "display_time": dt.strftime("%I:%M %p"),
+            "is_today": dt.date() == datetime.now().date(),
+            "printed": f.name in printed_set,
+            "archetype": meta.get("archetype", ""),
+            "poem": meta.get("poem", ""),
+            "psychoanalysis": meta.get("psychoanalysis", ""),
+        })
+    return files
+
+
+def api_get_logs(log_type: str) -> str:
+    if "/" in log_type or "\\" in log_type or ".." in log_type:
+        return "Invalid log name"
+    candidates = [
+        LOGS_DIR / f"{log_type}.log",
+        LOGS_DIR / f"{log_type}.csv",
+        ANALYSIS_DIR / f"{log_type}.log",
+        ANALYSIS_DIR / f"{log_type}.csv",
+    ]
+    if log_type == "analysis":
+        candidates.insert(0, LOGS_DIR / "installation.log")
+        candidates.insert(1, ANALYSIS_DIR / "installation.log")
+    for log_file in candidates:
+        if log_file.exists():
+            try:
+                lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines(True)
+                return "".join(lines[-200:]) or "(Log file is empty)"
+            except Exception as e:
+                return str(e)
+    return f"No entries yet for '{log_type}'."
+
+
+class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        # Quiet routine polling logs; print errors or mutations
+        if len(args) >= 2 and str(args[1]).startswith(("4", "5")):
+            super().log_message(fmt, *args)
+
+    def _send_cors_headers(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type,Authorization")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,HEAD,OPTIONS")
+
+    def _send_json(self, data, status=200):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self._send_cors_headers()
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _send_text(self, text: str, status=200, content_type="text/plain; charset=utf-8"):
+        body = text.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self._send_cors_headers()
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _send_file(self, file_path: Path):
+        if not file_path.exists() or not file_path.is_file():
+            self._send_text("File not found", status=404)
+            return
+        ctype, _ = mimetypes.guess_type(str(file_path))
+        if not ctype:
+            if file_path.suffix == ".otf":
+                ctype = "font/otf"
+            else:
+                ctype = "application/octet-stream"
+        data = file_path.read_bytes()
+        stat = file_path.stat()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
+        self._send_cors_headers()
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(data)
+
+    def _read_json_body(self) -> dict:
+        length = int(self.headers.get("Content-Length", 0))
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(length)
+        return json.loads(raw.decode("utf-8"))
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._send_cors_headers()
+        self.end_headers()
+
+    def do_HEAD(self):
+        self.do_GET()
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        query = parse_qs(parsed.query)
+
+        # Static & UI routes
+        if path in ("/", "/index.html"):
+            return self._send_file(PROJECT_DIR / "index.html")
+        if path in ("/admin", "/admin.html"):
+            return self._send_file(WEB_UI_DIR / "admin.html")
+        if path in ("/draw", "/draw.html"):
+            return self._send_file(WEB_UI_DIR / "draw.html")
+        if path in ("/kiosk", "/kiosk.html"):
+            return self._send_file(WEB_UI_DIR / "kiosk.html")
+        if path in ("/remote", "/remote_ui.html"):
+            return self._send_file(WEB_UI_DIR / "remote_ui.html")
+        if path == "/kasboek-logo.jpg":
+            return self._send_file(PROJECT_DIR / "kasboek-logo.jpg")
+        if path == "/korolev-medium.otf":
+            return self._send_file(PROJECT_DIR / "korolev-medium.otf")
+
+        if path.startswith("/shared_output/"):
+            rel = path[len("/shared_output/"):]
+            target = (SHARED_DIR / rel).resolve()
+            if not str(target).startswith(str(SHARED_DIR.resolve())):
+                return self._send_text("Forbidden", status=403)
+            return self._send_file(target)
+
+        # API GET routes
+        if path in ("/api/status", "/api/monitoring"):
+            return self._send_json(api_get_status())
+
+        if path == "/api/pipeline/status":
+            return self._send_json(_pipeline_state)
+
+        if path == "/api/settings":
+            settings = load_settings()
+            for role in ("analysis", "poem"):
+                if settings.get("ai", {}).get(role, {}).get("api_key"):
+                    settings["ai"][role]["has_api_key"] = True
+                    settings["ai"][role]["api_key"] = "***"
+            return self._send_json(settings)
+
+        if path == "/api/settings/attributions":
+            return self._send_json(load_settings().get("attributions", {}))
+
+        if path == "/api/settings/printing":
+            return self._send_json(load_settings().get("printing", {}))
+
+        if path == "/api/settings/tts":
+            return self._send_json(load_settings().get("tts", {}))
+
+        if path == "/api/ai/config":
+            model_type = (query.get("type") or ["analysis"])[0]
+            try:
+                model = LLMModel(model_type)
+                model.initialize()
+                return self._send_json({"status": "success", "config": model.get_config_dict()})
+            except Exception as e:
+                model = LLMModel(model_type)
+                return self._send_json({"status": "success", "config": model.get_config_dict(), "warning": str(e)})
+
+        if path == "/api/files/prints":
+            return self._send_json(api_list_prints())
+
+        if path.startswith("/api/logs/"):
+            log_type = path[len("/api/logs/"):]
+            return self._send_text(api_get_logs(log_type))
+
+        return self._send_text("Not Found", status=404)
+
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        query = parse_qs(parsed.query)
+
+        if path == "/api/drawings":
+            target_path = SHARED_DIR / "image.png"
+            ctype = self.headers.get("Content-Type", "")
+            try:
+                if "multipart/form-data" in ctype:
+                    form = cgi.FieldStorage(
+                        fp=self.rfile,
+                        headers=self.headers,
+                        environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": ctype},
+                    )
+                    if "file" not in form:
+                        return self._send_json({"status": "error", "error": "Missing file field"}, 400)
+                    file_item = form["file"]
+                    target_path.write_bytes(file_item.file.read())
+                else:
+                    data = self._read_json_body()
+                    img_data = data.get("image", "")
+                    if not img_data:
+                        return self._send_json({"status": "error", "error": "No image provided"}, 400)
+                    if "," in img_data:
+                        img_data = img_data.split(",", 1)[1]
+                    target_path.write_bytes(base64.b64decode(img_data))
+
+                if (query.get("sync") or [""])[0] == "1" and AI_AVAILABLE:
+                    ok = run_analysis_pipeline()
+                    return self._send_json({"status": "success" if ok else "error", "pipeline": "completed"})
+                else:
+                    started = trigger_pipeline_async()
+                    return self._send_json({
+                        "status": "success",
+                        "message": "Drawing saved and analysis pipeline triggered",
+                        "pipeline_started": started,
+                    })
+            except Exception as e:
+                return self._send_json({"status": "error", "error": str(e)}, 500)
+
+        if path == "/api/pipeline/run":
+            if not (SHARED_DIR / "image.png").exists():
+                return self._send_json({"status": "error", "error": "No shared_output/image.png found"}, 404)
+            started = trigger_pipeline_async()
+            return self._send_json({"status": "success", "started": started, "pipeline": _pipeline_state})
+
+        if path == "/api/settings":
+            data = self._read_json_body()
+            updated = save_settings(data)
+            _sync_attributions_to_content_json(updated.get("attributions", {}))
+            return self._send_json({"status": "success", "settings": updated})
+
+        if path == "/api/settings/attributions":
+            data = self._read_json_body()
+            updated = update_settings_section("attributions", data)
+            attr = updated.get("attributions", {})
+            _sync_attributions_to_content_json(attr)
+            return self._send_json({"status": "success", "attributions": attr})
+
+        if path == "/api/settings/printing":
+            data = self._read_json_body()
+            updated = update_settings_section("printing", data)
+            return self._send_json({"status": "success", "printing": updated.get("printing", {})})
+
+        if path == "/api/settings/tts":
+            data = self._read_json_body()
+            updated = update_settings_section("tts", data)
+            return self._send_json({"status": "success", "tts": updated.get("tts", {})})
+
+        if path == "/api/ai/config":
+            data = self._read_json_body()
+            model_type = data.get("model_type", "analysis")
+            config_data = data.get("config", {})
+            try:
+                model = LLMModel(model_type)
+                response = model.update_assistant(**config_data)
+                return self._send_json(response)
+            except Exception as e:
+                return self._send_json({"status": "Error", "error": str(e)}, 500)
+
+        if path == "/api/ai/test":
+            data = self._read_json_body()
+            model_type = data.get("model_type", "analysis")
+            try:
+                model = LLMModel(model_type)
+                reply = model.chat("Respond with a single short sentence confirming you are online and ready for Latent Space.")
+                return self._send_json({
+                    "status": "success",
+                    "provider": model._provider,
+                    "model": model._llm,
+                    "reply": reply,
+                })
+            except Exception as e:
+                return self._send_json({"status": "error", "error": str(e)}, 500)
+
+        if path == "/api/files/print":
+            data = self._read_json_body()
+            filename = data.get("filename", "")
+            mark_only = bool(data.get("mark_only", False))
+            if not filename or "/" in filename or "\\" in filename:
+                return self._send_json({"status": "error", "error": "Invalid filename"}, 400)
+            pdf_path = DOCS_DIR / filename
+            if not pdf_path.exists():
+                return self._send_json({"status": "error", "error": "PDF file not found"}, 404)
+            if mark_only:
+                mark_file_printed(filename)
+                return self._send_json({"status": "success", "filename": filename, "mode": "browser"})
+            settings = load_settings()
+            printer_name = data.get("printer_name") or settings.get("printing", {}).get("printer_name", "default")
+            res = send_pdf_to_printer(str(pdf_path), printer_name=printer_name)
+            return self._send_json(res, 200 if res.get("status") == "success" else 500)
+
+        if path == "/api/files/delete":
+            data = self._read_json_body()
+            action = data.get("action")
+            filename = data.get("filename")
+            count = 0
+            try:
+                if action == "specific" and filename and "/" not in filename and "\\" not in filename:
+                    file_path = DOCS_DIR / filename
+                    for suffix in (".pdf", ".png", ".json"):
+                        p = file_path.with_suffix(suffix)
+                        if p.exists():
+                            p.unlink()
+                    count = 1
+                elif action == "all":
+                    today_int = int(datetime.now().strftime("%Y%m%d"))
+                    for f in DOCS_DIR.glob("print_*.pdf"):
+                        try:
+                            f_date = int(f.name.split("_")[1])
+                            if f_date < today_int:
+                                for suffix in (".pdf", ".png", ".json"):
+                                    p = f.with_suffix(suffix)
+                                    if p.exists():
+                                        p.unlink()
+                                count += 1
+                        except Exception:
+                            pass
+                return self._send_json({"status": "success", "deleted": count})
+            except Exception as e:
+                return self._send_json({"error": str(e)}, 500)
+
+        return self._send_json({"error": "Not Found"}, 404)
+
+
+def run_server(host="0.0.0.0", port=8000):
+    start_background_watcher()
+    server = ThreadingHTTPServer((host, port), LatentSpaceRequestHandler)
+    print("=" * 64)
+    print("LATENT SPACE UNIFIED SERVER")
+    print(f"Project Root:  {PROJECT_DIR}")
+    print(f"Shared Output: {SHARED_DIR}")
+    print("=" * 64)
+    print(f"  Gallery:            http://localhost:{port}/")
+    print(f"  Browser Gaze Draw:  http://localhost:{port}/draw")
+    print(f"  Web Print Kiosk:    http://localhost:{port}/kiosk")
+    print(f"  Admin Dashboard:    http://localhost:{port}/admin")
+    print("=" * 64)
     try:
-        for f in sorted(DOCS_DIR.glob("print_*.pdf"), key=lambda x: x.stat().st_mtime, reverse=True):
-            files.append({
-                "name": f.name,
-                "size": f"{f.stat().st_size / 1024:.1f} KB",
-                "timestamp": f.stat().st_mtime,
-                "date": datetime.fromtimestamp(f.stat().st_mtime).strftime('%Y-%m-%d %H:%M')
-            })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    
-    return jsonify(files)
-
-@app.route('/api/files/delete', methods=['POST'])
-def delete_files():
-    """Delete print files"""
-    data = request.json
-    action = data.get('action')
-    filename = data.get('filename')
-    
-    count = 0
-    try:
-        if action == 'specific' and filename:
-            file_path = DOCS_DIR / filename
-            if file_path.exists():
-                file_path.unlink()
-                os.sync()  # Force sync to Google Drive
-                count = 1
-                
-        elif action == 'all':
-            # Delete files older than today
-            today_int = int(datetime.now().strftime('%Y%m%d'))
-            for f in DOCS_DIR.glob("print_*.pdf"):
-                try:
-                    f_date = int(f.name.split('_')[1])
-                    if f_date < today_int:
-                        f.unlink()
-                        count += 1
-                except:
-                    pass
-            os.sync()
-        
-        return jsonify({"status": "success", "deleted": count})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/logs/<log_type>')
-def get_logs(log_type):
-    """Get log files"""
-    if "/" in log_type or "\\" in log_type:
-        return "Invalid log name", 400
-    
-    log_file = LOGS_DIR / f"{log_type}.log"
-    
-    if not log_file.exists():
-        # Try alternative locations
-        if log_type == "gaze":
-            log_file = PROJECT_DIR / "gaze-painter" / "calibrations" / "gaze.log"
-        elif log_type == "analysis":
-            log_file = PROJECT_DIR / "analysis_watcher" / "installation.log"
-    
-    if log_file.exists():
-        try:
-            with open(log_file, 'r') as f:
-                lines = f.readlines()
-                return "".join(lines[-200:])  # Last 200 lines
-        except Exception as e:
-            return str(e), 500
-    
-    return "Log file not found", 404
-
-@app.route('/api/gdrive/status')
-def gdrive_status():
-    """Google Drive mount status"""
-    mounted = check_gdrive_mount()
-    
-    status = {
-        "mounted": mounted,
-        "mount_point": str(SHARED_DIR)
-    }
-    
-    if mounted:
-        try:
-            files = list(SHARED_DIR.iterdir())
-            status["accessible"] = True
-            status["file_count"] = len(files)
-            
-            # Check disk usage
-            usage = psutil.disk_usage(str(SHARED_DIR))
-            status["disk_usage"] = {
-                "total_gb": round(usage.total / (1024**3), 1),
-                "used_gb": round(usage.used / (1024**3), 1),
-                "free_gb": round(usage.free / (1024**3), 1),
-                "percent": usage.percent
-            }
-        except Exception as e:
-            status["accessible"] = False
-            status["error"] = str(e)
-    
-    return jsonify(status)
-
-@app.route('/api/gdrive/remount', methods=['POST'])
-def remount_gdrive():
-    """Remount Google Drive"""
-    try:
-        # Unmount first
-        subprocess.run(["fusermount", "-u", str(SHARED_DIR)], capture_output=True)
-        time.sleep(1)
-        
-        # Mount again
-        cmd = [
-            "rclone", "mount",
-            "latent_space:",
-            str(SHARED_DIR),
-            "--vfs-cache-mode", "full",
-            "--daemon"
-        ]
-        
-        subprocess.run(cmd)
-        time.sleep(3)
-        
-        if check_gdrive_mount():
-            return jsonify({"status": "success"})
-        else:
-            return jsonify({"error": "Mount failed"}), 500
-            
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# Serve shared output files
-@app.route('/shared_output/<path:filename>')
-def serve_shared_file(filename):
-    """Serve files from shared output"""
-    file_path = SHARED_DIR / filename
-    if file_path.exists():
-        return send_file(str(file_path))
-    return "File not found", 404
-
-# AI Configuration routes (if available)
-if AI_AVAILABLE:
-    @app.route('/api/ai/config', methods=['GET'])
-    def get_ai_config():
-        """Get AI model configuration"""
-        model_type = request.args.get('type', 'analysis')
-        key = '8a79f5ec-c5dd-448c-9611-99610792a04b' if model_type == 'analysis' else '959058ad-4417-49e3-9e71-252ee2fb033d'
-        
-        try:
-            os.chdir(PROJECT_DIR / "analysis_watcher")
-            model = LLMModel(key)
-            model.initialize()
-            
-            config = {
-                "name": getattr(model, "_name", ""),
-                "description": getattr(model, "_description", ""),
-                "temperature": getattr(model, "_temperature", 0.7)
-            }
-            
-            return jsonify({"status": "success", "config": config})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    
-    @app.route('/api/ai/config', methods=['POST'])
-    def update_ai_config():
-        """Update AI model configuration"""
-        data = request.json
-        model_type = data.get('model_type', 'analysis')
-        config_data = data.get('config', {})
-        
-        key = '8a79f5ec-c5dd-448c-9611-99610792a04b' if model_type == 'analysis' else '959058ad-4417-49e3-9e71-252ee2fb033d'
-        
-        try:
-            os.chdir(PROJECT_DIR / "analysis_watcher")
-            model = LLMModel(key)
-            model.initialize()
-            response = model.update_assistant(**config_data)
-            return jsonify(response)
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down server...")
+        server.server_close()
 
 
-if __name__ == '__main__':
-    print("="*60)
-    print("LATENT SPACE MONITORING SERVER")
-    print(f"Project: {PROJECT_DIR}")
-    print(f"Shared: {SHARED_DIR}")
-    print("="*60)
-    
-    # Check Google Drive mount
-    if not check_gdrive_mount():
-        print("⚠️  Google Drive not mounted!")
-        print("   Run: rclone mount latent_space:", SHARED_DIR, "--daemon")
-    else:
-        print("✓ Google Drive mounted")
-    
-    print(f"\n🌐 Starting server on port 8001...")
-    print(f"   Admin Dashboard: http://localhost:8001")
-    print()
-    
-    app.run(host='0.0.0.0', port=8001, debug=False)
+if __name__ == "__main__":
+    settings = load_settings()
+    port = int(os.environ.get("PORT", settings.get("server", {}).get("port", 8000)))
+    host = os.environ.get("HOST", settings.get("server", {}).get("host", "0.0.0.0"))
+    run_server(host=host, port=port)

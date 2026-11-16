@@ -1,228 +1,96 @@
 # Latent Space: Through the Eyes of the Algorithm
 
-An interactive art installation that transforms human gaze into AI-interpreted artwork, bridging the gap between human perception and machine understanding.
+An interactive art installation that transforms human gaze into AI-interpreted artwork, psychoanalytical readings, and poetry—bridging the gap between human perception and machine understanding.
 
-## Overview
+---
 
-**Latent Space** is an interactive art installation where visitors create drawings simply by looking at a screen. Their eye movements are tracked in real-time, translated into visual strokes, and then analyzed by AI systems that generate psychoanalytical interpretations and poetry based on what they "see" in the abstract marks. The experience culminates in a physical thermal print that visitors can take home as a memento.
+## Key Features (Portable & Self-Hosted Edition)
 
-The installation explores themes of observation, interpretation, and the increasingly blurred boundary between human creativity and artificial intelligence.
+- **Zero Google Drive Dependency**: Uses local storage (`shared_output/`) and built-in HTTP sync (`/api/drawings`, `/api/files/prints`)—no `rclone` or cloud drive mounts required.
+- **Multi-Provider AI Support**: Works with **Ollama** (local/on-prem), **Google Gemini** (free tier available), **Anthropic (Claude)**, **OpenAI / Groq / OpenRouter / LM Studio**, or the legacy **BUas** server.
+- **Abstract Art & Rorschach Perception**: Replaces ImageNet ResNet50 object labels with:
+  - **Direct Multimodal Vision LLM** input (Gemini, Claude, Ollama LLaVA/Vision, GPT-4o)
+  - **OpenCV Stroke & Rorschach Geometry Analyzer** (stroke density, 3×3 spatial fixation balance, bilateral symmetry, enclosed loops, and angularity vs. curvature)
+  - **Optional CLIP Zero-Shot Abstract Art Analyzer** (`openai/clip-vit-base-patch32`)
+- **Browser & Desktop Gaze Painting**:
+  - **Browser Gaze Painter (`/draw`)**: Runs MediaPipe `FaceLandmarker` (iris tracking) directly in any modern browser via webcam, plus mouse/touch drawing support.
+  - **Desktop Gaze Painter (`gaze_painter/run_gaze_painter.py`)**: Native OpenCV + MediaPipe application for dedicated local setups.
+- **Web Print Kiosk (`/kiosk`) & Auto-Print Mode (No Raspberry Pi Needed)**:
+  - Open `/kiosk` on any tablet, iPad, phone, or laptop to browse and print A4 artwork mementos via the browser print dialog or host printer.
+  - Or enable **Auto-Print New Drawings** in `/admin` or `/kiosk` to automatically print every finished piece on the host machine's printer.
+- **Live Attributions & Branding Switch**:
+  - Toggle the **Kasboek** logo and full attribution credits (Website, Company LinkedIn, and 1–3 CEO/Co-Founder LinkedIn links) **ON or OFF** in real time from the Admin Command Center (`/admin`).
 
-## How It Works
+---
 
-1. **Gaze Capture** — A camera tracks the visitor's eye movements using MediaPipe face mesh detection
-2. **Drawing** — Eye position is mapped to canvas coordinates, creating abstract strokes as the visitor looks around
-3. **AI Analysis** — The drawing is classified using ResNet50, then interpreted through custom LLM prompts
-4. **Poetry Generation** — A second AI model generates a poem inspired by the psychoanalytical interpretation
-5. **Web Display** — Results are displayed on a live web gallery with the artwork, analysis, heatmap, and audio
-6. **Print Service** — Visitors can print their unique artwork at a dedicated kiosk
+## Quick Start (Local / On-Prem / Laptop)
 
-## Hardware Architecture
-
-```
-┌────────────────────────────────────────────────────────────────┐
-│                      LATENT SPACE SYSTEM                       │
-├────────────────────────────────────────────────────────────────┤
-│                                                                │
-│   ┌─────────────────────┐         ┌─────────────────────┐      │
-│   │   JETSON ORIN NANO  │         │   RASPBERRY PI 4    │      │
-│   │   "The Eye & Brain" │         │    "The Hand"       │      │
-│   ├─────────────────────┤         ├─────────────────────┤      │
-│   │ • Gaze Tracking     │         │ • Print Kiosk UI    │      │
-│   │ • Drawing Canvas    │◄───────►│ • Thermal Printer   │      │
-│   │ • AI Analysis       │  Google │ • Touch Interface   │      │
-│   │ • Poem Generation   │  Drive  │                     │      │
-│   │ • TTS (ElevenLabs)  │  Sync   │                     │      │
-│   │ • Web Gallery       │         │                     │      │
-│   │ • Admin Dashboard   │         │                     │      │
-│   └─────────────────────┘         └─────────────────────┘      │
-│              │                                                 │
-│              ▼                                                 │
-│   ┌─────────────────────┐                                      │
-│   │    GOOGLE DRIVE     │                                      │
-│   │   (Shared Storage)  │                                      │
-│   ├─────────────────────┤                                      │
-│   │ • Drawings (PNG)    │                                      │
-│   │ • Heatmaps          │                                      │
-│   │ • Print PDFs        │                                      │
-│   │ • Audio files       │                                      │
-│   │ • content.json      │                                      │
-│   └─────────────────────┘                                      │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
-```
-
-## Project Structure
-
-```
-LatentSpace/
-├── gaze_painter/           # Eye tracking and drawing system
-│   ├── run_gaze_painter.py # Main gaze tracking application
-│   ├── eye_tracking.py     # MediaPipe-based eye detection
-│   ├── drawing.py          # Canvas and stroke rendering
-│   ├── eye_visualizer.py   # Visual feedback display
-│   └── calibrations/       # Stored calibration data
-│
-├── analysis_watcher/       # AI processing pipeline
-│   ├── run_analysis_watcher.py  # File watcher and orchestrator
-│   ├── analysis.py         # ResNet50 image classification
-│   ├── chat.py             # LLM API integration (BUas AI platform)
-│   ├── heatmap.py          # Attention visualization generator
-│   ├── preprocess_image.py # Image normalization
-│   ├── tts_el.py           # ElevenLabs text-to-speech
-│   └── tts_gc.py           # Google Cloud TTS (alternative)
-│
-├── print_service/          # Raspberry Pi print kiosk
-│   └── print_kiosk_ui.py   # PyQt6 touch interface for printing
-│
-├── admin_ui/               # Desktop admin tools
-│   ├── main.py             # Tkinter admin console
-│   └── delete_prints.py    # Print cleanup utilities
-│
-├── web_ui/                 # Web interfaces
-│   ├── admin.html          # Browser-based admin dashboard
-│   └── remote_ui.html      # Remote monitoring interface
-│
-├── index.html              # Main gallery web page
-├── monitoring_server.py    # Flask API for system monitoring
-├── start_everything.py     # Unified startup script
-└── shared_output/          # Google Drive mount point
-    ├── image.png           # Current drawing
-    ├── heatmap.png         # Attention heatmap
-    ├── content.json        # Gallery content data
-    └── docs/               # Generated print PDFs
-```
-
-## Key Components
-
-### Gaze Painter (`gaze_painter/`)
-The eye tracking system uses MediaPipe's face mesh to detect iris positions. After an automatic calibration phase, eye movements are mapped to canvas coordinates where strokes are rendered with variable thickness based on dwell time and movement speed.
-
-### Analysis Pipeline (`analysis_watcher/`)
-Monitors the shared output folder for new drawings. When detected:
-- Preprocesses the image (crops, resizes to 224×224)
-- Classifies using ResNet50 pretrained on ImageNet
-- Sends the classification to an LLM for psychoanalytical interpretation
-- Generates a poem from the interpretation
-- Creates a heatmap showing stroke density
-- Optionally generates audio narration via ElevenLabs
-- Updates `content.json` for the web gallery
-
-### Print Kiosk (`print_service/`)
-A PyQt6 touch-friendly interface running on the Raspberry Pi. Displays available prints with thumbnails, supports date-based search, and handles thermal printing via CUPS.
-
-### Web Gallery (`index.html`)
-Auto-refreshing web page displaying the current artwork, AI analysis, poem, heatmap, and audio player. Designed for large display screens at the installation.
-
-### Admin Dashboard (`web_ui/admin.html`, `monitoring_server.py`)
-Browser-based control panel for:
-- Monitoring system health and service status
-- Configuring AI model parameters
-- Managing print files
-- Viewing system logs
-- Troubleshooting guide
-
-## Setup & Installation
-
-### Prerequisites
-- Jetson Orin Nano with JetPack
-- Raspberry Pi 4 with thermal printer
-- USB webcam
-- Google Drive account with rclone configured
-- Python 3.8+
-
-### Quick Start
-
-1. **Clone the repository**
+1. **Install dependencies**
    ```bash
-   git clone <repository-url> /home/kasboek/LatentSpace
-   cd /home/kasboek/LatentSpace
-   ```
-
-2. **Configure rclone for Google Drive**
-   ```bash
-   rclone config
-   # Create a remote named "latent_space" for Google Drive
-   ```
-
-3. **Set up environment files**
-   ```bash
-   # In analysis_watcher/.env
-   API_KEY=your_elevenlabs_key
-   ACCESS_TOKEN=your_buas_ai_token
-   USER_KEY=your_buas_user_key
-   ```
-
-4. **Install dependencies**
-   ```bash
-   # Jetson - Gaze Painter
-   cd gaze_painter
-   python3 -m venv virtual_environment
-   source virtual_environment/bin/activate
-   pip install -r requirements.txt
-
-   # Jetson - Analysis
-   cd ../analysis_watcher
-   python3 -m venv virtual_environment
-   source virtual_environment/bin/activate
-   pip install -r requirements.txt
-
-   # Raspberry Pi - Print Service
-   cd ../print_service
    pip install -r requirements.txt
    ```
 
-5. **Start the system** (run on each device from the root `LatentSpace` folder)
+2. **Start the Unified Server & Web Suite**
    ```bash
-   python3 start_everything.py
+   python start_everything.py
    ```
+   *(Or run `python monitoring_server.py` directly)*
 
-## Web Endpoints
+3. **Open the Web Interfaces** (default port `8000`):
+   - **Live Gallery**: `http://localhost:8000/`
+   - **Browser Gaze Painter**: `http://localhost:8000/draw`
+   - **Web Print Kiosk**: `http://localhost:8000/kiosk`
+   - **Admin Command Center**: `http://localhost:8000/admin`
 
-| Port | Service | Description |
-|------|---------|-------------|
-| 8000 | Gallery | Public-facing artwork display |
-| 8001 | Admin API | Monitoring and control API |
-| 8002 | File Server | Direct access to shared files |
-
-## Configuration
-
-### AI Models
-The installation uses two LLM assistants via the BUas AI platform:
-- **Analysis Model** — Interprets drawings psychoanalytically
-- **Poem Model** — Generates poetry from interpretations
-
-Configure via the Admin Dashboard or directly through the API.
-
-### Calibration
-Eye tracking calibration is stored in `gaze_painter/calibrations/calibration.json`. The system performs automatic calibration when a new user is detected.
-
-## Maintenance
-
-### Automatic Cleanup
-Old print files are automatically deleted at 23:59 each day if and while the admin app runs. For production, consider setting up a cron job.
-
-### Manual Cleanup
+### Launch Modes (`start_everything.py`)
 ```bash
-python3 admin_ui/delete_prints.py
+# Default: Unified Web Server + AI Watcher + Browser Gaze (/draw) + Web Kiosk (/kiosk)
+python start_everything.py --mode server
+
+# Full Desktop Mode: Unified Web Server + Native OpenCV Gaze Painter window
+python start_everything.py --mode full
+
+# Native OpenCV Gaze Painter only (can upload to a remote server via LATENT_SPACE_SERVER_URL)
+python start_everything.py --mode gaze
 ```
 
-### Logs
-- `analysis_watcher/installation.log` — Main system log
-- `analysis_watcher/predictions.csv` — Classification history
-- `analysis_watcher/credits.csv` — ElevenLabs usage tracking
+---
 
-## Troubleshooting
+## Configuring AI Providers (`/admin` → `🧠 AI & Vision`)
 
-| Issue | Solution |
-|-------|----------|
-| No gaze detected | Check camera connection and lighting |
-| Google Drive not syncing | Verify rclone mount with `mountpoint -q /path/to/shared_output` |
-| Printer not working | Check CUPS status: `sudo systemctl status cups` |
-| AI analysis failing | Verify `.env` credentials and network connectivity |
+You can switch providers and models live in `http://localhost:8000/admin` (saved in `config/settings.json`):
+
+| Provider | Example Models | Setup |
+|---|---|---|
+| **Ollama (Local)** | `llama3.2`, `llava`, `qwen2.5` | Run `ollama serve` locally (`http://localhost:11434/v1`) |
+| **Google Gemini** | `gemini-2.0-flash`, `gemini-2.5-flash` | Paste `GEMINI_API_KEY` in Admin UI or `.env` |
+| **OpenAI-Compatible** | Groq (`llama-3.3-70b-versatile`), OpenRouter, LM Studio | Set Base URL & API key in Admin UI or `.env` |
+| **Anthropic** | `claude-3-5-haiku-latest`, `claude-3-5-sonnet-latest` | Paste `ANTHROPIC_API_KEY` in Admin UI or `.env` |
+| **BUas Legacy** | `llama3.3:latest` | Set `ACCESS_TOKEN` and `USER_KEY` in `analysis_watcher/.env` |
+
+---
+
+## Attributions Switch (`/admin` → `🏷️ Attributions`)
+
+In the **Attributions (Kasboek)** tab of `/admin`:
+- **When OFF**: Hides the Kasboek logo and attribution credits across the Gallery, Kiosk, and PDF prints.
+- **When ON**: Displays the Kasboek logo alongside customizable attribution text and clickable links:
+  > *"Made possible by Kasboek. To learn more, visit [Kasboek Website] · [Kasboek LinkedIn]. Thank you for letting us use this: [Founder 1 LinkedIn] · [Founder 2 LinkedIn] · [Founder 3 LinkedIn]."*
+
+---
+
+## Hosting on a Free Cloud Service or Docker
+
+Because all web interfaces (`/`, `/draw`, `/kiosk`, `/admin`) and the analysis pipeline run inside a single server process on `$PORT`, you can deploy this repository directly to **Render**, **Hugging Face Spaces (Docker)**, **Railway**, **Fly.io**, or any Docker host:
+
+```bash
+docker build -t latent-space .
+docker run -p 8000:8000 -e GEMINI_API_KEY=your_key_here latent-space
+```
+
+---
 
 ## Credits
 
-**Project:** Latent Space '25  
-**Maintainer:** Vince Németh, Bence Papp, Cristina Jadanov, Bendek Vass
-**Location:** BUas Innovation Lab
+**Project:** Latent Space  
+**Maintainers:** Vince Németh, Bence Papp, Cristina Jadanov, Benedek Vass
