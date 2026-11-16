@@ -384,10 +384,14 @@ def run_analysis_pipeline():
         main_logger.info("Heatmap complete")
 
         # 7. Update content.json for Gallery & Web Kiosk
+        geom = perception.get("geometry", {})
         website_data = {
             "scribblePath": "image_processed.png",
             "heatmapPath": "heatmap.png",
             "archetype": summary_label,
+            "fractalDimension": geom.get("fractal_dimension"),
+            "spatialEntropy": geom.get("spatial_entropy"),
+            "primaryZone": geom.get("primary_zone"),
             "psychoanalysis": analysis_text,
             "poem": poem_text,
             "poemAudio": poem_audio,

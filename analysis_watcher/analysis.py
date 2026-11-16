@@ -1,15 +1,20 @@
+import base64
 import os
 import sys
 from pathlib import Path
 import cv2
 import numpy as np
+import requests
 
 # Add project root so config_manager can be imported
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from config_manager import load_settings
+
 _CLIP_CACHE = {"model": None, "processor": None, "failed": False}
+_SIGLIP_CACHE = {"model": None, "processor": None, "failed": False}
 _RESNET_CACHE = {"model": None, "failed": False}
 
 ABSTRACT_FORM_PROMPTS = [
@@ -44,10 +49,66 @@ RORSCHACH_ARCHETYPE_PROMPTS = [
 ]
 
 
+def compute_fractal_dimension(binary_mask: np.ndarray) -> float:
+    """
+    Compute the Minkowski-Bouligand Box-Counting Fractal Dimension (Df in [1.0, 2.0])
+    of the visitor's gaze strokes (the same mathematical technique used to analyze
+    Jackson Pollock's abstract expressionist paintings).
+    """
+    Z = binary_mask > 0
+    if not np.any(Z):
+        return 1.0
+
+    p = min(Z.shape)
+    n = int(np.floor(np.log2(p)))
+    if n < 3:
+        return 1.1
+
+    sizes = 2 ** np.arange(n - 1, 1, -1)
+    counts = []
+    valid_sizes = []
+
+    for size in sizes:
+        h_trim = (Z.shape[0] // size) * size
+        w_trim = (Z.shape[1] // size) * size
+        if h_trim == 0 or w_trim == 0:
+            continue
+        trimmed = Z[:h_trim, :w_trim]
+        reshaped = trimmed.reshape(h_trim // size, size, w_trim // size, size)
+        box_has_ink = np.any(reshaped, axis=(1, 3))
+        cnt = int(np.sum(box_has_ink))
+        if cnt > 0:
+            counts.append(cnt)
+            valid_sizes.append(size)
+
+    if len(counts) < 2:
+        return 1.15
+
+    coeffs = np.polyfit(np.log(1.0 / np.array(valid_sizes)), np.log(counts), 1)
+    return float(np.clip(coeffs[0], 1.0, 2.0))
+
+
+def compute_spatial_entropy(zone_densities: list) -> float:
+    """
+    Compute normalized Shannon Spatial Entropy [0.0, 1.0] across the 3x3 gaze grid.
+    0.0 = total fixation in one spot; 1.0 = uniform exploration across the entire canvas.
+    """
+    arr = np.array(zone_densities, dtype=np.float64)
+    total = float(np.sum(arr))
+    if total <= 1e-9:
+        return 0.0
+    probs = arr / total
+    probs = probs[probs > 1e-9]
+    entropy = -float(np.sum(probs * np.log2(probs)))
+    max_entropy = float(np.log2(9.0))
+    return float(np.clip(entropy / max_entropy, 0.0, 1.0))
+
+
 def analyze_stroke_geometry(filename: str) -> dict:
     """
-    Extract quantitative and compositional features from an abstract gaze drawing
-    using OpenCV and NumPy (zero heavy ML dependencies).
+    100% Self-Hosted Mathematical, Fractal, and Rorschach Geometry Analyzer.
+    Extracts stroke density, 3x3 spatial attention distribution, Shannon spatial entropy,
+    box-counting fractal dimension (Df), bilateral Rorschach symmetry, and loop topology.
     """
     img = cv2.imread(str(filename), cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -56,7 +117,6 @@ def analyze_stroke_geometry(filename: str) -> dict:
             "description": "An abstract gaze-tracked drawing on a blank canvas."
         }
 
-    # Invert so strokes are positive (255) and background is 0
     _, binary = cv2.threshold(img, 220, 255, cv2.THRESH_BINARY_INV)
     h, w = binary.shape
     stroke_mask = (binary > 0).astype(np.float32)
@@ -72,7 +132,7 @@ def analyze_stroke_geometry(filename: str) -> dict:
     else:
         density_desc = "heavily saturated, intense, and consuming"
 
-    # 2. 3x3 Grid spatial attention analysis
+    # 2. 3x3 Grid spatial attention & Shannon entropy
     zone_names = [
         ["upper-left", "upper-center", "upper-right"],
         ["mid-left", "center", "mid-right"],
@@ -80,17 +140,37 @@ def analyze_stroke_geometry(filename: str) -> dict:
     ]
     h_step, w_step = max(1, h // 3), max(1, w // 3)
     zone_scores = []
+    raw_densities = []
     for r in range(3):
         for c in range(3):
             region = stroke_mask[r * h_step:(r + 1) * h_step, c * w_step:(c + 1) * w_step]
-            zone_scores.append((float(np.mean(region)), zone_names[r][c]))
+            val = float(np.mean(region))
+            raw_densities.append(val)
+            zone_scores.append((val, zone_names[r][c]))
+
+    spatial_entropy = compute_spatial_entropy(raw_densities)
+    if spatial_entropy < 0.45:
+        entropy_desc = "tunnel-vision fixation concentrated tightly in specific zones"
+    elif spatial_entropy < 0.78:
+        entropy_desc = "selective anchoring with purposeful excursions across the canvas"
+    else:
+        entropy_desc = "wide-ranging, panoramic exploration across nearly all regions"
 
     zone_scores.sort(key=lambda x: x[0], reverse=True)
     primary_zone = zone_scores[0][1]
     secondary_zone = zone_scores[1][1]
     least_zone = zone_scores[-1][1]
 
-    # 3. Symmetry (horizontal and vertical mirror correlation)
+    # 3. Fractal Dimension (Box-Counting)
+    fractal_dim = compute_fractal_dimension(binary)
+    if fractal_dim < 1.18:
+        fractal_desc = f"low-complexity linear trajectory (D={fractal_dim:.2f}), reflecting direct, unknotted movement"
+    elif fractal_dim < 1.38:
+        fractal_desc = f"organic intermediate fractal complexity (D={fractal_dim:.2f}), echoing natural branching patterns"
+    else:
+        fractal_desc = f"high space-filling fractal intricacy (D={fractal_dim:.2f}), akin to dense abstract expressionist webs"
+
+    # 4. Bilateral Rorschach Symmetry
     left_half = stroke_mask[:, :w // 2]
     right_half_flipped = np.fliplr(stroke_mask[:, w - (w // 2):])
     horiz_sym = 1.0 - float(np.mean(np.abs(left_half - right_half_flipped))) / max(ink_ratio * 2.0, 0.05)
@@ -110,84 +190,125 @@ def analyze_stroke_geometry(filename: str) -> dict:
     else:
         symmetry_desc = "decidedly asymmetrical, driven by directional drift and spontaneous tension"
 
-    # 4. Contours, enclosed loops, and angularity vs. curvature
+    # 5. Contours, enclosed loops, and angularity vs. curvature
     contours, hierarchy = cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     num_components = len(contours)
-    enclosed_loops = 0
-    if hierarchy is not None:
-        # Inner holes have a parent contour (hierarchy[0][i][3] != -1)
-        enclosed_loops = int(np.sum(hierarchy[0][:, 3] != -1))
+    enclosed_loops = int(np.sum(hierarchy[0][:, 3] != -1)) if hierarchy is not None else 0
 
     sharp_corners = 0
-    total_perimeter = 0.0
     for cnt in contours:
         perim = cv2.arcLength(cnt, True)
         if perim < 15:
             continue
-        total_perimeter += perim
         approx = cv2.approxPolyDP(cnt, 0.03 * perim, True)
         sharp_corners += len(approx)
 
     if enclosed_loops >= 6:
         structure_desc = f"an intricate lattice of {enclosed_loops} enclosed loops and recurring self-intersecting orbits"
-        archetype_hint = "Tangled Web / Labyrinth"
+        archetype_hint = "Fractal Labyrinth"
     elif enclosed_loops >= 2:
         structure_desc = f"intertwining paths forming {enclosed_loops} enclosed focal chambers"
         archetype_hint = "Intertwined Orbits"
     elif num_components > 8:
         structure_desc = "fragmented, staccato bursts of attention jumping rapidly across the canvas"
         archetype_hint = "Saccadic Constellation"
+    elif fractal_dim >= 1.32:
+        structure_desc = "a densely woven tapestry of searching movements"
+        archetype_hint = "Woven Tapestry"
     else:
         structure_desc = "a continuous, unbroken stream-of-consciousness trajectory"
         archetype_hint = "Continuous Horizon Trace"
 
-    if sharp_corners > 18:
-        line_quality = "angular, darting, and electric with sudden directional shifts"
-    else:
-        line_quality = "fluid, sweeping, and organic in its transitions"
+    line_quality = (
+        "angular, darting, and electric with sudden directional shifts"
+        if sharp_corners > 18
+        else "fluid, sweeping, and organic in its transitions"
+    )
 
     description = (
         f"Visual & Gaze Composition Profile:\n"
         f"- Archetype: {archetype_hint}\n"
-        f"- Stroke Density: The marks are {density_desc} ({ink_ratio * 100:.1f}% canvas coverage).\n"
-        f"- Spatial Fixation: The visitor's gaze gravitated most strongly toward the {primary_zone} "
-        f"and {secondary_zone} regions, while avoiding the {least_zone}.\n"
-        f"- Balance & Symmetry: The composition is {symmetry_desc}.\n"
-        f"- Movement & Structure: Characterized by {structure_desc}, with strokes that feel {line_quality}."
+        f"- Stroke Density: The marks are {density_desc}.\n"
+        f"- Spatial Fixation & Entropy: Characterized by {entropy_desc}. "
+        f"The visitor's gaze gravitated most strongly toward the {primary_zone} and {secondary_zone} regions, "
+        f"while avoiding the {least_zone}.\n"
+        f"- Fractal Complexity: Exhibits {fractal_desc}.\n"
+        f"- Balance & Rorschach Symmetry: The composition is {symmetry_desc}.\n"
+        f"- Movement & Topology: Characterized by {structure_desc}, with strokes that feel {line_quality}."
     )
 
     return {
         "summary_label": archetype_hint,
         "description": description,
         "ink_ratio": round(ink_ratio, 4),
+        "fractal_dimension": round(fractal_dim, 3),
+        "spatial_entropy": round(spatial_entropy, 3),
         "primary_zone": primary_zone,
         "secondary_zone": secondary_zone,
         "enclosed_loops": enclosed_loops,
     }
 
 
-def run_clip_abstract_analysis(filename: str):
+def run_ollama_vision_analysis(filename: str):
     """
-    Use Zero-Shot CLIP (if transformers + torch are installed) to evaluate the drawing
-    against abstract art forms, emotional tones, and Rorschach pareidolia archetypes.
-    Returns None if CLIP is not installed or fails.
+    100% Self-Hosted Local Ollama Vision Analyzer (e.g. moondream, llava, llama3.2-vision).
+    Inspects the abstract gaze drawing locally via Ollama and describes its pareidolia,
+    emotional movement, and visual forms.
     """
-    if _CLIP_CACHE["failed"]:
+    try:
+        settings = load_settings()
+        ai_cfg = settings.get("ai", {})
+        vision_model = ai_cfg.get("ollama_vision_model") or "moondream"
+        base_url = ai_cfg.get("analysis", {}).get("base_url", "http://localhost:11434")
+        host = base_url.replace("/v1", "").rstrip("/")
+
+        img_b64 = base64.b64encode(Path(filename).read_bytes()).decode("utf-8")
+        prompt = (
+            "This is an abstract black-and-white line drawing created by human eye movements (gaze tracking). "
+            "Treat it like a Rorschach inkblot or abstract expressionist sketch: "
+            "1) What pareidolia shape, symbol, or archetype do these lines vaguely resemble? (Give a 2-4 word title on the first line). "
+            "2) Describe the visual character of the lines, loops, tension, and negative space in 2 sentences."
+        )
+        resp = requests.post(
+            f"{host}/api/generate",
+            json={
+                "model": vision_model,
+                "prompt": prompt,
+                "images": [img_b64],
+                "stream": False,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        text = resp.json().get("response", "").strip()
+        if not text:
+            return None
+        first_line = text.splitlines()[0].strip().strip("*#:- ")[:45]
+        return {
+            "summary_label": first_line or "Ollama Vision Reading",
+            "description": f"Self-Hosted Vision Model ({vision_model}) Perception:\n{text}",
+        }
+    except Exception as e:
+        print(f"[analysis] Note: Local Ollama Vision model unavailable ({e}), using geometric profile.")
         return None
 
+
+def _run_zero_shot_hf_model(filename: str, model_id: str, cache_dict: dict, is_siglip: bool = False):
+    """Helper for self-hosted HuggingFace CLIP or SigLIP zero-shot abstract art evaluation."""
+    if cache_dict["failed"]:
+        return None
     try:
         import torch
         from PIL import Image
-        from transformers import CLIPProcessor, CLIPModel
+        from transformers import AutoProcessor, AutoModel
 
-        if _CLIP_CACHE["model"] is None:
-            model_id = "openai/clip-vit-base-patch32"
-            _CLIP_CACHE["processor"] = CLIPProcessor.from_pretrained(model_id)
-            _CLIP_CACHE["model"] = CLIPModel.from_pretrained(model_id)
-            _CLIP_CACHE["model"].eval()
+        if cache_dict["model"] is None:
+            cache_dict["processor"] = AutoProcessor.from_pretrained(model_id)
+            cache_dict["model"] = AutoModel.from_pretrained(model_id)
+            cache_dict["model"].eval()
 
-        processor = _CLIP_CACHE["processor"]
-        model = _CLIP_CACHE["model"]
+        processor = cache_dict["processor"]
+        model = cache_dict["model"]
         pil_img = Image.open(filename).convert("RGB")
 
         def top_match(prompt_pairs):
@@ -195,27 +316,39 @@ def run_clip_abstract_analysis(filename: str):
             inputs = processor(text=texts, images=pil_img, return_tensors="pt", padding=True)
             with torch.no_grad():
                 outputs = model(**inputs)
-                probs = outputs.logits_per_image.softmax(dim=1)[0].cpu().numpy()
+                logits = outputs.logits_per_image[0]
+                probs = (torch.sigmoid(logits) if is_siglip else logits.softmax(dim=-1)).cpu().numpy()
             best_idx = int(np.argmax(probs))
             return prompt_pairs[best_idx][1], prompt_pairs[best_idx][0], float(probs[best_idx])
 
         form_label, form_desc, _ = top_match(ABSTRACT_FORM_PROMPTS)
         tone_label, tone_desc, _ = top_match(EMOTIONAL_TONE_PROMPTS)
         rorschach_label, rorschach_desc, _ = top_match(RORSCHACH_ARCHETYPE_PROMPTS)
+        tag = "SigLIP" if is_siglip else "CLIP"
 
         return {
             "summary_label": f"{rorschach_label} ({tone_label})",
             "description": (
-                f"Abstract Art & Rorschach Perception (CLIP Zero-Shot):\n"
+                f"Self-Hosted {tag} Abstract Art & Rorschach Perception:\n"
                 f"- Visual Form: Resembles {form_desc} ({form_label}).\n"
                 f"- Emotional Resonance: Evokes {tone_desc} ({tone_label}).\n"
                 f"- Rorschach Pareidolia: Suggests {rorschach_desc} ({rorschach_label})."
-            )
+            ),
         }
     except Exception as e:
-        _CLIP_CACHE["failed"] = True
-        print(f"[analysis] Note: CLIP zero-shot not available ({e}), using geometric & vision analysis.")
+        cache_dict["failed"] = True
+        print(f"[analysis] Note: {model_id} not available ({e}), using geometric & fractal analysis.")
         return None
+
+
+def run_clip_abstract_analysis(filename: str):
+    """Self-hosted OpenAI CLIP zero-shot abstract art & Rorschach analyzer."""
+    return _run_zero_shot_hf_model(filename, "openai/clip-vit-base-patch32", _CLIP_CACHE, is_siglip=False)
+
+
+def run_siglip_abstract_analysis(filename: str):
+    """Self-hosted Google SigLIP zero-shot abstract art & Rorschach analyzer."""
+    return _run_zero_shot_hf_model(filename, "google/siglip-base-patch16-224", _SIGLIP_CACHE, is_siglip=True)
 
 
 def run_resnet_classification(filename: str):
@@ -247,47 +380,48 @@ def run_resnet_classification(filename: str):
 
 def analyze_drawing(filename: str, mode: str = "auto") -> dict:
     """
-    Comprehensive drawing analysis returning both a short `label` (for logging/CSV)
-    and a rich `prompt_context` (for the Psychoanalysis LLM).
+    Comprehensive self-hosted drawing analysis returning a short `label` (archetype)
+    and a rich `prompt_context` for the Psychoanalysis LLM.
 
-    Modes:
-      - "auto" / "vision": Computes stroke geometry + optional CLIP if requested
-      - "clip": Computes CLIP zero-shot abstract art analysis + stroke geometry
-      - "stroke_metrics": Computes fast OpenCV stroke geometry & Rorschach balance
-      - "resnet50": Legacy ImageNet ResNet50 + stroke geometry
+    Supported modes:
+      - "auto" / "vision": Fractal + Entropy + Rorschach Geometry (+ direct image to Vision LLM)
+      - "ollama_vision": Self-hosted Ollama Vision model (moondream / llava) + Fractal/Rorschach Geometry
+      - "clip": Self-hosted OpenAI CLIP zero-shot abstract art & Rorschach + Fractal/Rorschach Geometry
+      - "siglip": Self-hosted Google SigLIP zero-shot abstract art & Rorschach + Fractal/Rorschach Geometry
+      - "stroke_metrics": Fast local Fractal + Entropy + Rorschach Geometry only
+      - "resnet50": Legacy ImageNet ResNet50 + Fractal/Rorschach Geometry
     """
     geom = analyze_stroke_geometry(filename)
     sections = [geom["description"]]
     summary_label = geom["summary_label"]
 
-    if mode == "clip":
-        clip_res = run_clip_abstract_analysis(filename)
-        if clip_res:
-            sections.insert(0, clip_res["description"])
-            summary_label = clip_res["summary_label"]
+    extra = None
+    if mode == "ollama_vision":
+        extra = run_ollama_vision_analysis(filename)
+    elif mode == "clip":
+        extra = run_clip_abstract_analysis(filename)
+    elif mode == "siglip":
+        extra = run_siglip_abstract_analysis(filename)
     elif mode == "resnet50":
-        resnet_res = run_resnet_classification(filename)
-        if resnet_res:
-            sections.insert(0, resnet_res["description"])
-            summary_label = resnet_res["summary_label"]
+        extra = run_resnet_classification(filename)
     elif mode == "auto":
-        # If CLIP is already loaded, include it; otherwise keep fast geometry + direct Vision LLM support
-        if _CLIP_CACHE["model"] is not None:
-            clip_res = run_clip_abstract_analysis(filename)
-            if clip_res:
-                sections.insert(0, clip_res["description"])
-                summary_label = clip_res["summary_label"]
+        if _SIGLIP_CACHE["model"] is not None:
+            extra = run_siglip_abstract_analysis(filename)
+        elif _CLIP_CACHE["model"] is not None:
+            extra = run_clip_abstract_analysis(filename)
+
+    if extra:
+        sections.insert(0, extra["description"])
+        summary_label = extra["summary_label"]
 
     return {
         "label": summary_label,
         "prompt_context": "\n\n".join(sections),
-        "geometry": geom
+        "geometry": geom,
     }
 
 
 def run_classification(filename: str, mode: str = "auto") -> str:
-    """
-    Backwards-compatible entry point returning the prompt context for the LLM.
-    """
+    """Backwards-compatible entry point returning the prompt context for the LLM."""
     result = analyze_drawing(filename, mode=mode)
     return result["prompt_context"]
