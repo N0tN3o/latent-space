@@ -159,7 +159,7 @@ class GazeTrackingPainter:
         if self.remote_url:
             print(f"Remote Sync URL:  {self.remote_url}")
         print("=" * 60)
-        print("Controls: [q] Quit")
+        print("Controls: [q] Quit | [c] Recalibrate | [m] Toggle Hybrid/Flow Mode")
         print()
 
         cv2.namedWindow(self.eyes_window)
@@ -182,7 +182,7 @@ class GazeTrackingPainter:
             if gaze_info is not None:
                 self.last_gaze_time = now
 
-            norm_gaze = self.tracker.get_calibrated_gaze(gaze_info)
+            norm_gaze = self.tracker.get_calibrated_gaze(gaze_info, dt=self.dt)
 
             if self.state == STATE_SEARCHING:
                 self.status_text = "Searching for gaze..."
@@ -219,9 +219,11 @@ class GazeTrackingPainter:
 
                 elapsed = now - self.draw_start_time
                 remaining = DRAW_DURATION_SEC - elapsed
-                self.status_text = f"Drawing... {remaining:.1f}s"
+                mode_tag = self.tracker.control_mode.upper()
+                self.status_text = f"Drawing ({mode_tag})... {remaining:.1f}s"
 
-                self.painter.update(norm_gaze, self.dt)
+                if not (gaze_info and gaze_info.get("is_blinking", False)):
+                    self.painter.update(norm_gaze, self.dt)
 
                 if remaining <= 0:
                     self.state = STATE_SAVING
@@ -236,7 +238,7 @@ class GazeTrackingPainter:
             cv2.imshow(self.eyes_window, eye_display_with_ui)
 
             if self.state == STATE_DRAWING:
-                canvas_display = self.painter.get_display()
+                canvas_display = self.painter.get_canvas_with_cursor(norm_gaze)
                 cv2.imshow(self.canvas_window, canvas_display)
 
             key = cv2.waitKey(1) & 0xFF
@@ -248,6 +250,8 @@ class GazeTrackingPainter:
                 self.state = STATE_CALIBRATING
                 self.tracker.start_auto_calibration()
                 self.close_canvas()
+            elif key == ord("m"):
+                self.tracker.toggle_control_mode()
 
         self.release()
 

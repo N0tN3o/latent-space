@@ -44,6 +44,7 @@
             display: flex;
             align-items: center;
             gap: 14px;
+            flex-wrap: wrap;
         }
 
         .status-badge {
@@ -63,20 +64,20 @@
             align-items: center;
         }
 
-        .btn {
+        .btn, select.btn-select {
             background: #252934;
             color: var(--text);
             border: 1px solid var(--border);
             padding: 8px 14px;
             border-radius: 8px;
-            font-size: 0.88rem;
+            font-size: 0.86rem;
             font-weight: 600;
             cursor: pointer;
             text-decoration: none;
             transition: background 0.2s;
         }
 
-        .btn:hover {
+        .btn:hover, select.btn-select:hover {
             background: #323846;
         }
 
@@ -186,8 +187,14 @@
         </div>
         <div class="controls">
             <button class="btn" id="camBtn" onclick="startWebcamGaze()">📷 Start Webcam Eye Tracking</button>
-            <button class="btn" id="calibBtn" onclick="startCalibration()" style="display:none;">🎯 Recalibrate Gaze</button>
-            <button class="btn" onclick="startTimedSession()">⏱️ 15s Timed Session</button>
+            <button class="btn" id="modeBtn" onclick="toggleGazeMode()" title="Switch between Anti-Snap Direct mapping and Gaze Flow Steering">🧭 Mode: Stabilized Direct</button>
+            <button class="btn" id="calibBtn" onclick="startCalibration()" style="display:none;">🎯 Recalibrate</button>
+            <select class="btn-select" id="brushTheme" title="Brush Ink Style">
+                <option value="classic">🖋️ Classic Obsidian Ink</option>
+                <option value="ember">🔥 Velocity Ember</option>
+                <option value="indigo">🌌 Midnight Indigo</option>
+            </select>
+            <button class="btn" onclick="startTimedSession()">⏱️ 15s Session</button>
             <button class="btn" onclick="clearCanvas()">🧹 Clear</button>
             <button class="btn btn-primary" id="submitBtn" onclick="submitDrawing()">✨ Submit & Analyze</button>
             <a href="/" class="btn">🖼️ Gallery</a>
@@ -202,13 +209,13 @@
             <canvas id="cursorCanvas" width="1280" height="720"></canvas>
         </div>
         <div class="instructions-bar" id="helperText">
-            Tip: Click <strong>Start Webcam Eye Tracking</strong> to draw hands-free with your eyes, or draw directly on the canvas with your mouse/touchscreen to test the AI pipeline.
+            <strong>Stabilized Direct Mode</strong> dampens involuntary eye snap-backs toward the center. Switch to <strong>Gaze Flow (Steering)</strong> if you want your gaze direction to glide the brush smoothly without ever returning to the middle!
         </div>
     </div>
 
     <div class="pip-box" id="pipBox" style="display:none;">
         <div class="pip-header">
-            <span>Eye Tracker Feed</span>
+            <span id="pipStatus">Eye Tracker Feed</span>
             <span id="fpsCounter">0 FPS</span>
         </div>
         <div class="pip-video-wrap">
@@ -227,14 +234,12 @@
         const W = 1280;
         const H = 720;
 
-        // Fill white background
         function resetArtCanvas() {
             artCtx.fillStyle = '#ffffff';
             artCtx.fillRect(0, 0, W, H);
         }
         resetArtCanvas();
 
-        // Stroke state (mirrors gaze_painter/drawing.py physics)
         let prevPoint = null;
         let prevTime = performance.now();
         let dwellTime = 0;
@@ -242,9 +247,35 @@
         let hasDrawn = false;
         const dwellRadius = 0.03;
 
-        // Timer session state
         let timedSessionActive = false;
         let timedEndTimestamp = 0;
+
+        // Gaze control mode: 'hybrid' (Stabilized Direct + Anti-Snap) or 'flow' (Gaze Glider Steering)
+        let gazeControlMode = 'hybrid';
+        let cursorPos = [0.5, 0.5];
+
+        window.toggleGazeMode = function() {
+            gazeControlMode = (gazeControlMode === 'hybrid') ? 'flow' : 'hybrid';
+            const btn = document.getElementById('modeBtn');
+            btn.textContent = gazeControlMode === 'hybrid'
+                ? '🧭 Mode: Stabilized Direct'
+                : '🌊 Mode: Gaze Flow (Steering)';
+        };
+
+        function getStrokeColor(speedFactor) {
+            const theme = document.getElementById('brushTheme').value;
+            if (theme === 'ember') {
+                const r = Math.min(220, Math.floor(40 + speedFactor * 180));
+                const g = Math.floor(speedFactor * 45);
+                return `rgb(${r}, ${g}, 10)`;
+            } else if (theme === 'indigo') {
+                const b = Math.min(200, Math.floor(45 + speedFactor * 155));
+                const r = Math.floor(speedFactor * 40);
+                return `rgb(${r}, 15, ${b})`;
+            }
+            const shade = Math.min(75, Math.floor(speedFactor * 55));
+            return `rgb(${shade}, 0, 0)`;
+        }
 
         function updateStroke(normX, normY) {
             const now = performance.now();
@@ -255,9 +286,8 @@
             const gy = Math.max(0, Math.min(H, normY * H));
             const curPoint = { x: gx, y: gy };
 
-            // Draw green gaze crosshair on cursor layer
             cursorCtx.clearRect(0, 0, W, H);
-            cursorCtx.strokeStyle = '#10b981';
+            cursorCtx.strokeStyle = gazeControlMode === 'flow' ? '#3b82f6' : '#10b981';
             cursorCtx.lineWidth = 1.5;
             cursorCtx.beginPath();
             cursorCtx.moveTo(gx - 18, gy);
@@ -297,8 +327,8 @@
 
             artCtx.lineCap = 'round';
             artCtx.lineJoin = 'round';
-            const shade = Math.min(80, Math.floor(speedFactor * 60));
-            artCtx.strokeStyle = `rgb(${shade}, 0, 0)`;
+            const strokeColor = getStrokeColor(speedFactor);
+            artCtx.strokeStyle = strokeColor;
             artCtx.lineWidth = lineWidth;
 
             artCtx.beginPath();
@@ -306,7 +336,7 @@
             artCtx.lineTo(curPoint.x, curPoint.y);
             artCtx.stroke();
 
-            artCtx.fillStyle = '#000000';
+            artCtx.fillStyle = strokeColor;
             artCtx.beginPath();
             artCtx.arc(curPoint.x, curPoint.y, Math.max(1, lineWidth / 2), 0, Math.PI * 2);
             artCtx.fill();
@@ -366,6 +396,7 @@
             cursorCtx.clearRect(0, 0, W, H);
             prevPoint = null;
             hasDrawn = false;
+            cursorPos = [0.5, 0.5];
             statusBadge.textContent = 'Canvas cleared';
         };
 
@@ -384,7 +415,7 @@
                     clearInterval(timerInterval);
                     window.submitDrawing();
                 } else {
-                    statusBadge.textContent = `Drawing... ${rem.toFixed(1)}s remaining`;
+                    statusBadge.textContent = `Drawing (${gazeControlMode.toUpperCase()})... ${rem.toFixed(1)}s remaining`;
                 }
             }, 100);
         };
@@ -443,20 +474,28 @@
             window.location.href = '/';
         }
 
-        // --- MediaPipe FaceLandmarker Webcam Gaze Tracking ---
+        // --- MediaPipe FaceLandmarker Webcam Gaze Tracking (Upgraded Canthus + Anti-Snap Math) ---
         let faceLandmarker = null;
         let webcamRunning = false;
         let isCalibrating = false;
         let calibSamples = [];
-        const CALIB_NEEDED = 75;
-        let rangeMin = [-0.12, -0.10];
-        let rangeMax = [0.12, 0.10];
+        const CALIB_NEEDED = 80;
+        let rangeMin = [-0.08, -0.05];
+        let rangeMax = [0.08, 0.05];
         let smoothedNorm = null;
+
+        function softSCurve(x, gain = 1.35) {
+            const c = (x - 0.5) * 2.0;
+            const curved = Math.tanh(c * gain) / Math.tanh(gain);
+            return Math.max(0.0, Math.min(1.0, 0.5 + 0.5 * curved));
+        }
 
         window.startCalibration = function() {
             calibSamples = [];
             isCalibrating = true;
-            statusBadge.textContent = 'Calibrating 0% — Look around all corners of the screen';
+            cursorPos = [0.5, 0.5];
+            prevPoint = null;
+            statusBadge.textContent = 'Calibrating 0% — Move your eyes comfortably around the screen';
         };
 
         window.startWebcamGaze = async function() {
@@ -501,33 +540,66 @@
             }
         };
 
-        function computeEyeNorm(landmarks) {
-            const leftIrisIdx = [468, 469, 470, 471];
-            const rightIrisIdx = [473, 474, 475, 476];
-            const leftCorners = [33, 133];
-            const rightCorners = [362, 263];
+        function computeCanthusGazeAndBlink(lm) {
+            // Mirrored X coordinate (1 - x) to match flipped webcam view
+            function pt(idx) {
+                return [1.0 - lm[idx].x, lm[idx].y];
+            }
+            function avgPts(indices) {
+                let sx = 0, sy = 0;
+                for (const i of indices) {
+                    sx += (1.0 - lm[i].x);
+                    sy += lm[i].y;
+                }
+                return [sx / indices.length, sy / indices.length];
+            }
+            function canthusEye(irisIndices, outerIdx, innerIdx, topIdx, botIdx) {
+                const iris = avgPts(irisIndices);
+                const outer = pt(outerIdx);
+                const inner = pt(innerIdx);
+                const top = pt(topIdx);
+                const bot = pt(botIdx);
 
-            function normForEye(irisIndices, cornerIndices) {
-                const pts = irisIndices.map(i => landmarks[i]);
-                const cPts = cornerIndices.map(i => landmarks[i]);
-                const all = pts.concat(cPts);
-                const cx = pts.reduce((s, p) => s + (1 - p.x), 0) / pts.length;
-                const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
-                const xs = all.map(p => 1 - p.x);
-                const ys = all.map(p => p.y);
-                const minX = Math.min(...xs), maxX = Math.max(...xs);
-                const minY = Math.min(...ys), maxY = Math.max(...ys);
-                const w = Math.max(maxX - minX, 0.001);
-                const h = Math.max(maxY - minY, 0.001);
-                return [
-                    (cx - (minX + w / 2)) / w,
-                    (cy - (minY + h / 2)) / h
-                ];
+                const vx = inner[0] - outer[0];
+                const vy = inner[1] - outer[1];
+                const eyeW = Math.hypot(vx, vy);
+                if (eyeW < 1e-4) return { norm: [0, 0], ear: 0.3 };
+
+                const ux = vx / eyeW;
+                const uy = vy / eyeW;
+                let nx = -uy, ny = ux;
+                if (ny < 0) { nx = -nx; ny = -ny; }
+
+                const midX = 0.5 * (outer[0] + inner[0]);
+                const midY = 0.5 * (outer[1] + inner[1]);
+                const rx = iris[0] - midX;
+                const ry = iris[1] - midY;
+
+                // Both X and Y normalized by bone-anchored eye width (no moving bounding box cancellation!)
+                const normX = (rx * ux + ry * uy) / eyeW;
+                const normY = (rx * nx + ry * ny) / eyeW;
+
+                const lidDist = Math.hypot(top[0] - bot[0], top[1] - bot[1]);
+                const ear = lidDist / eyeW;
+                return { norm: [normX, normY], ear };
             }
 
-            const l = normForEye(leftIrisIdx, leftCorners);
-            const r = normForEye(rightIrisIdx, rightCorners);
-            return [(l[0] + r[0]) / 2, (l[1] + r[1]) / 2];
+            const left = canthusEye([468, 469, 470, 471], 33, 133, 159, 145);
+            const right = canthusEye([473, 474, 475, 476], 263, 362, 386, 374);
+            const ear = 0.5 * (left.ear + right.ear);
+            const isBlinking = ear < 0.17;
+
+            // Subtle head-pose assist from nose tip (1)
+            const nose = pt(1);
+            const headOffset = [nose[0] - 0.5, nose[1] - 0.5];
+            const HEAD_WEIGHT = 0.28;
+
+            const norm = [
+                0.5 * (left.norm[0] + right.norm[0]) + HEAD_WEIGHT * headOffset[0],
+                0.5 * (left.norm[1] + right.norm[1]) + HEAD_WEIGHT * headOffset[1]
+            ];
+
+            return { norm, isBlinking, ear };
         }
 
         let lastFrameTs = performance.now();
@@ -538,7 +610,8 @@
             const eyeCtx = eyeCanvas.getContext('2d');
 
             const now = performance.now();
-            const fps = Math.round(1000 / Math.max(1, now - lastFrameTs));
+            const dt = Math.max(0.005, Math.min(0.1, (now - lastFrameTs) / 1000.0));
+            const fps = Math.round(1.0 / dt);
             lastFrameTs = now;
             document.getElementById('fpsCounter').textContent = `${fps} FPS`;
 
@@ -548,8 +621,9 @@
 
                 if (res.faceLandmarks && res.faceLandmarks.length > 0) {
                     const lm = res.faceLandmarks[0];
-                    // Draw green iris dots on PIP
-                    eyeCtx.fillStyle = '#10b981';
+                    const { norm, isBlinking } = computeCanthusGazeAndBlink(lm);
+
+                    eyeCtx.fillStyle = isBlinking ? '#f59e0b' : '#10b981';
                     for (const idx of [468, 469, 470, 471, 473, 474, 475, 476]) {
                         if (lm[idx]) {
                             const x = (1 - lm[idx].x) * eyeCanvas.width;
@@ -560,36 +634,62 @@
                         }
                     }
 
-                    const raw = computeEyeNorm(lm);
-                    if (!smoothedNorm) {
-                        smoothedNorm = raw;
-                    } else {
-                        smoothedNorm = [
-                            0.65 * smoothedNorm[0] + 0.35 * raw[0],
-                            0.65 * smoothedNorm[1] + 0.35 * raw[1]
-                        ];
+                    if (!isBlinking) {
+                        if (!smoothedNorm) {
+                            smoothedNorm = norm;
+                        } else {
+                            smoothedNorm = [
+                                0.55 * smoothedNorm[0] + 0.45 * norm[0],
+                                0.55 * smoothedNorm[1] + 0.45 * norm[1]
+                            ];
+                        }
                     }
 
-                    if (isCalibrating) {
+                    if (isCalibrating && smoothedNorm && !isBlinking) {
                         calibSamples.push([...smoothedNorm]);
                         const pct = Math.min(100, Math.round((calibSamples.length / CALIB_NEEDED) * 100));
-                        statusBadge.textContent = `Calibrating ${pct}% — Look at all corners of the screen`;
+                        statusBadge.textContent = `Calibrating ${pct}% — Look comfortably around the screen`;
                         if (calibSamples.length >= CALIB_NEEDED) {
                             const xs = calibSamples.map(s => s[0]).sort((a, b) => a - b);
                             const ys = calibSamples.map(s => s[1]).sort((a, b) => a - b);
-                            const p05 = Math.floor(xs.length * 0.05);
-                            const p95 = Math.floor(xs.length * 0.95);
-                            const spanX = Math.max(0.02, xs[p95] - xs[p05]);
-                            const spanY = Math.max(0.02, ys[p95] - ys[p05]);
-                            rangeMin = [xs[p05] - spanX * 0.15, ys[p05] - spanY * 0.15];
-                            rangeMax = [xs[p95] + spanX * 0.15, ys[p95] + spanY * 0.15];
+                            const midIdx = Math.floor(xs.length * 0.5);
+                            const p12 = Math.floor(xs.length * 0.12);
+                            const p88 = Math.floor(xs.length * 0.88);
+                            const spanX = Math.max(0.025, xs[p88] - xs[p12]);
+                            const spanY = Math.max(0.018, ys[p88] - ys[p12]);
+                            rangeMin = [xs[midIdx] - 0.5 * spanX, ys[midIdx] - 0.5 * spanY];
+                            rangeMax = [xs[midIdx] + 0.5 * spanX, ys[midIdx] + 0.5 * spanY];
                             isCalibrating = false;
                             window.startTimedSession();
                         }
-                    } else {
-                        const gx = Math.max(0, Math.min(1, (smoothedNorm[0] - rangeMin[0]) / (rangeMax[0] - rangeMin[0])));
-                        const gy = Math.max(0, Math.min(1, (smoothedNorm[1] - rangeMin[1]) / (rangeMax[1] - rangeMin[1])));
-                        updateStroke(gx, gy);
+                    } else if (!isCalibrating && smoothedNorm) {
+                        if (!isBlinking) {
+                            const spanX = Math.max(1e-4, rangeMax[0] - rangeMin[0]);
+                            const spanY = Math.max(1e-4, rangeMax[1] - rangeMin[1]);
+                            const linX = Math.max(0, Math.min(1, (smoothedNorm[0] - rangeMin[0]) / spanX));
+                            const linY = Math.max(0, Math.min(1, (smoothedNorm[1] - rangeMin[1]) / spanY));
+                            const targetX = softSCurve(linX);
+                            const targetY = softSCurve(linY);
+
+                            if (gazeControlMode === 'flow') {
+                                const offX = targetX - 0.5;
+                                const offY = targetY - 0.5;
+                                if (Math.hypot(offX, offY) > 0.08) {
+                                    cursorPos[0] = Math.max(0.02, Math.min(0.98, cursorPos[0] + offX * 0.85 * dt));
+                                    cursorPos[1] = Math.max(0.02, Math.min(0.98, cursorPos[1] + offY * 0.85 * dt));
+                                }
+                            } else {
+                                // Anti-Center-Snap Dampening
+                                const prevDist = Math.hypot(cursorPos[0] - 0.5, cursorPos[1] - 0.5);
+                                const newDist = Math.hypot(targetX - 0.5, targetY - 0.5);
+                                const stepDist = Math.hypot(targetX - cursorPos[0], targetY - cursorPos[1]);
+                                const isSnapBack = (prevDist > 0.22 && newDist < prevDist - 0.06 && stepDist > 0.08);
+                                const alpha = isSnapBack ? 0.04 : 0.28;
+                                cursorPos[0] = (1.0 - alpha) * cursorPos[0] + alpha * targetX;
+                                cursorPos[1] = (1.0 - alpha) * cursorPos[1] + alpha * targetY;
+                            }
+                        }
+                        updateStroke(cursorPos[0], cursorPos[1]);
                     }
                 }
             }
