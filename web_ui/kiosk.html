@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Latent Space — Print Kiosk</title>
+    <style>
+        :root {
+            --bg-dark: #0e0f12;
+            --card-bg: #181a20;
+            --card-border: #2a2e39;
+            --accent: #10b981;
+            --accent-hover: #059669;
+            --secondary: #3b82f6;
+            --text-main: #f3f4f6;
+            --text-muted: #9ca3af;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background: #13151a;
+            border-bottom: 1px solid var(--card-border);
+            padding: 18px 28px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            position: sticky;
+            top: 0;
+            z-index: 50;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .brand h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+        }
+
+        .nav-links {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            background: #252830;
+            color: var(--text-main);
+            border: 1px solid var(--card-border);
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 0.92rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s;
+        }
+
+        .btn:hover {
+            background: #323642;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+        }
+
+        .btn-secondary {
+            background: var(--secondary);
+            border-color: var(--secondary);
+            color: #fff;
+        }
+
+        .toolbar {
+            max-width: 1400px;
+            width: 100%;
+            margin: 20px auto 10px;
+            padding: 0 24px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .search-box {
+            display: flex;
+            gap: 10px;
+            flex: 1;
+            min-width: 280px;
+        }
+
+        .search-box input {
+            flex: 1;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            color: var(--text-main);
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 1rem;
+        }
+
+        .autoprint-pill {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            padding: 10px 16px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+        }
+
+        .autoprint-pill input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: var(--accent);
+            cursor: pointer;
+        }
+
+        .grid {
+            max-width: 1400px;
+            width: 100%;
+            margin: 16px auto 40px;
+            padding: 0 24px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+            gap: 20px;
+        }
+
+        .print-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+
+        .print-card:hover {
+            transform: translateY(-3px);
+            border-color: #4b5563;
+        }
+
+        .thumb-wrapper {
+            background: #ffffff;
+            height: 230px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 12px;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .thumb-wrapper img {
+            max-height: 100%;
+            max-width: 100%;
+            object-fit: contain;
+        }
+
+        .status-pill {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.78rem;
+            font-weight: 700;
+        }
+
+        .status-available {
+            background: rgba(16, 185, 129, 0.18);
+            color: #10b981;
+            border: 1px solid rgba(16, 185, 129, 0.4);
+        }
+
+        .status-printed {
+            background: rgba(156, 163, 175, 0.2);
+            color: #6b7280;
+            border: 1px solid rgba(156, 163, 175, 0.4);
+        }
+
+        .card-body {
+            padding: 18px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .meta-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+        }
+
+        .time-title {
+            font-size: 1.2rem;
+            font-weight: 700;
+        }
+
+        .date-sub {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .poem-preview {
+            font-style: italic;
+            font-size: 0.88rem;
+            color: #d1d5db;
+            white-space: pre-line;
+            line-height: 1.45;
+            background: rgba(255, 255, 255, 0.03);
+            padding: 10px 12px;
+            border-radius: 6px;
+            max-height: 95px;
+            overflow: hidden;
+        }
+
+        .card-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: auto;
+            padding-top: 10px;
+        }
+
+        .card-actions .btn {
+            flex: 1;
+            justify-content: center;
+            padding: 12px;
+        }
+
+        .empty-state {
+            grid-column: 1 / -1;
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-muted);
+            font-size: 1.1rem;
+        }
+
+        footer {
+            margin-top: auto;
+            padding: 18px 24px;
+            border-top: 1px solid var(--card-border);
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+        }
+
+        .kiosk-attribution {
+            display: none;
+            margin-top: 8px;
+            color: #d1d5db;
+        }
+
+        .kiosk-attribution a {
+            color: #60a5fa;
+            text-decoration: underline;
+            margin: 0 4px;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="brand">
+            <h1>🖨️ Latent Space — Print Kiosk</h1>
+            <span id="queueCount" style="color: var(--text-muted); font-size: 0.9rem;">Loading...</span>
+        </div>
+        <div class="nav-links">
+            <a href="/" class="btn">🖼️ Gallery</a>
+            <a href="/draw" class="btn">👁️ Gaze Draw</a>
+            <a href="/admin" class="btn">🎛️ Admin</a>
+        </div>
+    </header>
+
+    <div class="toolbar">
+        <div class="search-box">
+            <input type="text" id="searchInput" placeholder="Search by time, date, or 'today'..." oninput="renderGrid()">
+            <button class="btn" onclick="setFilter('today')">Today</button>
+            <button class="btn" onclick="setFilter('')">All</button>
+            <button class="btn" onclick="loadPrints()">🔄 Refresh</button>
+        </div>
+        <label class="autoprint-pill" title="Automatically send new drawings to the printer as soon as they are created">
+            <input type="checkbox" id="autoPrintToggle" onchange="toggleAutoPrint(this.checked)">
+            <span>⚡ Auto-Print New Drawings</span>
+        </label>
+    </div>
+
+    <div class="grid" id="printGrid">
+        <div class="empty-state">Loading available prints...</div>
+    </div>
+
+    <footer>
+        <div>Tap any artwork to open or print its full A4 memento sheet.</div>
+        <div class="kiosk-attribution" id="kioskAttribution"></div>
+    </footer>
+
+    <!-- Hidden iframe for seamless browser print dialog -->
+    <iframe id="printFrame" style="display:none;"></iframe>
+
+    <script>
+        let allPrints = [];
+        let knownLatestPrint = null;
+
+        async function loadPrints() {
+            try {
+                const res = await fetch('/api/files/prints?t=' + Date.now());
+                if (!res.ok) return;
+                allPrints = await res.json();
+                renderGrid();
+            } catch (e) {
+                console.error('Error loading prints:', e);
+            }
+        }
+
+        async function loadSettings() {
+            try {
+                const [printRes, attrRes] = await Promise.all([
+                    fetch('/api/settings/printing'),
+                    fetch('/api/settings/attributions')
+                ]);
+                if (printRes.ok) {
+                    const p = await printRes.json();
+                    document.getElementById('autoPrintToggle').checked = !!p.auto_print;
+                }
+                if (attrRes.ok) {
+                    const attr = await attrRes.json();
+                    renderKioskAttribution(attr);
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function renderKioskAttribution(attr) {
+            const el = document.getElementById('kioskAttribution');
+            if (!attr || !attr.enabled) {
+                el.style.display = 'none';
+                return;
+            }
+            el.style.display = 'block';
+            let parts = [];
+            parts.push(`<strong>${attr.intro_text || 'Made possible by Kasboek.'}</strong>`);
+            if (attr.website_url) {
+                parts.push(`<a href="${attr.website_url}" target="_blank">${attr.website_label || 'Website'}</a>`);
+            }
+            if (attr.company_linkedin_url) {
+                parts.push(`<a href="${attr.company_linkedin_url}" target="_blank">${attr.company_linkedin_label || 'LinkedIn'}</a>`);
+            }
+            if (Array.isArray(attr.founders)) {
+                const fLinks = attr.founders
+                    .filter(f => f && f.name)
+                    .map(f => f.url ? `<a href="${f.url}" target="_blank">${f.name}</a>` : f.name);
+                if (fLinks.length) {
+                    parts.push(`<span>${attr.thanks_text || 'Thank you:'} ${fLinks.join(' · ')}</span>`);
+                }
+            }
+            el.innerHTML = parts.join(' &middot; ');
+        }
+
+        async function toggleAutoPrint(enabled) {
+            try {
+                await fetch('/api/settings/printing', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({auto_print: enabled})
+                });
+            } catch (e) {
+                alert('Failed to update auto-print setting: ' + e);
+            }
+        }
+
+        function setFilter(val) {
+            document.getElementById('searchInput').value = val;
+            renderGrid();
+        }
+
+        function renderGrid() {
+            const grid = document.getElementById('printGrid');
+            const query = (document.getElementById('searchInput').value || '').toLowerCase().trim();
+
+            const filtered = allPrints.filter(item => {
+                if (!query) return true;
+                if (query === 'today') return !!item.is_today;
+                const hay = `${item.name} ${item.date} ${item.display_date} ${item.display_time} ${item.archetype || ''} ${item.poem || ''}`.toLowerCase();
+                return hay.includes(query);
+            });
+
+            document.getElementById('queueCount').textContent = `Showing ${filtered.length} of ${allPrints.length} drawings`;
+
+            if (filtered.length === 0) {
+                grid.innerHTML = `<div class="empty-state">No drawings match your filter.</div>`;
+                return;
+            }
+
+            grid.innerHTML = filtered.map(item => `
+                <div class="print-card">
+                    <div class="thumb-wrapper" onclick="window.open('${item.pdf_url}', '_blank')">
+                        <img src="${item.thumb_url}?t=${item.timestamp}" alt="${item.name}">
+                        <span class="status-pill ${item.printed ? 'status-printed' : 'status-available'}">
+                            ${item.printed ? '✓ Printed' : '● Available'}
+                        </span>
+                    </div>
+                    <div class="card-body">
+                        <div class="meta-row">
+                            <span class="time-title">${item.display_time}</span>
+                            <span class="date-sub">${item.display_date}</span>
+                        </div>
+                        ${item.archetype ? `<div style="font-size: 0.78rem; color: #10b981; text-transform: uppercase; letter-spacing: 1px;">${item.archetype}</div>` : ''}
+                        ${item.poem ? `<div class="poem-preview">${item.poem}</div>` : ''}
+                        <div class="card-actions">
+                            <button class="btn btn-primary" onclick="browserPrint('${item.name}', '${item.pdf_url}')">
+                                🖨️ Print Sheet
+                            </button>
+                            <button class="btn" onclick="hostPrint('${item.name}')" title="Print directly on the server's connected printer">
+                                ⚡ Host Print
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function browserPrint(filename, pdfUrl) {
+            // Mark as printed in history and open browser print dialog for PDF
+            try {
+                await fetch('/api/files/print', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({filename: filename, mark_only: true})
+                });
+            } catch (_) {}
+
+            const w = window.open(pdfUrl, '_blank');
+            if (w) {
+                w.addEventListener('load', () => {
+                    try { w.print(); } catch (_) {}
+                });
+            }
+            loadPrints();
+        }
+
+        async function hostPrint(filename) {
+            try {
+                const res = await fetch('/api/files/print', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({filename: filename, mark_only: false})
+                });
+                const data = await res.json();
+                if (res.ok && data.status === 'success') {
+                    alert('Sent print job to host printer!');
+                    loadPrints();
+                } else {
+                    alert('Host printer error: ' + (data.error || 'Unknown error. Try "Print Sheet" for browser printing.'));
+                }
+            } catch (e) {
+                alert('Connection error: ' + e);
+            }
+        }
+
+        loadSettings();
+        loadPrints();
+        setInterval(loadPrints, 5000);
+    </script>
+</body>
+</html>

@@ -20,7 +20,7 @@
         
         body {
             font-family: 'Korolev Medium', 'Arial', sans-serif;
-            background-color: #00000000;
+            background-color: #ffffff;
             color: #2a2a2a;
             line-height: 1.6;
         }
@@ -28,7 +28,36 @@
         .container {
             max-width: 1400px;
             margin: 0 auto;
-            padding: 20px 20px;
+            padding: 20px 20px 40px;
+        }
+
+        /* Subtle floating navigation bar (hidden in print) */
+        .floating-nav {
+            position: fixed;
+            top: 14px;
+            right: 18px;
+            display: flex;
+            gap: 8px;
+            z-index: 100;
+            opacity: 0.25;
+            transition: opacity 0.25s ease;
+        }
+        .floating-nav:hover {
+            opacity: 1;
+        }
+        .floating-nav a, .floating-nav button {
+            background: #1f1f1f;
+            color: #fff;
+            text-decoration: none;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 0.78rem;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .floating-nav a:hover, .floating-nav button:hover {
+            background: #3a3a3a;
         }
         
         /* Main scribble section - centerpiece */
@@ -36,26 +65,41 @@
             display: flex;
             justify-content: center;
             align-items: center;
-            margin-bottom: 30px;
+            margin-bottom: 24px;
         }
         
         .scribble-container {
             width: 100%;
-            max-width: 600px;
+            max-width: 520px;
+            display: flex;
+            justify-content: center;
         }
         
         .scribble-container img {
-            width: 95%;
-            height: auto;
+            width: 92%;
+            max-height: 460px;
+            object-fit: contain;
             display: block;
         }
+
+        .archetype-badge {
+            display: inline-block;
+            margin-top: 6px;
+            padding: 3px 12px;
+            font-size: 0.75em;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: #555;
+            border: 1px solid #ddd;
+            border-radius: 20px;
+        }
         
-        /* Three visuals side by side below - using table */
+        /* Two columns below - using table for consistent print rendering */
         .bottom-grid {
             width: 100%;
             border-collapse: separate;
             border-spacing: 10px;
-            margin-top: 0px;
+            margin-top: 6px;
             margin-bottom: 0px;
         }
         
@@ -79,99 +123,143 @@
         /* Psychoanalysis - left */
         .psychoanalysis-text {
             text-align: justify;
-            font-size: 0.8em;
-            line-height: 1.4;
+            font-size: 0.85em;
+            line-height: 1.48;
+            white-space: pre-line;
         }
         
         /* Heatmap - center */
         .heatmap-container {
             display: flex;
-            justify-content: left;
-            align-items: left;
+            justify-content: flex-start;
+            align-items: flex-start;
             height: 100%;
         }
         
         .heatmap-container img {
-            width: 50%;
+            width: 45%;
+            max-width: 180px;
             height: auto;
             object-fit: contain;
+            border: 1px solid #eee;
         }
         
         /* Poem - right */
         .poem-text {
             font-style: italic;
             white-space: pre-line;
-            line-height: 1.5;
-            font-size: 0.8em;
+            line-height: 1.55;
+            font-size: 0.85em;
             text-align: left;
         }
         
         .update-info {
             text-align: center;
-            color: #000000;
-            font-size: 0.85em;
+            color: #333;
+            font-size: 0.82em;
             margin-top: 0px;
             font-style: italic;
         }
-        
-        .refresh-btn {
-            background: #2a2a2a;
-            color: white;
-            border: none;
-            padding: 10px 25px;
-            cursor: pointer;
-            font-size: 0.9em;
-            margin-top: 15px;
-            transition: background 0.3s;
-            font-family: inherit;
+
+        .page-footer {
+            margin-top: 20px;
+            padding: 16px 20px;
+            text-align: center;
+            border-top: 1px solid #ddd;
         }
-        
-        .refresh-btn:hover {
-            background: #444;
+
+        /* Dynamic Attribution Box */
+        .attribution-section {
+            display: none;
+            margin-top: 14px;
+            padding-top: 12px;
+            border-top: 1px dashed #ccc;
+            font-size: 0.78em;
+            color: #444;
+            line-height: 1.5;
+        }
+
+        .attribution-inner {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            max-width: 1050px;
+            margin: 0 auto;
+        }
+
+        .attribution-logo {
+            max-width: 115px;
+            height: auto;
+            opacity: 0.9;
+        }
+
+        .attribution-text {
+            text-align: center;
+        }
+
+        .attribution-text a {
+            color: #111;
+            font-weight: 600;
+            text-decoration: underline;
+            margin: 0 3px;
+        }
+
+        .attribution-text a:hover {
+            color: #0d6efd;
         }
         
         @media (max-width: 1024px) {
-            .bottom-grid {
-                flex-direction: column;
-                gap: 25px;
-            }
-            
-            .grid-item {
-                min-height: auto;
+            .bottom-grid, .bottom-grid tbody, .bottom-grid tr, .bottom-grid td {
+                display: block;
+                width: 100% !important;
             }
         }
         
         @media print {
-            audio {
-                display: none;
+            audio, .floating-nav { display: none !important; }
+            .update-info { display: block; }
+            .page-footer {
+                position: fixed;
+                bottom: 0;
+                left: 0;
+                right: 0;
+                padding: 10px 20px;
+                background: white;
+                border-top: 1px solid #ddd;
             }
-            
-            .update-info {
-                display: block;
+            .attribution-text a {
+                text-decoration: none;
+                color: #222;
             }
-        }
-        
-        /* Loading state */
-        .loading {
-            opacity: 0.5;
-            transition: opacity 0.3s;
         }
     </style>
 </head>
 <body>
+    <nav class="floating-nav">
+        <a href="/draw">👁️ Gaze Draw</a>
+        <a href="/kiosk">🖨️ Print Kiosk</a>
+        <a href="/admin">🎛️ Admin</a>
+        <button onclick="window.print()">📄 Print</button>
+    </nav>
+
     <div class="container">
         <!-- Main scribble centerpiece -->
         <div class="scribble-section">
             <div class="scribble-container">
-                <img id="mainScribble" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='800' viewBox='0 0 600 800'%3E%3Crect fill='%23ffffff' width='600' height='800'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='serif' font-size='20' fill='%23999'%3EScribble will appear here%3C/text%3E%3C/svg%3E" alt="Signature scribble">
+                <img id="mainScribble" src="/shared_output/image.png" alt="Gaze drawing">
             </div>
         </div>
         
         <!-- Page title below scribble -->
-        <header style="text-align: center; margin-bottom: 0px;">
-            <h1 style="font-size: 1.5em; font-weight: 400; letter-spacing: 2px; color: #2a2a2a; font-family: 'Korolev Medium', 'Arial', sans-serif;">
+        <header style="text-align: center; margin-bottom: 4px;">
+            <h1 style="font-size: 1.5em; font-weight: 400; letter-spacing: 2px; color: #2a2a2a;">
                 Latent Space, Through the Eyes of the Algorithm
             </h1>
+            <div id="archetypeContainer" style="display: none;">
+                <span class="archetype-badge" id="archetypeBadge"></span>
+            </div>
         </header>
         
         <!-- Two columns below: Psychoanalysis left, Poem+Heatmap right -->
@@ -192,177 +280,210 @@
 Ink flows where thought and hand became
 One gesture in the light's dim frame,
 No two the same, yet all the same.</div>
-                    <audio id="poemAudio" controls style="width: 100%; margin-top: 20px;">
+                    <audio id="poemAudio" controls style="width: 100%; margin-top: 18px; display: none;">
                         <source src="" type="audio/mpeg">
                         Your browser does not support the audio element.
                     </audio>
                     
                     <!-- Heatmap below poem -->
-                    <div style="margin-top: 30px;">
-                        <h2 class="section-title" style="margin-bottom: 30px;">Attention Span</h2>
+                    <div style="margin-top: 26px;">
+                        <h2 class="section-title" style="margin-bottom: 14px;">Attention Span</h2>
                         <div class="heatmap-container">
-                            <img id="heatmapImage" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300' viewBox='0 0 300 300'%3E%3Crect fill='%23f0f0f0' width='300' height='300'/%3E%3Ctext x='50%25' y='50%25' dominant-baseline='middle' text-anchor='middle' font-family='serif' font-size='14' fill='%23999'%3EHeatmap%3C/text%3E%3C/svg%3E" alt="Heatmap visualization">
+                            <img id="heatmapImage" src="/shared_output/heatmap.png" alt="Heatmap visualization">
                         </div>
                     </div>
                 </td>
             </tr>
         </table>
         
-        <div class="update-info">
-            <p><span id="lastUpdate">Waiting for data...</span></p>
-        </div>
-        
-        <!-- Logo at bottom right corner -->
-        <div style="position: fixed; bottom: 20px; right: 20px;">
-            <img src="/kasboek-logo.png" alt="Kasboek '25" style="max-width: 150px; height: auto; opacity: 0.8;">
-        </div>
+        <footer class="page-footer">
+            <div class="update-info">
+                <p><span id="lastUpdate">Waiting for data...</span></p>
+            </div>
+
+            <!-- Dynamic Kasboek Attribution (Controlled by Admin Switch) -->
+            <div class="attribution-section" id="attributionSection">
+                <div class="attribution-inner">
+                    <img id="attributionLogo" class="attribution-logo" src="/kasboek-logo.jpg" alt="Kasboek Logo">
+                    <div class="attribution-text" id="attributionText"></div>
+                </div>
+            </div>
+        </footer>
     </div>
     
     <script>
-        // Configuration - Updated for Google Drive served files
         const CONFIG = {
-            // Files served from port 8002 or via proxy
-            baseUrl: window.location.port === '8000' ? '' : 'http://' + window.location.hostname + ':8002',
             dataFile: '/shared_output/content.json',
-            refreshInterval: 5000,  // Check every 5 seconds
-            retryInterval: 10000,   // Retry failed requests after 10 seconds
+            attributionsApi: '/api/settings/attributions',
+            refreshInterval: 4000,
         };
         
-        let lastTimestamp = null;
-        let retryTimer = null;
-        
-        // Helper to build correct path
+        let lastContentSignature = null;
+        let lastAttrSignature = null;
+
         function buildPath(path) {
-            // If path starts with /, it's absolute
-            if (path && path.startsWith('/')) {
-                return CONFIG.baseUrl + path;
+            if (!path) return '';
+            if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('/')) {
+                return path;
             }
-            // If path starts with shared_output, prepend /
-            if (path && path.startsWith('shared_output')) {
-                return CONFIG.baseUrl + '/' + path;
+            if (path.startsWith('shared_output/')) {
+                return '/' + path;
             }
-            // Otherwise prepend /shared_output/
-            return CONFIG.baseUrl + '/shared_output/' + path;
+            return '/shared_output/' + path;
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str || '';
+            return div.innerHTML;
+        }
+
+        function renderAttribution(attr) {
+            const section = document.getElementById('attributionSection');
+            const logo = document.getElementById('attributionLogo');
+            const textEl = document.getElementById('attributionText');
+
+            if (!attr || !attr.enabled) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+            if (attr.show_logo !== false) {
+                logo.style.display = 'block';
+                logo.src = attr.logo_path || '/kasboek-logo.jpg';
+            } else {
+                logo.style.display = 'none';
+            }
+
+            const intro = escapeHtml(attr.intro_text || 'Made possible by Kasboek.');
+            const learnMore = escapeHtml(attr.learn_more_text || 'To learn more, visit');
+            const webLabel = escapeHtml(attr.website_label || 'Kasboek Website');
+            const webUrl = escapeHtml(attr.website_url || '');
+            const liLabel = escapeHtml(attr.company_linkedin_label || 'Kasboek LinkedIn');
+            const liUrl = escapeHtml(attr.company_linkedin_url || '');
+            const thanksText = escapeHtml(attr.thanks_text || 'Thank you for letting us use this:');
+
+            let linksHtml = [];
+            if (webUrl) {
+                linksHtml.push(`<a href="${webUrl}" target="_blank" rel="noopener noreferrer">${webLabel}</a>`);
+            }
+            if (liUrl) {
+                linksHtml.push(`<a href="${liUrl}" target="_blank" rel="noopener noreferrer">${liLabel}</a>`);
+            }
+
+            let foundersHtml = [];
+            if (Array.isArray(attr.founders)) {
+                for (const f of attr.founders) {
+                    if (f && f.name && f.name.trim()) {
+                        const fName = escapeHtml(f.name.trim());
+                        const fUrl = f.url ? escapeHtml(f.url.trim()) : '';
+                        if (fUrl) {
+                            foundersHtml.push(`<a href="${fUrl}" target="_blank" rel="noopener noreferrer">${fName}</a>`);
+                        } else {
+                            foundersHtml.push(`<span>${fName}</span>`);
+                        }
+                    }
+                }
+            }
+
+            let html = `<div><strong>${intro}</strong>`;
+            if (linksHtml.length > 0) {
+                html += ` ${learnMore} ${linksHtml.join(' &middot; ')}.`;
+            }
+            html += `</div>`;
+
+            if (foundersHtml.length > 0) {
+                html += `<div style="margin-top: 3px;">${thanksText} ${foundersHtml.join(' &middot; ')}</div>`;
+            }
+
+            if (attr.custom_footer_note && attr.custom_footer_note.trim()) {
+                html += `<div style="margin-top: 3px; font-style: italic;">${escapeHtml(attr.custom_footer_note.trim())}</div>`;
+            }
+
+            textEl.innerHTML = html;
         }
         
-        // Load content from Google Drive shared output
         async function loadContent() {
             try {
-                // Try to fetch from the monitoring server first (port 8001)
-                let dataUrl = window.location.port === '8001' 
-                    ? CONFIG.dataFile 
-                    : buildPath('content.json');
-                    
-                const response = await fetch(dataUrl + '?t=' + Date.now());
-                
-                if (!response.ok) {
-                    console.log('Waiting for content.json... (may be syncing to Google Drive)');
-                    scheduleRetry();
-                    return;
+                // Fetch content.json
+                const response = await fetch(CONFIG.dataFile + '?t=' + Date.now());
+                if (response.ok) {
+                    const data = await response.json();
+                    const sig = JSON.stringify({
+                        s: data.scribblePath,
+                        h: data.heatmapPath,
+                        p: data.psychoanalysis,
+                        m: data.poem,
+                        t: data.timestamp
+                    });
+
+                    if (sig !== lastContentSignature) {
+                        lastContentSignature = sig;
+
+                        if (data.scribblePath) {
+                            document.getElementById('mainScribble').src = buildPath(data.scribblePath) + '?t=' + Date.now();
+                        }
+                        if (data.heatmapPath) {
+                            document.getElementById('heatmapImage').src = buildPath(data.heatmapPath) + '?t=' + Date.now();
+                        }
+                        if (data.archetype) {
+                            document.getElementById('archetypeBadge').textContent = data.archetype;
+                            document.getElementById('archetypeContainer').style.display = 'block';
+                        } else {
+                            document.getElementById('archetypeContainer').style.display = 'none';
+                        }
+                        if (data.psychoanalysis) {
+                            document.getElementById('psychoanalysisText').textContent = data.psychoanalysis;
+                        }
+                        if (data.poem) {
+                            document.getElementById('poemText').textContent = data.poem;
+                        }
+                        const poemAudio = document.getElementById('poemAudio');
+                        if (data.poemAudio) {
+                            poemAudio.style.display = 'block';
+                            poemAudio.src = buildPath(data.poemAudio) + '?t=' + Date.now();
+                            poemAudio.load();
+                            poemAudio.play().catch(() => {});
+                        } else {
+                            poemAudio.style.display = 'none';
+                        }
+                        if (data.timestamp) {
+                            const updateDate = new Date(data.timestamp);
+                            document.getElementById('lastUpdate').textContent = updateDate.toLocaleDateString('en-US', {
+                                year: 'numeric',
+                                month: 'long',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                            });
+                        }
+                    }
+
+                    // Check live attribution settings from API (or fallback to content.json)
+                    try {
+                        const attrRes = await fetch(CONFIG.attributionsApi + '?t=' + Date.now());
+                        if (attrRes.ok) {
+                            const attrData = await attrRes.json();
+                            const attrSig = JSON.stringify(attrData);
+                            if (attrSig !== lastAttrSignature) {
+                                lastAttrSignature = attrSig;
+                                renderAttribution(attrData);
+                            }
+                        } else if (data.attributions) {
+                            renderAttribution(data.attributions);
+                        }
+                    } catch (_) {
+                        if (data.attributions) {
+                            renderAttribution(data.attributions);
+                        }
+                    }
                 }
-                
-                const data = await response.json();
-                
-                // Check if content has changed
-                if (lastTimestamp === data.timestamp) {
-                    console.log('No new content');
-                    return;
-                }
-                
-                console.log('New content detected! Updating display...');
-                lastTimestamp = data.timestamp;
-                
-                // Clear retry timer on successful load
-                if (retryTimer) {
-                    clearTimeout(retryTimer);
-                    retryTimer = null;
-                }
-                
-                // Update main scribble
-                if (data.scribblePath) {
-                    const scribbleImg = document.getElementById('mainScribble');
-                    const imgPath = buildPath(data.scribblePath);
-                    scribbleImg.src = imgPath + '?t=' + Date.now();
-                    console.log('Scribble updated:', imgPath);
-                }
-                
-                // Update psychoanalysis
-                if (data.psychoanalysis) {
-                    document.getElementById('psychoanalysisText').textContent = data.psychoanalysis;
-                }
-                
-                // Update heatmap
-                if (data.heatmapPath) {
-                    const heatmapImg = document.getElementById('heatmapImage');
-                    const imgPath = buildPath(data.heatmapPath);
-                    heatmapImg.src = imgPath + '?t=' + Date.now();
-                    console.log('Heatmap updated:', imgPath);
-                }
-                
-                // Update poem
-                if (data.poem) {
-                    document.getElementById('poemText').textContent = data.poem;
-                }
-                
-                // Update audio file if present
-                if (data.poemAudio) {
-                    const poemAudio = document.getElementById('poemAudio');
-                    const audioPath = buildPath(data.poemAudio);
-                    poemAudio.src = audioPath + '?t=' + Date.now();
-                    poemAudio.load();
-                }
-                
-                // Update timestamp
-                const updateDate = new Date(data.timestamp);
-                document.getElementById('lastUpdate').textContent = updateDate.toLocaleDateString('en-US', {
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                });
-                
-                console.log('Content updated successfully');
             } catch (error) {
-                console.log('Error loading content:', error.message);
-                scheduleRetry();
+                console.log('Waiting for content update:', error.message);
             }
         }
         
-        // Schedule a retry for failed requests
-        function scheduleRetry() {
-            if (!retryTimer) {
-                retryTimer = setTimeout(() => {
-                    retryTimer = null;
-                    loadContent();
-                }, CONFIG.retryInterval);
-            }
-        }
-        
-        // Auto-refresh content
-        function startAutoRefresh() {
-            setInterval(loadContent, CONFIG.refreshInterval);
-        }
-        
-        // Manual refresh button
-        function manualRefresh() {
-            const btn = document.querySelector('.refresh-btn');
-            if (btn) {
-                btn.textContent = 'Refreshing...';
-                btn.disabled = true;
-            }
-            
-            // Force refresh by clearing last timestamp
-            lastTimestamp = null;
-            loadContent().then(() => {
-                if (btn) {
-                    btn.textContent = 'Refresh Content';
-                    btn.disabled = false;
-                }
-            });
-        }
-        
-        // Print functionality with 'P' key
         document.addEventListener('keydown', function(event) {
             if (event.key === 'p' || event.key === 'P') {
                 event.preventDefault();
@@ -370,12 +491,9 @@ No two the same, yet all the same.</div>
             }
         });
         
-        // Initialize on page load
         document.addEventListener('DOMContentLoaded', function() {
-            console.log('Latent Space Gallery initialized');
-            console.log('Fetching from:', CONFIG.baseUrl || 'same origin');
             loadContent();
-            startAutoRefresh();
+            setInterval(loadContent, CONFIG.refreshInterval);
         });
     </script>
 </body>

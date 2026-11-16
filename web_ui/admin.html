@@ -3,274 +3,442 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Latent Space Command Center</title>
+    <title>Latent Space — Command Center</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        /* Higher-contrast theme tweaks for accessibility and readability */
-        body { background-color: #0f0f0f; color: #f5f5f5; font-family: 'Segoe UI', sans-serif; }
-        .card { background-color: #171717; border: 1px solid #444; margin-bottom: 20px; }
-        .nav-tabs .nav-link { color: #cfcfcf; border: none; }
-        .nav-tabs .nav-link.active { background-color: #171717; color: #fff; border-top: 2px solid #0d6efd; }
-        .table { color: #efefef; }
-        pre { background: #000; padding: 15px; border-radius: 5px; max-height: 400px; overflow-y: auto; color: #33ff66; font-family: 'Consolas', monospace; }
-        .status-dot { height: 10px; width: 10px; background-color: #e0e0e0; border-radius: 50%; display: inline-block; margin-right: 5px; }
-        .online { background-color: #28a745; box-shadow: 0 0 8px #28a745; }
-        .offline { background-color: #dc3545; }
-        input, textarea, select { background-color: #262626 !important; color: #ffffff !important; border: 1px solid #555 !important; }
-        .accordion-button { background-color: #1b1b1b; color: #ffffff !important; }
-        .accordion-button:not(.collapsed) { background-color: #2a2a2a; color: #ffffff !important; }
-        .accordion-body { background-color: #121212; color: #f5f5f5; }
-        /* Contact rows: stronger contrast for labels and values */
-        .contact-row { border-bottom: 1px solid #444; padding: 10px 0; color: #f1f1f1; }
-        .contact-row .fw-bold { color: #cfd6e0; }
-        .form-text { color: #bdbdbd; }
-
-        /* Override Bootstrap muted and low-contrast utility classes which may be applied
-           to headings and subtitles. Use !important so these take precedence over
-           the framework defaults and browser forced color schemes. */
-        .text-muted { color: #bdbdbd !important; }
-        .card-subtitle { color: #d0d0d0 !important; }
-        header h3, header h3 .text-muted { color: #ffffff !important; }
-        h4, h3, h6, .card-header strong { color: #ffffff !important; }
-        /* Ensure accordion button text is clearly visible in all states */
-        .accordion-button, .accordion-button * { color: #ffffff !important; }
-
-        /* Make the accordion caret/arrows high-contrast so they don't blend
-           into dark backgrounds or get muted by Bootstrap utilities. We keep
-           the original SVG but apply a filter to ensure it's bright. */
-        .accordion-button::after {
-            filter: invert(1) brightness(2) !important;
-            opacity: 1 !important;
+        body {
+            background-color: #0e1015;
+            color: #f3f4f6;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
         }
-        .accordion-button:not(.collapsed)::after {
-            filter: invert(1) brightness(2) !important;
+        .card {
+            background-color: #161922;
+            border: 1px solid #2b3040;
+            margin-bottom: 20px;
+            color: #f3f4f6;
         }
-
-        /* High-contrast dropdown arrow for the AI Config select control */
-        select.form-select {
-            background-color: #262626 !important;
+        .nav-tabs {
+            border-bottom: 1px solid #2b3040;
+        }
+        .nav-tabs .nav-link {
+            color: #9ca3af;
+            border: none;
+            padding: 12px 18px;
+            font-weight: 600;
+        }
+        .nav-tabs .nav-link:hover {
+            color: #fff;
+        }
+        .nav-tabs .nav-link.active {
+            background-color: #161922;
+            color: #10b981;
+            border-top: 3px solid #10b981;
+            border-left: 1px solid #2b3040;
+            border-right: 1px solid #2b3040;
+        }
+        .table {
+            color: #e5e7eb;
+        }
+        pre {
+            background: #090b0e;
+            padding: 16px;
+            border-radius: 8px;
+            border: 1px solid #2b3040;
+            max-height: 450px;
+            overflow-y: auto;
+            color: #34d399;
+            font-family: 'Consolas', monospace;
+            font-size: 0.86rem;
+        }
+        .status-dot {
+            height: 10px;
+            width: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 6px;
+        }
+        .online {
+            background-color: #10b981;
+            box-shadow: 0 0 8px #10b981;
+        }
+        .offline {
+            background-color: #ef4444;
+        }
+        input.form-control, textarea.form-control, select.form-select {
+            background-color: #1f2430 !important;
             color: #ffffff !important;
-            /* inline white SVG caret as background image */
-            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path fill='%23ffffff' d='M4.646 6.646a.5.5 0 0 1 .708 0L8 9.293l2.646-2.647a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 0 1 0-.708z'/></svg>") !important;
-            background-repeat: no-repeat !important;
-            background-position: right 0.75rem center !important;
-            background-size: 1rem auto !important;
-            padding-right: 2.5rem !important;
+            border: 1px solid #374151 !important;
         }
-        /* IE/Edge legacy arrow */
-        select.form-select::-ms-expand { filter: invert(1) brightness(2) !important; }
+        input.form-control:focus, textarea.form-control:focus, select.form-select:focus {
+            border-color: #10b981 !important;
+            box-shadow: 0 0 0 0.2rem rgba(16, 185, 129, 0.2) !important;
+        }
+        .text-muted {
+            color: #9ca3af !important;
+        }
+        .metric-box {
+            background: #1d212d;
+            border: 1px solid #2e3446;
+            border-radius: 10px;
+            padding: 16px;
+            height: 100%;
+        }
+        .metric-val {
+            font-size: 1.55rem;
+            font-weight: 700;
+            color: #fff;
+        }
+        .metric-lbl {
+            font-size: 0.82rem;
+            color: #9ca3af;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+        }
+        .attr-preview-box {
+            background: #ffffff;
+            color: #222222;
+            padding: 18px;
+            border-radius: 8px;
+            border: 2px dashed #6b7280;
+            text-align: center;
+        }
+        .attr-preview-box a {
+            color: #111;
+            font-weight: 600;
+            text-decoration: underline;
+        }
+        .preset-chip {
+            cursor: pointer;
+            user-select: none;
+        }
     </style>
 </head>
 <body>
 
-<div class="container mt-4">
-    <header class="d-flex justify-content-between align-items-center mb-4">
-        <h3>🎛️ Latent Space <span class="text-muted fs-6">Command Center</span></h3>
+<div class="container py-4">
+    <header class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-3">
         <div>
-            <span class="badge bg-secondary" id="lastUpdate">Connecting...</span>
+            <h3 class="mb-0">🎛️ Latent Space <span class="text-muted fs-6">Command Center</span></h3>
+        </div>
+        <div class="d-flex flex-wrap align-items-center gap-2">
+            <a href="/" class="btn btn-sm btn-outline-light">🖼️ Gallery</a>
+            <a href="/draw" class="btn btn-sm btn-outline-success">👁️ Browser Gaze Draw</a>
+            <a href="/kiosk" class="btn btn-sm btn-outline-info">🖨️ Web Print Kiosk</a>
+            <span class="badge bg-secondary py-2 px-3" id="lastUpdate">Connecting...</span>
         </div>
     </header>
 
     <ul class="nav nav-tabs mb-0" id="adminTabs">
         <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-monitor">📡 Monitor</a></li>
-        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-ai">🧠 AI Config</a></li>
-        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-files">📂 Prints</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-ai">🧠 AI & Vision</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-attributions">🏷️ Attributions (Kasboek)</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-files">🖨️ Prints & Auto-Print</a></li>
         <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-logs">📝 Logs</a></li>
-        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-manual">📘 Manual</a></li>
-        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-contact">📞 Contact</a></li>
     </ul>
 
     <div class="card border-top-0 rounded-0 rounded-bottom p-4">
         <div class="tab-content">
-            
+
+            <!-- 1. MONITOR TAB -->
             <div class="tab-pane fade show active" id="tab-monitor">
-                <div class="row" id="monitor-container">
-                    <div class="col-12 text-center py-5">
-                        <div class="spinner-border text-primary"></div> 
-                        <p class="mt-2">Loading system status...</p>
+                <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+                    <h5 class="mb-0">System & Pipeline Overview</h5>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-success" onclick="triggerPipelineNow()" id="runPipelineBtn">⚡ Run Analysis on Current Drawing</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="updateMonitor()">🔄 Refresh</button>
+                    </div>
+                </div>
+
+                <div class="row g-3 mb-4" id="kpiRow">
+                    <div class="col-6 col-md-3">
+                        <div class="metric-box">
+                            <div class="metric-lbl">Pipeline Status</div>
+                            <div class="metric-val" id="kpiPipeline">-</div>
+                            <div class="small text-muted" id="kpiPipelineSub">Idle</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="metric-box">
+                            <div class="metric-lbl">Active AI Models</div>
+                            <div class="metric-val fs-6 mt-1" id="kpiAI">-</div>
+                            <div class="small text-muted" id="kpiVisionMode">-</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="metric-box">
+                            <div class="metric-lbl">Prints (Today / Total)</div>
+                            <div class="metric-val" id="kpiPrints">0 / 0</div>
+                            <div class="small text-muted" id="kpiAutoPrint">Auto-Print: OFF</div>
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="metric-box">
+                            <div class="metric-lbl">Kasboek Attribution</div>
+                            <div class="metric-val" id="kpiAttribution">OFF</div>
+                            <div class="small text-muted">Switch in Attributions tab</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row g-3" id="monitor-container">
+                    <div class="col-12 text-center py-4">
+                        <div class="spinner-border text-success"></div>
+                        <p class="mt-2 text-muted">Loading system status...</p>
                     </div>
                 </div>
             </div>
 
+            <!-- 2. AI & VISION CONFIG TAB -->
             <div class="tab-pane fade" id="tab-ai">
-                <div class="row mb-4">
-                    <div class="col-md-6">
-                        <label class="form-label text-muted">Select Model to Edit</label>
+                <div class="row g-3 mb-4 align-items-end">
+                    <div class="col-md-4">
+                        <label class="form-label text-muted">1. Select Assistant Role</label>
                         <select id="aiModelType" class="form-select" onchange="loadAIConfig()">
-                            <option value="analysis">🎨 Analysis (Vision)</option>
-                            <option value="poem">✍️ Poet (Writer)</option>
+                            <option value="analysis">🎨 Analysis (Psychoanalyst / Vision)</option>
+                            <option value="poem">✍️ Poet (Lyrical Writer)</option>
                         </select>
                     </div>
-                    <div class="col-md-6 d-flex align-items-end">
-                        <button class="btn btn-primary w-100" onclick="loadAIConfig()">🔄 Load Configuration</button>
+                    <div class="col-md-5">
+                        <label class="form-label text-muted">2. Abstract Art Perception Mode</label>
+                        <select id="aiVisionMode" class="form-select">
+                            <option value="auto">✨ Auto (Direct Vision LLM + OpenCV Stroke & Rorschach Geometry)</option>
+                            <option value="vision">👁️ Direct Vision LLM + Stroke Geometry</option>
+                            <option value="clip">🎭 CLIP Zero-Shot Abstract Art & Rorschach + Stroke Geometry</option>
+                            <option value="stroke_metrics">📐 Lightweight OpenCV Stroke & Rorschach Geometry Only</option>
+                            <option value="resnet50">🏛️ Legacy ImageNet ResNet50 + Stroke Geometry</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <button class="btn btn-outline-light w-100" onclick="loadAIConfig()">🔄 Reload Config</button>
                     </div>
                 </div>
-                <div id="aiConfigForm" style="display:none;">
+
+                <div class="mb-3">
+                    <span class="small text-muted me-2">Quick Provider Presets:</span>
+                    <span class="badge bg-secondary me-1 preset-chip" onclick="applyPreset('ollama', 'llama3.2', 'http://localhost:11434/v1')">Ollama (llama3.2)</span>
+                    <span class="badge bg-secondary me-1 preset-chip" onclick="applyPreset('ollama', 'llava', 'http://localhost:11434/v1')">Ollama Vision (llava)</span>
+                    <span class="badge bg-primary me-1 preset-chip" onclick="applyPreset('gemini', 'gemini-2.0-flash', '')">Google Gemini 2.0 Flash (Free Tier)</span>
+                    <span class="badge bg-info text-dark me-1 preset-chip" onclick="applyPreset('openai_compatible', 'llama-3.3-70b-versatile', 'https://api.groq.com/openai/v1')">Groq (llama-3.3-70b)</span>
+                    <span class="badge bg-info text-dark me-1 preset-chip" onclick="applyPreset('openai_compatible', 'meta-llama/llama-3.2-11b-vision-instruct:free', 'https://openrouter.ai/api/v1')">OpenRouter Vision (Free)</span>
+                    <span class="badge bg-warning text-dark me-1 preset-chip" onclick="applyPreset('anthropic', 'claude-3-5-haiku-latest', '')">Anthropic Claude 3.5 Haiku</span>
+                    <span class="badge bg-dark border border-secondary preset-chip" onclick="applyPreset('buas', 'llama3.3:latest', 'https://ai-assistants.buas.nl/aioda-api')">BUas Legacy</span>
+                </div>
+
+                <div id="aiConfigForm">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4">
+                            <label class="form-label">AI Provider</label>
+                            <select id="aiProvider" class="form-select">
+                                <option value="ollama">Ollama (Local / On-Prem)</option>
+                                <option value="gemini">Google Gemini API (Free Tier / Cloud)</option>
+                                <option value="openai_compatible">OpenAI-Compatible (LM Studio, Groq, OpenRouter, OpenAI)</option>
+                                <option value="anthropic">Anthropic (Claude)</option>
+                                <option value="buas">BUas Legacy Server</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Model Name / ID</label>
+                            <input type="text" class="form-control" id="aiModelName" placeholder="e.g. llama3.2, gemini-2.0-flash">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Temperature (Creativity: 0.0 - 1.5)</label>
+                            <input type="number" step="0.05" min="0" max="1.5" class="form-control" id="aiTemp" value="0.7">
+                        </div>
+                    </div>
+
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Base URL <span class="text-muted small">(for Ollama / OpenAI-compatible)</span></label>
+                            <input type="text" class="form-control" id="aiBaseUrl" placeholder="http://localhost:11434/v1">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">API Key <span class="text-muted small" id="apiKeyStatus">(Leave blank for local Ollama or if set in .env)</span></label>
+                            <input type="password" class="form-control" id="aiApiKey" placeholder="Enter new API key or leave blank to keep existing">
+                        </div>
+                    </div>
+
                     <div class="mb-3">
-                        <label class="form-label">Model Name</label>
+                        <label class="form-label">Assistant Display Name</label>
                         <input type="text" class="form-control" id="aiName">
                     </div>
+
                     <div class="mb-3">
-                        <label class="form-label">Description / System Prompt</label>
-                        <textarea class="form-control" id="aiDesc" rows="6"></textarea>
-                        <div class="form-text text-muted">Defines the personality and instructions for the AI.</div>
+                        <label class="form-label">System Prompt / Instructions</label>
+                        <textarea class="form-control" id="aiDesc" rows="5"></textarea>
+                        <div class="form-text text-muted">Defines the psychological/artistic voice and output format for this model.</div>
                     </div>
-                    <div class="mb-3">
-                        <label class="form-label">Temperature (Creativity: 0.0 - 1.0)</label>
-                        <input type="number" step="0.1" min="0" max="1" class="form-control" id="aiTemp">
+
+                    <div class="d-flex flex-wrap gap-2 align-items-center">
+                        <button class="btn btn-success" onclick="saveAIConfig()">💾 Save AI Configuration</button>
+                        <button class="btn btn-outline-info" onclick="testAIConnection()">🧪 Test Model Connection</button>
+                        <span id="aiTestResult" class="ms-2 small"></span>
                     </div>
-                    <button class="btn btn-success" onclick="saveAIConfig()">💾 Save Changes</button>
                 </div>
             </div>
 
-            <div class="tab-pane fade" id="tab-files">
-                <div class="d-flex justify-content-between mb-3">
-                    <button class="btn btn-primary" onclick="loadFiles()">🔄 Refresh List</button>
-                    <button class="btn btn-outline-danger" onclick="deleteFiles('all')">🗑️ Prune Old Files (Older than today)</button>
+            <!-- 3. ATTRIBUTIONS & BRANDING TAB -->
+            <div class="tab-pane fade" id="tab-attributions">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <div>
+                        <h5 class="mb-1">🏷️ Kasboek Attributions & Branding Switch</h5>
+                        <p class="text-muted small mb-0">
+                            Toggle whether the Kasboek logo and attribution credits are shown on the Gallery, Print Kiosk, and PDF prints.
+                        </p>
+                    </div>
+                    <button class="btn btn-success" onclick="saveAttributions()">💾 Save Attribution Settings</button>
                 </div>
+
+                <div class="row g-4">
+                    <div class="col-lg-7">
+                        <div class="p-3 rounded border border-secondary mb-3" style="background: #1d222e;">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="attrEnabled" onchange="updateAttrPreview()" style="transform: scale(1.3); margin-right: 12px;">
+                                <label class="form-check-label fw-bold" for="attrEnabled">
+                                    Enable Kasboek Attributions (Master Switch)
+                                </label>
+                            </div>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="attrShowLogo" onchange="updateAttrPreview()" checked>
+                                <label class="form-check-label text-muted" for="attrShowLogo">
+                                    Display Kasboek Logo alongside attribution text
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label">Intro Text</label>
+                                <input type="text" class="form-control" id="attrIntro" value="Made possible by Kasboek." oninput="updateAttrPreview()">
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">"Learn More" Prefix</label>
+                                <input type="text" class="form-control" id="attrLearnMore" value="To learn more, visit" oninput="updateAttrPreview()">
+                            </div>
+                        </div>
+
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-5">
+                                <label class="form-label">Website Link Label</label>
+                                <input type="text" class="form-control" id="attrWebLabel" value="Kasboek Website" oninput="updateAttrPreview()">
+                            </div>
+                            <div class="col-md-7">
+                                <label class="form-label">Kasboek Website URL</label>
+                                <input type="url" class="form-control" id="attrWebUrl" value="https://kasboek.nl" oninput="updateAttrPreview()">
+                            </div>
+                        </div>
+
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-5">
+                                <label class="form-label">Company LinkedIn Label</label>
+                                <input type="text" class="form-control" id="attrLiLabel" value="Kasboek LinkedIn" oninput="updateAttrPreview()">
+                            </div>
+                            <div class="col-md-7">
+                                <label class="form-label">Kasboek LinkedIn URL</label>
+                                <input type="url" class="form-control" id="attrLiUrl" value="https://www.linkedin.com/company/kasboek" oninput="updateAttrPreview()">
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Founders / Owners Thank-You Prefix</label>
+                            <input type="text" class="form-control" id="attrThanks" value="Thank you for letting us use this:" oninput="updateAttrPreview()">
+                        </div>
+
+                        <h6 class="text-muted mt-3 mb-2">CEO / Owner / Co-Founders (1–3 LinkedIn Links)</h6>
+                        <div class="row g-2 mb-2">
+                            <div class="col-md-5">
+                                <input type="text" class="form-control" id="founder1Name" placeholder="Founder / CEO 1 Name" oninput="updateAttrPreview()">
+                            </div>
+                            <div class="col-md-7">
+                                <input type="url" class="form-control" id="founder1Url" placeholder="https://www.linkedin.com/in/..." oninput="updateAttrPreview()">
+                            </div>
+                        </div>
+                        <div class="row g-2 mb-2">
+                            <div class="col-md-5">
+                                <input type="text" class="form-control" id="founder2Name" placeholder="Co-Founder 2 Name" oninput="updateAttrPreview()">
+                            </div>
+                            <div class="col-md-7">
+                                <input type="url" class="form-control" id="founder2Url" placeholder="https://www.linkedin.com/in/..." oninput="updateAttrPreview()">
+                            </div>
+                        </div>
+                        <div class="row g-2 mb-3">
+                            <div class="col-md-5">
+                                <input type="text" class="form-control" id="founder3Name" placeholder="Co-Founder 3 Name" oninput="updateAttrPreview()">
+                            </div>
+                            <div class="col-md-7">
+                                <input type="url" class="form-control" id="founder3Url" placeholder="https://www.linkedin.com/in/..." oninput="updateAttrPreview()">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-lg-5">
+                        <label class="form-label text-muted">Live Gallery & Print Footer Preview</label>
+                        <div class="attr-preview-box" id="attrLivePreview">
+                            <!-- Populated by JS -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 4. PRINTS & AUTO-PRINT TAB -->
+            <div class="tab-pane fade" id="tab-files">
+                <div class="p-3 rounded border border-secondary mb-4" style="background: #1d222e;">
+                    <div class="row g-3 align-items-center">
+                        <div class="col-md-5">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="printAutoToggle" onchange="savePrintSettings()">
+                                <label class="form-check-label fw-bold" for="printAutoToggle">
+                                    ⚡ Auto-Print Every New Drawing
+                                </label>
+                            </div>
+                            <div class="small text-muted mt-1">
+                                Automatically sends new PDFs to the host printer without needing a kiosk screen.
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small text-muted mb-1">Host Printer Name</label>
+                            <input type="text" class="form-control form-control-sm" id="printerNameInput" value="default" placeholder="default">
+                        </div>
+                        <div class="col-md-3 d-flex align-items-end gap-2">
+                            <button class="btn btn-sm btn-success w-100" onclick="savePrintSettings()">Save Print Config</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="d-flex flex-wrap justify-content-between mb-3 gap-2">
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-primary btn-sm" onclick="loadFiles()">🔄 Refresh List</button>
+                        <a href="/kiosk" target="_blank" class="btn btn-outline-info btn-sm">📱 Open Tablet/Web Kiosk (/kiosk)</a>
+                    </div>
+                    <button class="btn btn-outline-danger btn-sm" onclick="deleteFiles('all')">🗑️ Prune Old Prints (Older than today)</button>
+                </div>
+
                 <div class="table-responsive">
-                    <table class="table table-hover table-dark">
-                        <thead><tr><th>Filename</th><th>Date Created</th><th>Size</th><th>Action</th></tr></thead>
+                    <table class="table table-hover table-dark align-middle">
+                        <thead>
+                            <tr>
+                                <th>Preview</th>
+                                <th>Filename</th>
+                                <th>Date Created</th>
+                                <th>Archetype</th>
+                                <th>Status</th>
+                                <th>Size</th>
+                                <th class="text-end">Actions</th>
+                            </tr>
+                        </thead>
                         <tbody id="fileTableBody"></tbody>
                     </table>
                 </div>
             </div>
 
+            <!-- 5. LOGS TAB -->
             <div class="tab-pane fade" id="tab-logs">
-                <div class="mb-3">
-                    <button class="btn btn-sm btn-outline-light me-2" onclick="loadLog('installation')">System Log</button>
-                    <button class="btn btn-sm btn-outline-light me-2" onclick="loadLog('jetson_b_network')">Network Log</button>
-                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('backup')">Backup Log</button>
+                <div class="mb-3 d-flex flex-wrap gap-2">
+                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('installation')">📋 Pipeline Log (installation.log)</button>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('responses')">🤖 AI Responses Log</button>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('predictions')">🎭 Archetype Predictions (CSV)</button>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('credits')">🎙️ TTS Credits Log</button>
                 </div>
                 <pre id="logViewer">Select a log file above to view detailed system output...</pre>
-            </div>
-
-            <div class="tab-pane fade" id="tab-manual">
-                <h4 class="mb-4">📘 Operator Manual & Troubleshooting</h4>
-                <div class="accordion" id="manualAccordion">
-                    <div class="accordion-item bg-dark border-secondary">
-                        <h2 class="accordion-header">
-                            <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#manual1">
-                                🚀 Startup Procedure
-                            </button>
-                        </h2>
-                        <div id="manual1" class="accordion-collapse collapse show" data-bs-parent="#manualAccordion">
-                            <div class="accordion-body">
-                                <ol>
-                                    <li>Power on the WiFi Router first.</li>
-                                    <li>Power on <strong>Jetson B (The Brain)</strong> and wait 30 seconds.</li>
-                                    <li>Power on <strong>Jetson A (The Eye)</strong> and <strong>RPi 4 (The Hand)</strong>.</li>
-                                    <li>The system will auto-connect within 60 seconds.</li>
-                                    <li>Verify status in the <strong>Monitor</strong> tab of this dashboard.</li>
-                                </ol>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="accordion-item bg-dark border-secondary">
-                        <h2 class="accordion-header">
-                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#manual2">
-                                🔧 Troubleshooting Common Issues
-                            </button>
-                        </h2>
-                        <div id="manual2" class="accordion-collapse collapse" data-bs-parent="#manualAccordion">
-                            <div class="accordion-body">
-                                <ul>
-                                    <li><strong>Printer Jammed:</strong> Check the physical printer attached to RPi4. Clear the queue in the 'Monitor' tab if needed.</li>
-                                    <li><strong>No Gaze Detected:</strong> Ensure Jetson A camera lens is uncovered and lighting is sufficient.</li>
-                                    <li><strong>Network Error (Red Dot):</strong> Use the 'Monitor' tab to restart the specific service that is down.</li>
-                                    <li><strong>Web Page Not Loading:</strong> Ensure you are connected to the correct WiFi network.</li>
-                                </ul>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="accordion-item bg-dark border-secondary">
-                        <h2 class="accordion-header">
-                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#manual3">
-                                💾 Maintenance
-                            </button>
-                        </h2>
-                        <div id="manual3" class="accordion-collapse collapse" data-bs-parent="#manualAccordion">
-                            <div class="accordion-body">
-                                <p>The system performs a daily backup automatically at 04:00 AM.</p>
-                                <p>To clear disk space manually, go to the <strong>Prints</strong> tab and click "Prune Old Files".</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="tab-pane fade" id="tab-contact">
-                <div class="row justify-content-center">
-                    <div class="col-md-8 text-center">
-                        <h4 class="mb-4">📞 Technical Support</h4>
-                        <div class="card p-4">
-                            <div class="contact-row d-flex justify-content-between">
-                                <span class="fw-bold text-muted">Maintainer</span>
-                                <span>Vince Németh</span>
-                            </div>
-                            <div class="contact-row d-flex justify-content-between">
-                                <span class="fw-bold text-muted">Role</span>
-                                <span>System Architect</span>
-                            </div>
-                            <div class="contact-row d-flex justify-content-between">
-                                <span class="fw-bold text-muted">Project</span>
-                                <span>Latent Space '25</span>
-                            </div>
-                            <div class="contact-row d-flex justify-content-between border-0">
-                                <span class="fw-bold text-muted">Location</span>
-                                <span>BUas Innovation Lab</span>
-                            </div>
-                            
-                            <div class="mt-4">
-                                <p class="text-muted small">For urgent issues during the exhibition, please call the support number listed on the physical documentation.</p>
-                            </div>
-                        </div>
-
-                        <!-- Additional mock contact cards for layout testing -->
-                        <div class="row mt-3 g-3">
-                            <div class="col-md-6">
-                                <div class="card p-3">
-                                    <div class="contact-row d-flex justify-content-between">
-                                        <span class="fw-bold text-muted">Maintainer</span>
-                                        <span>Anna Müller</span>
-                                    </div>
-                                    <div class="contact-row d-flex justify-content-between">
-                                        <span class="fw-bold text-muted">Role</span>
-                                        <span>Frontend Lead</span>
-                                    </div>
-                                    <div class="contact-row d-flex justify-content-between">
-                                        <span class="fw-bold text-muted">Email</span>
-                                        <span>anna@example.org</span>
-                                    </div>
-                                    <div class="contact-row d-flex justify-content-between border-0">
-                                        <span class="fw-bold text-muted">Onsite</span>
-                                        <span>Yes</span>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="col-md-6">
-                                <div class="card p-3">
-                                    <div class="contact-row d-flex justify-content-between">
-                                        <span class="fw-bold text-muted">Maintainer</span>
-                                        <span>John Carter</span>
-                                    </div>
-                                    <div class="contact-row d-flex justify-content-between">
-                                        <span class="fw-bold text-muted">Role</span>
-                                        <span>Hardware Engineer</span>
-                                    </div>
-                                    <div class="contact-row d-flex justify-content-between">
-                                        <span class="fw-bold text-muted">Phone</span>
-                                        <span>+123 1234 5678</span>
-                                    </div>
-                                    <div class="contact-row d-flex justify-content-between border-0">
-                                        <span class="fw-bold text-muted">Location</span>
-                                        <span>Workshop B</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
             </div>
 
         </div>
@@ -279,171 +447,407 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    // --- MONITORING ---
+    // --- 1. MONITOR ---
     async function updateMonitor() {
         try {
-            const res = await fetch('/api/monitoring');
+            const res = await fetch('/api/status?t=' + Date.now());
             const data = await res.json();
-            
-            let html = '';
-            if(data.jetson_b) {
-                html += buildDeviceCard('Jetson B (Brain)', data.jetson_b);
+
+            // KPIs
+            const pipeState = data.pipeline || {};
+            document.getElementById('kpiPipeline').textContent = pipeState.running ? '⏳ Running' : '✅ Ready';
+            document.getElementById('kpiPipelineSub').textContent = pipeState.last_run
+                ? `Last run: ${new Date(pipeState.last_run).toLocaleTimeString()} (${pipeState.last_status})`
+                : `Status: ${pipeState.last_status || 'idle'}`;
+
+            const ai = data.ai_summary || {};
+            document.getElementById('kpiAI').textContent = `${ai.analysis_provider || 'ollama'}: ${ai.analysis_model || ''}`;
+            document.getElementById('kpiVisionMode').textContent = `Perception: ${ai.vision_mode || 'auto'}`;
+
+            const stats = data.statistics || {};
+            document.getElementById('kpiPrints').textContent = `${stats.prints_today || 0} / ${stats.total_prints || 0}`;
+            document.getElementById('kpiAutoPrint').textContent = `Auto-Print: ${(data.printing && data.printing.auto_print) ? 'ON' : 'OFF'}`;
+
+            const attrOn = data.attributions && data.attributions.enabled;
+            const attrEl = document.getElementById('kpiAttribution');
+            attrEl.textContent = attrOn ? 'ON (Active)' : 'OFF (Hidden)';
+            attrEl.style.color = attrOn ? '#10b981' : '#9ca3af';
+
+            // Services & System Resources Card
+            let servicesHtml = '';
+            for (const [svc, state] of Object.entries(data.services || {})) {
+                const isUp = state.includes('running') || state.includes('ready');
+                const badge = isUp ? 'bg-success' : 'bg-secondary';
+                servicesHtml += `
+                    <div class="d-flex justify-content-between py-1 border-bottom border-secondary">
+                        <span>${svc.replace(/_/g, ' ')}</span>
+                        <span class="badge ${badge}">${state}</span>
+                    </div>`;
             }
-            // Add more devices here as your API expands
-            
-            document.getElementById('monitor-container').innerHTML = html;
+
+            const sys = data.system || {};
+            document.getElementById('monitor-container').innerHTML = `
+                <div class="col-md-6">
+                    <div class="card h-100 p-3">
+                        <h6 class="text-muted text-uppercase small mb-3">Active Modules & Endpoints</h6>
+                        ${servicesHtml}
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card h-100 p-3">
+                        <h6 class="text-muted text-uppercase small mb-3">Host Resource Utilization (${data.device || 'Host'})</h6>
+                        <div class="d-flex justify-content-between py-1 border-bottom border-secondary">
+                            <span>CPU Usage</span><strong>${sys.cpu_percent ?? 0}%</strong>
+                        </div>
+                        <div class="d-flex justify-content-between py-1 border-bottom border-secondary">
+                            <span>Memory Usage</span><strong>${sys.memory_percent ?? 0}%</strong>
+                        </div>
+                        <div class="d-flex justify-content-between py-1 border-bottom border-secondary">
+                            <span>Storage Used</span><strong>${sys.disk_usage ?? 0}%</strong>
+                        </div>
+                        <div class="d-flex justify-content-between py-1">
+                            <span>Device Temp</span><strong>${sys.temperature || 'N/A'}</strong>
+                        </div>
+                    </div>
+                </div>
+            `;
+
             document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
-        } catch(e) {
+        } catch (e) {
             console.error(e);
         }
     }
 
-    function buildDeviceCard(name, data) {
-        let statusColor = data.status === 'online' ? 'online' : 'offline';
-        let servicesHtml = '';
-        for(let [svc, state] of Object.entries(data.services || {})) {
-            let badge = state === 'online' || state === 'active' ? 'bg-success' : 'bg-danger';
-            servicesHtml += `<div class="d-flex justify-content-between mb-2">
-                <span>${svc}</span><span class="badge ${badge}">${state}</span>
-            </div>`;
+    async function triggerPipelineNow() {
+        const btn = document.getElementById('runPipelineBtn');
+        btn.disabled = true;
+        btn.textContent = '⏳ Starting Pipeline...';
+        try {
+            const res = await fetch('/api/pipeline/run', { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) {
+                alert('Error: ' + (data.error || 'Could not start pipeline'));
+            }
+            setTimeout(updateMonitor, 1000);
+        } catch (e) {
+            alert('Error triggering pipeline: ' + e);
+        } finally {
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = '⚡ Run Analysis on Current Drawing';
+            }, 2000);
         }
-        return `
-        <div class="col-md-6 col-lg-4 mb-3">
-            <div class="card h-100">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <strong>${name}</strong>
-                    <span class="status-dot ${statusColor}" title="${data.status}"></span>
-                </div>
-                <div class="card-body">
-                    <h6 class="card-subtitle mb-3 text-muted">System Status</h6>
-                    ${servicesHtml}
-                    <hr class="border-secondary">
-                    <div class="d-grid gap-2">
-                        <button class="btn btn-sm btn-outline-warning" onclick="controlService('restart', 'analysis-watcher')">⚡ Restart AI Analysis</button>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="controlService('restart', 'web-server')">🔄 Restart Web Server</button>
-                    </div>
-                </div>
-            </div>
-        </div>`;
     }
 
-    async function controlService(action, service) {
-        if(!confirm(action + " " + service + "?")) return;
-        await fetch(`/api/control/${action}/${service}`, {method: 'POST'});
-        alert('Command sent. Please wait 10 seconds for service to recover.');
-        updateMonitor();
+    // --- 2. AI CONFIG ---
+    function applyPreset(provider, model, baseUrl) {
+        document.getElementById('aiProvider').value = provider;
+        document.getElementById('aiModelName').value = model;
+        document.getElementById('aiBaseUrl').value = baseUrl;
     }
 
-    // --- AI CONFIG ---
     async function loadAIConfig() {
         const type = document.getElementById('aiModelType').value;
+        document.getElementById('aiTestResult').textContent = '';
         try {
-            const res = await fetch(`/api/ai/config?type=${type}`);
+            const res = await fetch(`/api/ai/config?type=${type}&t=${Date.now()}`);
             const data = await res.json();
-            
-            if(data.status === 'success') {
-                document.getElementById('aiName').value = data.config.name || '';
-                document.getElementById('aiDesc').value = data.config.description || '';
-                document.getElementById('aiTemp').value = data.config.temperature || 0.7;
-                document.getElementById('aiConfigForm').style.display = 'block';
-            } else {
-                alert("Error loading config: " + data.message);
+            if (data.config) {
+                const c = data.config;
+                document.getElementById('aiProvider').value = c.provider || 'ollama';
+                document.getElementById('aiModelName').value = c.model || c.llm || '';
+                document.getElementById('aiBaseUrl').value = c.base_url || '';
+                document.getElementById('aiName').value = c.name || '';
+                document.getElementById('aiDesc').value = c.description || '';
+                document.getElementById('aiTemp').value = c.temperature ?? 0.7;
+                document.getElementById('aiVisionMode').value = c.vision_mode || 'auto';
+                document.getElementById('aiApiKey').value = '';
+                document.getElementById('apiKeyStatus').textContent = c.has_api_key
+                    ? '(✓ API key saved — leave blank to keep current key)'
+                    : '(Leave blank for local Ollama or if set in .env)';
             }
         } catch (e) {
-            alert("Connection Error: " + e);
+            console.error('Failed to load AI config:', e);
         }
     }
 
     async function saveAIConfig() {
         const type = document.getElementById('aiModelType').value;
+        const apiKeyVal = document.getElementById('aiApiKey').value.trim();
         const config = {
-            name: document.getElementById('aiName').value,
+            provider: document.getElementById('aiProvider').value,
+            llm: document.getElementById('aiModelName').value.trim(),
+            base_url: document.getElementById('aiBaseUrl').value.trim(),
+            name: document.getElementById('aiName').value.trim(),
             description: document.getElementById('aiDesc').value,
-            temperature: parseFloat(document.getElementById('aiTemp').value)
+            temperature: parseFloat(document.getElementById('aiTemp').value) || 0.7,
+            vision_mode: document.getElementById('aiVisionMode').value
         };
-        
+        if (apiKeyVal) {
+            config.api_key = apiKeyVal;
+        }
+
         try {
             const res = await fetch('/api/ai/config', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({model_type: type, config: config})
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model_type: type, config: config })
             });
             const data = await res.json();
-            alert(data.status === 'Success' ? 'Configuration Saved!' : 'Save Failed: ' + JSON.stringify(data));
+            if (data.status === 'Success') {
+                document.getElementById('aiTestResult').innerHTML = '<span class="text-success">✓ Configuration saved!</span>';
+                loadAIConfig();
+                updateMonitor();
+            } else {
+                alert('Save failed: ' + JSON.stringify(data));
+            }
         } catch (e) {
-            alert("Save Error: " + e);
+            alert('Save Error: ' + e);
         }
     }
 
-    // --- FILES ---
+    async function testAIConnection() {
+        await saveAIConfig();
+        const type = document.getElementById('aiModelType').value;
+        const out = document.getElementById('aiTestResult');
+        out.innerHTML = '<span class="text-info">⏳ Testing connection...</span>';
+        try {
+            const res = await fetch('/api/ai/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model_type: type })
+            });
+            const data = await res.json();
+            if (res.ok && data.status === 'success') {
+                out.innerHTML = `<span class="text-success">✓ [${data.provider} / ${data.model}]: "${data.reply}"</span>`;
+            } else {
+                out.innerHTML = `<span class="text-danger">✗ Error: ${data.error || 'Connection failed'}</span>`;
+            }
+        } catch (e) {
+            out.innerHTML = `<span class="text-danger">✗ Error: ${e}</span>`;
+        }
+    }
+
+    // --- 3. ATTRIBUTIONS (KASBOEK SWITCH) ---
+    function gatherAttrForm() {
+        return {
+            enabled: document.getElementById('attrEnabled').checked,
+            show_logo: document.getElementById('attrShowLogo').checked,
+            logo_path: '/kasboek-logo.jpg',
+            intro_text: document.getElementById('attrIntro').value,
+            learn_more_text: document.getElementById('attrLearnMore').value,
+            website_label: document.getElementById('attrWebLabel').value,
+            website_url: document.getElementById('attrWebUrl').value,
+            company_linkedin_label: document.getElementById('attrLiLabel').value,
+            company_linkedin_url: document.getElementById('attrLiUrl').value,
+            thanks_text: document.getElementById('attrThanks').value,
+            founders: [
+                { name: document.getElementById('founder1Name').value, url: document.getElementById('founder1Url').value },
+                { name: document.getElementById('founder2Name').value, url: document.getElementById('founder2Url').value },
+                { name: document.getElementById('founder3Name').value, url: document.getElementById('founder3Url').value }
+            ]
+        };
+    }
+
+    function updateAttrPreview() {
+        const attr = gatherAttrForm();
+        const box = document.getElementById('attrLivePreview');
+        if (!attr.enabled) {
+            box.innerHTML = `<div class="text-secondary py-4"><em>Attribution Switch is <strong>OFF</strong>.<br>No Kasboek logo or attribution text will be shown on the Gallery or Prints.</em></div>`;
+            return;
+        }
+
+        let links = [];
+        if (attr.website_url) links.push(`<a href="${attr.website_url}" target="_blank">${attr.website_label || 'Website'}</a>`);
+        if (attr.company_linkedin_url) links.push(`<a href="${attr.company_linkedin_url}" target="_blank">${attr.company_linkedin_label || 'LinkedIn'}</a>`);
+
+        let founders = attr.founders
+            .filter(f => f.name && f.name.trim())
+            .map(f => f.url ? `<a href="${f.url}" target="_blank">${f.name.trim()}</a>` : `<span>${f.name.trim()}</span>`);
+
+        box.innerHTML = `
+            <div class="d-flex flex-column align-items-center gap-2">
+                ${attr.show_logo ? `<img src="/kasboek-logo.jpg" alt="Kasboek" style="max-width: 110px; height: auto;">` : ''}
+                <div style="font-size: 0.88rem;">
+                    <div><strong>${attr.intro_text}</strong> ${links.length ? `${attr.learn_more_text} ${links.join(' &middot; ')}.` : ''}</div>
+                    ${founders.length ? `<div class="mt-1">${attr.thanks_text} ${founders.join(' &middot; ')}</div>` : ''}
+                </div>
+            </div>
+        `;
+    }
+
+    async function loadAttributions() {
+        try {
+            const res = await fetch('/api/settings/attributions?t=' + Date.now());
+            const attr = await res.json();
+            document.getElementById('attrEnabled').checked = !!attr.enabled;
+            document.getElementById('attrShowLogo').checked = attr.show_logo !== false;
+            document.getElementById('attrIntro').value = attr.intro_text || 'Made possible by Kasboek.';
+            document.getElementById('attrLearnMore').value = attr.learn_more_text || 'To learn more, visit';
+            document.getElementById('attrWebLabel').value = attr.website_label || 'Kasboek Website';
+            document.getElementById('attrWebUrl').value = attr.website_url || '';
+            document.getElementById('attrLiLabel').value = attr.company_linkedin_label || 'Kasboek LinkedIn';
+            document.getElementById('attrLiUrl').value = attr.company_linkedin_url || '';
+            document.getElementById('attrThanks').value = attr.thanks_text || 'Thank you for letting us use this:';
+
+            const f = attr.founders || [];
+            for (let i = 0; i < 3; i++) {
+                document.getElementById(`founder${i+1}Name`).value = (f[i] && f[i].name) || '';
+                document.getElementById(`founder${i+1}Url`).value = (f[i] && f[i].url) || '';
+            }
+            updateAttrPreview();
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
+    async function saveAttributions() {
+        const payload = gatherAttrForm();
+        try {
+            const res = await fetch('/api/settings/attributions', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (res.ok) {
+                alert('Attribution settings saved and live on the Gallery!');
+                updateMonitor();
+            }
+        } catch (e) {
+            alert('Error saving attributions: ' + e);
+        }
+    }
+
+    // --- 4. PRINTS & AUTO-PRINT ---
+    async function loadPrintSettings() {
+        try {
+            const res = await fetch('/api/settings/printing?t=' + Date.now());
+            const p = await res.json();
+            document.getElementById('printAutoToggle').checked = !!p.auto_print;
+            document.getElementById('printerNameInput').value = p.printer_name || 'default';
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
+    async function savePrintSettings() {
+        const payload = {
+            auto_print: document.getElementById('printAutoToggle').checked,
+            printer_name: document.getElementById('printerNameInput').value.trim() || 'default'
+        };
+        try {
+            await fetch('/api/settings/printing', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            updateMonitor();
+        } catch (e) {
+            alert('Error saving print settings: ' + e);
+        }
+    }
+
     async function loadFiles() {
         const tbody = document.getElementById('fileTableBody');
-        tbody.innerHTML = '<tr><td colspan="4" class="text-center py-3"><div class="spinner-border spinner-border-sm"></div> Loading...</td></tr>';
-        
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center py-3"><div class="spinner-border spinner-border-sm"></div> Loading...</td></tr>';
+
         try {
-            const res = await fetch('/api/files/prints');
+            const res = await fetch('/api/files/prints?t=' + Date.now());
             const files = await res.json();
-            
-            if(files.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" class="text-center py-3 text-muted">No print files found</td></tr>';
+
+            if (!files.length) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4 text-muted">No print files found</td></tr>';
                 return;
             }
 
             tbody.innerHTML = files.map(f => `
                 <tr>
-                    <td>${f.name}</td>
-                    <td>${f.date}</td>
-                    <td>${f.size}</td>
                     <td>
-                        <button class="btn btn-sm btn-danger" onclick="deleteFiles('specific', '${f.name}')" title="Delete File">×</button>
+                        <a href="${f.pdf_url}" target="_blank">
+                            <img src="${f.thumb_url}?t=${f.timestamp}" alt="thumb" style="width: 48px; height: 48px; object-fit: contain; background: #fff; border-radius: 4px;">
+                        </a>
+                    </td>
+                    <td><a href="${f.pdf_url}" target="_blank" class="text-light">${f.name}</a></td>
+                    <td>${f.date}</td>
+                    <td><span class="badge bg-dark border border-secondary">${f.archetype || '-'}</span></td>
+                    <td>
+                        <span class="badge ${f.printed ? 'bg-secondary' : 'bg-success'}">
+                            ${f.printed ? '✓ Printed' : 'Available'}
+                        </span>
+                    </td>
+                    <td>${f.size}</td>
+                    <td class="text-end">
+                        <a href="${f.pdf_url}" target="_blank" class="btn btn-sm btn-outline-light me-1" title="Open PDF">📄</a>
+                        <button class="btn btn-sm btn-outline-success me-1" onclick="printOnHost('${f.name}')" title="Print on Host Printer">🖨️</button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="deleteFiles('specific', '${f.name}')" title="Delete">×</button>
                     </td>
                 </tr>
             `).join('');
         } catch (e) {
-            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-danger">Error loading files</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-danger">Error loading files</td></tr>';
+        }
+    }
+
+    async function printOnHost(filename) {
+        try {
+            const res = await fetch('/api/files/print', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: filename, mark_only: false })
+            });
+            const data = await res.json();
+            if (res.ok && data.status === 'success') {
+                alert('Print job sent to host printer!');
+                loadFiles();
+            } else {
+                alert('Host print failed: ' + (data.error || 'Unknown error'));
+            }
+        } catch (e) {
+            alert('Error: ' + e);
         }
     }
 
     async function deleteFiles(action, filename) {
-        let msg = action === 'all' ? "⚠️ ARE YOU SURE?\n\nDelete ALL print files older than today?" : `Delete ${filename}?`;
-        if(!confirm(msg)) return;
-
+        const msg = action === 'all' ? "Delete ALL print files older than today?" : `Delete ${filename}?`;
+        if (!confirm(msg)) return;
         try {
             await fetch('/api/files/delete', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({action: action, filename: filename})
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: action, filename: filename })
             });
             loadFiles();
+            updateMonitor();
         } catch (e) {
-            alert("Delete failed: " + e);
+            alert('Delete failed: ' + e);
         }
     }
 
-    // --- LOGS ---
+    // --- 5. LOGS ---
     async function loadLog(type) {
-        document.getElementById('logViewer').textContent = "Loading...";
+        document.getElementById('logViewer').textContent = 'Loading...';
         try {
-            const res = await fetch(`/api/logs/${type}`);
-            if(res.ok) {
-                const text = await res.text();
-                document.getElementById('logViewer').textContent = text;
-            } else {
-                document.getElementById('logViewer').textContent = "Error loading log file.";
-            }
+            const res = await fetch(`/api/logs/${type}?t=${Date.now()}`);
+            const text = await res.text();
+            document.getElementById('logViewer').textContent = text;
         } catch (e) {
-            document.getElementById('logViewer').textContent = "Connection error.";
+            document.getElementById('logViewer').textContent = 'Connection error.';
         }
     }
 
     // --- INIT ---
-    setInterval(updateMonitor, 5000);
     updateMonitor();
-    
-    // Auto load list when tab clicked
+    loadAIConfig();
+    loadAttributions();
+    loadPrintSettings();
+    setInterval(updateMonitor, 5000);
+
     document.querySelectorAll('a[data-bs-toggle="tab"]').forEach(el => {
         el.addEventListener('shown.bs.tab', event => {
-            if(event.target.getAttribute('href') === '#tab-files') loadFiles();
+            const target = event.target.getAttribute('href');
+            if (target === '#tab-files') { loadFiles(); loadPrintSettings(); }
+            if (target === '#tab-ai') loadAIConfig();
+            if (target === '#tab-attributions') loadAttributions();
         });
     });
 </script>

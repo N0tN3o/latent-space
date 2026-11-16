@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Latent Space — Browser Gaze Painter</title>
+    <style>
+        :root {
+            --bg: #0f1116;
+            --panel: #181b22;
+            --border: #2b303c;
+            --accent: #10b981;
+            --text: #f3f4f6;
+            --muted: #9ca3af;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background: var(--panel);
+            border-bottom: 1px solid var(--border);
+            padding: 14px 24px;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .title-group {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .status-badge {
+            background: rgba(16, 185, 129, 0.15);
+            color: #10b981;
+            border: 1px solid rgba(16, 185, 129, 0.4);
+            padding: 5px 14px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .btn {
+            background: #252934;
+            color: var(--text);
+            border: 1px solid var(--border);
+            padding: 8px 14px;
+            border-radius: 8px;
+            font-size: 0.88rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            transition: background 0.2s;
+        }
+
+        .btn:hover {
+            background: #323846;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background: #059669;
+        }
+
+        .workspace {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            position: relative;
+        }
+
+        .canvas-shell {
+            position: relative;
+            width: 100%;
+            max-width: 1120px;
+            aspect-ratio: 16 / 9;
+            background: #ffffff;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
+            border: 2px solid var(--border);
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            cursor: crosshair;
+        }
+
+        #cursorCanvas {
+            pointer-events: none;
+        }
+
+        /* Webcam PIP overlay */
+        .pip-box {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            width: 240px;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+            z-index: 20;
+        }
+
+        .pip-header {
+            padding: 6px 10px;
+            font-size: 0.75rem;
+            color: var(--muted);
+            display: flex;
+            justify-content: space-between;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .pip-video-wrap {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 4 / 3;
+            background: #000;
+        }
+
+        #webcamVideo {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+
+        #eyeOverlayCanvas {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+
+        .instructions-bar {
+            margin-top: 14px;
+            color: var(--muted);
+            font-size: 0.9rem;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="title-group">
+            <h2 style="font-size: 1.25rem;">👁️ Latent Space — Gaze Painter</h2>
+            <span class="status-badge" id="statusBadge">Ready (Move eyes or mouse/touch to draw)</span>
+        </div>
+        <div class="controls">
+            <button class="btn" id="camBtn" onclick="startWebcamGaze()">📷 Start Webcam Eye Tracking</button>
+            <button class="btn" id="calibBtn" onclick="startCalibration()" style="display:none;">🎯 Recalibrate Gaze</button>
+            <button class="btn" onclick="startTimedSession()">⏱️ 15s Timed Session</button>
+            <button class="btn" onclick="clearCanvas()">🧹 Clear</button>
+            <button class="btn btn-primary" id="submitBtn" onclick="submitDrawing()">✨ Submit & Analyze</button>
+            <a href="/" class="btn">🖼️ Gallery</a>
+            <a href="/kiosk" class="btn">🖨️ Kiosk</a>
+            <a href="/admin" class="btn">🎛️ Admin</a>
+        </div>
+    </header>
+
+    <div class="workspace">
+        <div class="canvas-shell">
+            <canvas id="artCanvas" width="1280" height="720"></canvas>
+            <canvas id="cursorCanvas" width="1280" height="720"></canvas>
+        </div>
+        <div class="instructions-bar" id="helperText">
+            Tip: Click <strong>Start Webcam Eye Tracking</strong> to draw hands-free with your eyes, or draw directly on the canvas with your mouse/touchscreen to test the AI pipeline.
+        </div>
+    </div>
+
+    <div class="pip-box" id="pipBox" style="display:none;">
+        <div class="pip-header">
+            <span>Eye Tracker Feed</span>
+            <span id="fpsCounter">0 FPS</span>
+        </div>
+        <div class="pip-video-wrap">
+            <video id="webcamVideo" autoplay playsinline muted></video>
+            <canvas id="eyeOverlayCanvas" width="320" height="240"></canvas>
+        </div>
+    </div>
+
+    <script type="module">
+        const artCanvas = document.getElementById('artCanvas');
+        const artCtx = artCanvas.getContext('2d');
+        const cursorCanvas = document.getElementById('cursorCanvas');
+        const cursorCtx = cursorCanvas.getContext('2d');
+        const statusBadge = document.getElementById('statusBadge');
+
+        const W = 1280;
+        const H = 720;
+
+        // Fill white background
+        function resetArtCanvas() {
+            artCtx.fillStyle = '#ffffff';
+            artCtx.fillRect(0, 0, W, H);
+        }
+        resetArtCanvas();
+
+        // Stroke state (mirrors gaze_painter/drawing.py physics)
+        let prevPoint = null;
+        let prevTime = performance.now();
+        let dwellTime = 0;
+        let strokeHistory = [];
+        let hasDrawn = false;
+        const dwellRadius = 0.03;
+
+        // Timer session state
+        let timedSessionActive = false;
+        let timedEndTimestamp = 0;
+
+        function updateStroke(normX, normY) {
+            const now = performance.now();
+            const dt = Math.max(0.001, (now - prevTime) / 1000.0);
+            prevTime = now;
+
+            const gx = Math.max(0, Math.min(W, normX * W));
+            const gy = Math.max(0, Math.min(H, normY * H));
+            const curPoint = { x: gx, y: gy };
+
+            // Draw green gaze crosshair on cursor layer
+            cursorCtx.clearRect(0, 0, W, H);
+            cursorCtx.strokeStyle = '#10b981';
+            cursorCtx.lineWidth = 1.5;
+            cursorCtx.beginPath();
+            cursorCtx.moveTo(gx - 18, gy);
+            cursorCtx.lineTo(gx + 18, gy);
+            cursorCtx.moveTo(gx, gy - 18);
+            cursorCtx.lineTo(gx, gy + 18);
+            cursorCtx.stroke();
+            cursorCtx.beginPath();
+            cursorCtx.arc(gx, gy, 7, 0, Math.PI * 2);
+            cursorCtx.stroke();
+
+            if (!prevPoint) {
+                prevPoint = curPoint;
+                dwellTime = 0;
+                strokeHistory = [curPoint];
+                return;
+            }
+
+            const dx = (curPoint.x - prevPoint.x) / W;
+            const dy = (curPoint.y - prevPoint.y) / H;
+            const dist = Math.hypot(dx, dy);
+
+            if (dist < dwellRadius) {
+                dwellTime += dt;
+            } else {
+                dwellTime = 0;
+            }
+
+            const baseWidth = 2;
+            const dwellBonus = Math.min(20, Math.floor(dwellTime * 10));
+            const speedFactor = Math.max(0.2, Math.min(1.0, dist * 50));
+            let lineWidth = Math.floor((baseWidth + dwellBonus) * (2.0 - speedFactor));
+            lineWidth = Math.max(1, Math.min(36, lineWidth));
+
+            strokeHistory.push(curPoint);
+            if (strokeHistory.length > 5) strokeHistory.shift();
+
+            artCtx.lineCap = 'round';
+            artCtx.lineJoin = 'round';
+            const shade = Math.min(80, Math.floor(speedFactor * 60));
+            artCtx.strokeStyle = `rgb(${shade}, 0, 0)`;
+            artCtx.lineWidth = lineWidth;
+
+            artCtx.beginPath();
+            artCtx.moveTo(prevPoint.x, prevPoint.y);
+            artCtx.lineTo(curPoint.x, curPoint.y);
+            artCtx.stroke();
+
+            artCtx.fillStyle = '#000000';
+            artCtx.beginPath();
+            artCtx.arc(curPoint.x, curPoint.y, Math.max(1, lineWidth / 2), 0, Math.PI * 2);
+            artCtx.fill();
+
+            hasDrawn = true;
+            prevPoint = curPoint;
+        }
+
+        // Pointer / Touch drawing support
+        let pointerDown = false;
+        function getNormFromEvent(e) {
+            const rect = artCanvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            return {
+                x: (clientX - rect.left) / rect.width,
+                y: (clientY - rect.top) / rect.height
+            };
+        }
+
+        artCanvas.addEventListener('mousedown', (e) => {
+            pointerDown = true;
+            prevPoint = null;
+            const p = getNormFromEvent(e);
+            updateStroke(p.x, p.y);
+        });
+        artCanvas.addEventListener('mousemove', (e) => {
+            if (!pointerDown) return;
+            const p = getNormFromEvent(e);
+            updateStroke(p.x, p.y);
+        });
+        window.addEventListener('mouseup', () => {
+            pointerDown = false;
+            prevPoint = null;
+        });
+
+        artCanvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            pointerDown = true;
+            prevPoint = null;
+            const p = getNormFromEvent(e);
+            updateStroke(p.x, p.y);
+        }, { passive: false });
+        artCanvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (!pointerDown) return;
+            const p = getNormFromEvent(e);
+            updateStroke(p.x, p.y);
+        }, { passive: false });
+        window.addEventListener('touchend', () => {
+            pointerDown = false;
+            prevPoint = null;
+        });
+
+        window.clearCanvas = function() {
+            resetArtCanvas();
+            cursorCtx.clearRect(0, 0, W, H);
+            prevPoint = null;
+            hasDrawn = false;
+            statusBadge.textContent = 'Canvas cleared';
+        };
+
+        window.startTimedSession = function() {
+            window.clearCanvas();
+            timedSessionActive = true;
+            timedEndTimestamp = performance.now() + 15000;
+            const timerInterval = setInterval(() => {
+                if (!timedSessionActive) {
+                    clearInterval(timerInterval);
+                    return;
+                }
+                const rem = (timedEndTimestamp - performance.now()) / 1000;
+                if (rem <= 0) {
+                    timedSessionActive = false;
+                    clearInterval(timerInterval);
+                    window.submitDrawing();
+                } else {
+                    statusBadge.textContent = `Drawing... ${rem.toFixed(1)}s remaining`;
+                }
+            }, 100);
+        };
+
+        window.submitDrawing = async function() {
+            if (!hasDrawn) {
+                alert('Please draw something on the canvas first (using your eyes or mouse/touch)!');
+                return;
+            }
+            const btn = document.getElementById('submitBtn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Uploading & Analyzing...';
+            statusBadge.textContent = 'Sending drawing to AI pipeline...';
+
+            try {
+                const dataUrl = artCanvas.toDataURL('image/png');
+                const res = await fetch('/api/drawings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: dataUrl })
+                });
+                const result = await res.json();
+                if (res.ok && result.status === 'success') {
+                    statusBadge.textContent = '✨ Analysis Pipeline Running! Updating Gallery...';
+                    pollPipelineUntilDone();
+                } else {
+                    alert('Upload failed: ' + (result.error || 'Unknown error'));
+                    btn.disabled = false;
+                    btn.textContent = '✨ Submit & Analyze';
+                }
+            } catch (e) {
+                alert('Error submitting drawing: ' + e);
+                btn.disabled = false;
+                btn.textContent = '✨ Submit & Analyze';
+            }
+        };
+
+        async function pollPipelineUntilDone() {
+            const btn = document.getElementById('submitBtn');
+            for (let i = 0; i < 45; i++) {
+                await new Promise(r => setTimeout(r, 1500));
+                try {
+                    const res = await fetch('/api/pipeline/status');
+                    const state = await res.json();
+                    if (!state.running) {
+                        statusBadge.textContent = '✅ Artwork & Poem Ready! Redirecting to Gallery...';
+                        btn.disabled = false;
+                        btn.textContent = '✨ Submit & Analyze';
+                        setTimeout(() => { window.location.href = '/'; }, 1200);
+                        return;
+                    }
+                } catch (_) {}
+            }
+            btn.disabled = false;
+            btn.textContent = '✨ Submit & Analyze';
+            window.location.href = '/';
+        }
+
+        // --- MediaPipe FaceLandmarker Webcam Gaze Tracking ---
+        let faceLandmarker = null;
+        let webcamRunning = false;
+        let isCalibrating = false;
+        let calibSamples = [];
+        const CALIB_NEEDED = 75;
+        let rangeMin = [-0.12, -0.10];
+        let rangeMax = [0.12, 0.10];
+        let smoothedNorm = null;
+
+        window.startCalibration = function() {
+            calibSamples = [];
+            isCalibrating = true;
+            statusBadge.textContent = 'Calibrating 0% — Look around all corners of the screen';
+        };
+
+        window.startWebcamGaze = async function() {
+            const camBtn = document.getElementById('camBtn');
+            camBtn.disabled = true;
+            camBtn.textContent = '⏳ Loading Eye Tracker...';
+            statusBadge.textContent = 'Loading MediaPipe FaceLandmarker...';
+
+            try {
+                const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
+                const filesetResolver = await vision.FilesetResolver.forVisionTasks(
+                    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+                );
+                faceLandmarker = await vision.FaceLandmarker.createFromOptions(filesetResolver, {
+                    baseOptions: {
+                        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+                        delegate: 'GPU'
+                    },
+                    runningMode: 'VIDEO',
+                    numFaces: 1
+                });
+
+                const video = document.getElementById('webcamVideo');
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 480, facingMode: 'user' }
+                });
+                video.srcObject = stream;
+                await video.play();
+
+                document.getElementById('pipBox').style.display = 'block';
+                document.getElementById('calibBtn').style.display = 'inline-block';
+                camBtn.textContent = '📷 Webcam Active';
+                webcamRunning = true;
+                window.startCalibration();
+                requestAnimationFrame(processVideoFrame);
+            } catch (err) {
+                console.error(err);
+                alert('Could not start webcam eye tracker: ' + err.message + '\nYou can still draw using mouse or touch!');
+                camBtn.disabled = false;
+                camBtn.textContent = '📷 Start Webcam Eye Tracking';
+                statusBadge.textContent = 'Mouse / Touch Drawing Active';
+            }
+        };
+
+        function computeEyeNorm(landmarks) {
+            const leftIrisIdx = [468, 469, 470, 471];
+            const rightIrisIdx = [473, 474, 475, 476];
+            const leftCorners = [33, 133];
+            const rightCorners = [362, 263];
+
+            function normForEye(irisIndices, cornerIndices) {
+                const pts = irisIndices.map(i => landmarks[i]);
+                const cPts = cornerIndices.map(i => landmarks[i]);
+                const all = pts.concat(cPts);
+                const cx = pts.reduce((s, p) => s + (1 - p.x), 0) / pts.length;
+                const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+                const xs = all.map(p => 1 - p.x);
+                const ys = all.map(p => p.y);
+                const minX = Math.min(...xs), maxX = Math.max(...xs);
+                const minY = Math.min(...ys), maxY = Math.max(...ys);
+                const w = Math.max(maxX - minX, 0.001);
+                const h = Math.max(maxY - minY, 0.001);
+                return [
+                    (cx - (minX + w / 2)) / w,
+                    (cy - (minY + h / 2)) / h
+                ];
+            }
+
+            const l = normForEye(leftIrisIdx, leftCorners);
+            const r = normForEye(rightIrisIdx, rightCorners);
+            return [(l[0] + r[0]) / 2, (l[1] + r[1]) / 2];
+        }
+
+        let lastFrameTs = performance.now();
+        function processVideoFrame() {
+            if (!webcamRunning) return;
+            const video = document.getElementById('webcamVideo');
+            const eyeCanvas = document.getElementById('eyeOverlayCanvas');
+            const eyeCtx = eyeCanvas.getContext('2d');
+
+            const now = performance.now();
+            const fps = Math.round(1000 / Math.max(1, now - lastFrameTs));
+            lastFrameTs = now;
+            document.getElementById('fpsCounter').textContent = `${fps} FPS`;
+
+            if (video.readyState >= 2 && faceLandmarker) {
+                const res = faceLandmarker.detectForVideo(video, now);
+                eyeCtx.clearRect(0, 0, eyeCanvas.width, eyeCanvas.height);
+
+                if (res.faceLandmarks && res.faceLandmarks.length > 0) {
+                    const lm = res.faceLandmarks[0];
+                    // Draw green iris dots on PIP
+                    eyeCtx.fillStyle = '#10b981';
+                    for (const idx of [468, 469, 470, 471, 473, 474, 475, 476]) {
+                        if (lm[idx]) {
+                            const x = (1 - lm[idx].x) * eyeCanvas.width;
+                            const y = lm[idx].y * eyeCanvas.height;
+                            eyeCtx.beginPath();
+                            eyeCtx.arc(x, y, 2.5, 0, Math.PI * 2);
+                            eyeCtx.fill();
+                        }
+                    }
+
+                    const raw = computeEyeNorm(lm);
+                    if (!smoothedNorm) {
+                        smoothedNorm = raw;
+                    } else {
+                        smoothedNorm = [
+                            0.65 * smoothedNorm[0] + 0.35 * raw[0],
+                            0.65 * smoothedNorm[1] + 0.35 * raw[1]
+                        ];
+                    }
+
+                    if (isCalibrating) {
+                        calibSamples.push([...smoothedNorm]);
+                        const pct = Math.min(100, Math.round((calibSamples.length / CALIB_NEEDED) * 100));
+                        statusBadge.textContent = `Calibrating ${pct}% — Look at all corners of the screen`;
+                        if (calibSamples.length >= CALIB_NEEDED) {
+                            const xs = calibSamples.map(s => s[0]).sort((a, b) => a - b);
+                            const ys = calibSamples.map(s => s[1]).sort((a, b) => a - b);
+                            const p05 = Math.floor(xs.length * 0.05);
+                            const p95 = Math.floor(xs.length * 0.95);
+                            const spanX = Math.max(0.02, xs[p95] - xs[p05]);
+                            const spanY = Math.max(0.02, ys[p95] - ys[p05]);
+                            rangeMin = [xs[p05] - spanX * 0.15, ys[p05] - spanY * 0.15];
+                            rangeMax = [xs[p95] + spanX * 0.15, ys[p95] + spanY * 0.15];
+                            isCalibrating = false;
+                            window.startTimedSession();
+                        }
+                    } else {
+                        const gx = Math.max(0, Math.min(1, (smoothedNorm[0] - rangeMin[0]) / (rangeMax[0] - rangeMin[0])));
+                        const gy = Math.max(0, Math.min(1, (smoothedNorm[1] - rangeMin[1]) / (rangeMax[1] - rangeMin[1])));
+                        updateStroke(gx, gy);
+                    }
+                }
+            }
+
+            requestAnimationFrame(processVideoFrame);
+        }
+    </script>
+</body>
+</html>
