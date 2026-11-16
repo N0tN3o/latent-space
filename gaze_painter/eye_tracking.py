@@ -30,8 +30,8 @@ DEADZONE = 0.018
 SACCADE_SPEED_THR = 0.25
 SMOOTH_ALPHA = 0.55
 ROLLING_BUFFER = 7
-BLINK_EAR_THRESHOLD = 0.17  # Eye Aspect Ratio below which a blink is occurring
-HEAD_POSE_WEIGHT = 0.28     # Blend factor for subtle head-orientation assist
+BLINK_EAR_THRESHOLD = 0.165  # Eye Aspect Ratio below which a blink is occurring
+HEAD_POSE_WEIGHT = 0.22     # Gentle head-orientation assist
 
 
 def nplm_to_xy(lm, idx, w, h):
@@ -51,43 +51,43 @@ def eye_bbox(landmarks_pts):
     return (x_min, y_min, x_max, y_max)
 
 
-def compute_canthus_normalized_iris(iris_center, outer_corner, inner_corner, top_lid, bottom_lid):
+def compute_canthus_normalized_iris(iris_center, corner_a, corner_b, top_lid, bottom_lid):
     """
-    Measure iris position relative to the rigid canthus line (inner-to-outer eye corner axis),
-    normalized by eye width in BOTH axes so vertical iris movement does NOT move the reference box.
-    Also returns the Eye Aspect Ratio (EAR) to detect and reject blinks.
+    Measure iris position relative to the rigid canthus line (eye corner axis),
+    always oriented left-to-right (+X) and top-to-bottom (+Y) so both eyes
+    always agree in sign and never cancel each other out.
     """
-    eye_vec = inner_corner - outer_corner
+    # Always orient from smaller X (left on screen) to larger X (right on screen)
+    if corner_a[0] <= corner_b[0]:
+        left_pt, right_pt = corner_a, corner_b
+    else:
+        left_pt, right_pt = corner_b, corner_a
+
+    eye_vec = right_pt - left_pt
     eye_width = float(np.linalg.norm(eye_vec))
     if eye_width < 1.0:
         return np.array([0.0, 0.0], dtype=np.float32), 0.3
 
-    # Unit basis vectors along the eye corner axis (u) and perpendicular vertical axis (v)
+    # Unit basis vectors: u points +X (rightward), v points +Y (downward)
     u = eye_vec / eye_width
     v = np.array([-u[1], u[0]], dtype=np.float32)
     if v[1] < 0:
         v = -v
 
-    eye_midpoint = 0.5 * (outer_corner + inner_corner)
+    eye_midpoint = 0.5 * (left_pt + right_pt)
     rel = iris_center - eye_midpoint
 
-    # Normalize BOTH horizontal and vertical offsets by eye_width (stable bone-anchored distance)
     norm_x = float(np.dot(rel, u)) / eye_width
     norm_y = float(np.dot(rel, v)) / eye_width
 
-    # Eye Aspect Ratio (EAR) for blink rejection
     lid_dist = float(np.linalg.norm(top_lid - bottom_lid))
     ear = lid_dist / eye_width
 
     return np.array([norm_x, norm_y], dtype=np.float32), ear
 
 
-def soft_scurve(x: float, gain: float = 1.35) -> float:
-    """
-    Apply a gentle S-curve on [0, 1] centered at 0.5 so comfortable glances
-    reach the canvas edges without requiring extreme eye strain.
-    """
-    centered = (x - 0.5) * 2.0  # [-1, 1]
+def soft_scurve(x: float, gain: float = 1.2) -> float:
+    centered = (x - 0.5) * 2.0
     curved = np.tanh(centered * gain) / np.tanh(gain)
     return float(np.clip(0.5 + 0.5 * curved, 0.0, 1.0))
 
@@ -123,6 +123,8 @@ class EyeTracker:
         )
         self.flip = flip
         self.buffer = deque(maxlen=ROLLING_BUFFER)
+        self.left_hist = deque(maxlen=5)
+        self.right_hist = deque(maxlen=5)
         self.smoothed = None
         self.prev = None
         self.prev_time = None
@@ -136,18 +138,18 @@ class EyeTracker:
 
         # Calibration data
         self.center_norm = np.array([0.0, 0.0], dtype=np.float32)
-        self.range_min = np.array([-0.10, -0.06], dtype=np.float32)
-        self.range_max = np.array([0.10, 0.06], dtype=np.float32)
+        self.range_min = np.array([-0.08, -0.055], dtype=np.float32)
+        self.range_max = np.array([0.08, 0.055], dtype=np.float32)
 
         # Calibration state
         self.is_calibrating = False
         self.calibration_samples = []
+        self.center_samples = []
         self.calibration_needed = 90
 
         # Anti-snap-back & Flow steering state
-        self.control_mode = "hybrid"  # "hybrid" (stabilized direct + anti-snap) or "flow" (gaze joystick steering)
+        self.control_mode = "hybrid"
         self.cursor_pos = np.array([0.5, 0.5], dtype=np.float32)
-        self.last_calibrated_target = np.array([0.5, 0.5], dtype=np.float32)
 
     def toggle_flip(self):
         self.flip = not self.flip
@@ -157,25 +159,36 @@ class EyeTracker:
         print(f"Gaze control mode switched to: {self.control_mode.upper()}")
         return self.control_mode
 
+    def recenter_now(self):
+        """Anchor (0.5, 0.5) to the current smoothed gaze position (great for glasses wearers)."""
+        if self.smoothed is not None:
+            half_span = 0.5 * (self.range_max - self.range_min)
+            self.center_norm = self.smoothed.copy()
+            self.range_min = self.center_norm - half_span
+            self.range_max = self.center_norm + half_span
+        self.cursor_pos = np.array([0.5, 0.5], dtype=np.float32)
+        print("Gaze center re-anchored to current eye position.")
+
     def start_auto_calibration(self):
-        """Resets and starts the automatic calibration process."""
+        """Resets and starts the guided calibration process."""
         self.calibration_samples = []
+        self.center_samples = []
         self.is_calibrating = True
         self.cursor_pos = np.array([0.5, 0.5], dtype=np.float32)
-        print("Starting automatic calibration - move your eyes comfortably around the screen!")
+        print("Starting calibration - look at the center first, then follow the target.")
 
     def add_calibration_sample(self, gaze_info):
-        """
-        Adds a non-blink gaze sample to the calibration buffer.
-        Returns True when calibration is complete, False otherwise.
-        """
         if not self.is_calibrating or gaze_info is None:
             return False
 
         if gaze_info.get("is_blinking", False):
             return False
 
-        self.calibration_samples.append(gaze_info["eye_norm"])
+        sample = gaze_info["smoothed_norm"]
+        self.calibration_samples.append(sample)
+        # First 30% of samples capture the user's natural resting center gaze
+        if len(self.calibration_samples) <= int(self.calibration_needed * 0.3):
+            self.center_samples.append(sample)
 
         if len(self.calibration_samples) >= self.calibration_needed:
             self.finish_calibration()
@@ -184,23 +197,21 @@ class EyeTracker:
         return False
 
     def finish_calibration(self):
-        """
-        Calculates calibration bounds using the 12th-88th percentiles (contracting rather
-        than expanding the denominator so the user can comfortably reach all 4 corners).
-        """
         if not self.calibration_samples:
-            print("Calibration failed: No samples collected.")
             self.is_calibrating = False
             return
 
         arr = np.array(self.calibration_samples, dtype=np.float32)
-        self.center_norm = np.median(arr, axis=0)
+        if self.center_samples:
+            self.center_norm = np.median(np.array(self.center_samples, dtype=np.float32), axis=0)
+        else:
+            self.center_norm = np.median(arr, axis=0)
 
-        # Use 12th and 88th percentiles so comfortable glances reach [0, 1] edges
-        p_low = np.percentile(arr, 12, axis=0)
-        p_high = np.percentile(arr, 88, axis=0)
+        p_low = np.percentile(arr, 10, axis=0)
+        p_high = np.percentile(arr, 90, axis=0)
 
-        span = np.maximum(p_high - p_low, np.array([0.03, 0.02], dtype=np.float32))
+        # Enforce a realistic physiological minimum span so staring straight ahead never creates a tiny hypersensitive box
+        span = np.maximum(p_high - p_low, np.array([0.11, 0.075], dtype=np.float32))
         self.range_min = self.center_norm - 0.5 * span
         self.range_max = self.center_norm + 0.5 * span
 
@@ -221,9 +232,12 @@ class EyeTracker:
 
     def load_calibration(self, data):
         self.center_norm = np.array(data.get("center_norm", [0.0, 0.0]), dtype=np.float32)
-        self.range_min = np.array(data.get("range_min", [-0.10, -0.06]), dtype=np.float32)
-        self.range_max = np.array(data.get("range_max", [0.10, 0.06]), dtype=np.float32)
-        print("Loaded calibration.")
+        r_min = np.array(data.get("range_min", [-0.08, -0.055]), dtype=np.float32)
+        r_max = np.array(data.get("range_max", [0.08, 0.055]), dtype=np.float32)
+        span = np.maximum(r_max - r_min, np.array([0.11, 0.075], dtype=np.float32))
+        self.range_min = self.center_norm - 0.5 * span
+        self.range_max = self.center_norm + 0.5 * span
+        self.cursor_pos = np.array([0.5, 0.5], dtype=np.float32)
 
     def get_calibration_data(self):
         return {
@@ -233,13 +247,6 @@ class EyeTracker:
         }
 
     def get_calibrated_gaze(self, gaze_info, dt=0.033):
-        """
-        Map raw eye position to [0, 1] canvas coordinates with:
-          - Blink hold (prevents vertical spikes during blinks)
-          - S-curve edge reach amplification
-          - Centripetal return-to-center dampening (stops cursor snapping back to middle)
-          - Optional 'flow' steering mode
-        """
         if gaze_info is None:
             return None
 
@@ -248,10 +255,10 @@ class EyeTracker:
 
         raw_norm = gaze_info["smoothed_norm"]
 
-        span_x = max(float(self.range_max[0] - self.range_min[0]), 1e-4)
-        span_y = max(float(self.range_max[1] - self.range_min[1]), 1e-4)
-        lin_x = (float(raw_norm[0]) - float(self.range_min[0])) / span_x
-        lin_y = (float(raw_norm[1]) - float(self.range_min[1])) / span_y
+        span_x = max(float(self.range_max[0] - self.range_min[0]), 0.08)
+        span_y = max(float(self.range_max[1] - self.range_min[1]), 0.055)
+        lin_x = 0.5 + (float(raw_norm[0]) - float(self.center_norm[0])) / span_x
+        lin_y = 0.5 + (float(raw_norm[1]) - float(self.center_norm[1])) / span_y
 
         lin_x = float(np.clip(np.nan_to_num(lin_x, nan=0.5), 0.0, 1.0))
         lin_y = float(np.clip(np.nan_to_num(lin_y, nan=0.5), 0.0, 1.0))
@@ -259,8 +266,6 @@ class EyeTracker:
         target = np.array([soft_scurve(lin_x), soft_scurve(lin_y)], dtype=np.float32)
 
         if self.control_mode == "flow":
-            # Gaze Flow / Steering mode: looking away from center steers the brush;
-            # relaxing eyes back to center pauses the brush in place!
             offset = target - np.array([0.5, 0.5], dtype=np.float32)
             mag = float(np.linalg.norm(offset))
             if mag > 0.08:
@@ -268,13 +273,10 @@ class EyeTracker:
                 self.cursor_pos = np.clip(self.cursor_pos + velocity * max(0.01, min(dt, 0.1)), 0.02, 0.98)
             return (float(self.cursor_pos[0]), float(self.cursor_pos[1]))
 
-        # Hybrid Stabilized Direct Mode with Anti-Center-Snap Dampening:
-        # Check if the eye is snapping rapidly back toward (0.5, 0.5) from the periphery
         center_pt = np.array([0.5, 0.5], dtype=np.float32)
         prev_dist_from_center = float(np.linalg.norm(self.cursor_pos - center_pt))
         new_dist_from_center = float(np.linalg.norm(target - center_pt))
-        step_vec = target - self.cursor_pos
-        step_dist = float(np.linalg.norm(step_vec))
+        step_dist = float(np.linalg.norm(target - self.cursor_pos))
 
         is_center_snapback = (
             prev_dist_from_center > 0.22
@@ -282,13 +284,7 @@ class EyeTracker:
             and step_dist > 0.08
         )
 
-        if is_center_snapback:
-            # Strongly dampen centripetal snap-back so the brush stays near the outer stroke
-            alpha = 0.04
-        else:
-            # Responsive outward / lateral tracking
-            alpha = 0.28
-
+        alpha = 0.05 if is_center_snapback else 0.22
         self.cursor_pos = (1.0 - alpha) * self.cursor_pos + alpha * target
         self.cursor_pos = np.clip(self.cursor_pos, 0.0, 1.0)
         return (float(self.cursor_pos[0]), float(self.cursor_pos[1]))
@@ -319,21 +315,30 @@ class EyeTracker:
             r_bot = nplm_to_xy(lm, FACEMESH_LANDMARKS["right_eye_bottom"], w, h)
 
             left_norm, left_ear = compute_canthus_normalized_iris(left_center, l_outer, l_inner, l_top, l_bot)
-            # For right eye, outer is on the right side and inner is on the left side
-            right_norm, right_ear = compute_canthus_normalized_iris(right_center, r_inner, r_outer, r_top, r_bot)
+            right_norm, right_ear = compute_canthus_normalized_iris(right_center, r_outer, r_inner, r_top, r_bot)
 
             avg_ear = 0.5 * (left_ear + right_ear)
             is_blinking = avg_ear < BLINK_EAR_THRESHOLD
             self.is_blinking = is_blinking
 
-            # Subtle head-pose assist using nose tip relative to frame center
+            # Glasses glare / single-eye outlier rejection:
+            # Compare each eye against its short-term median and weight the steadier eye higher
+            self.left_hist.append(left_norm)
+            self.right_hist.append(right_norm)
+            l_med = np.median(np.array(self.left_hist), axis=0)
+            r_med = np.median(np.array(self.right_hist), axis=0)
+            l_jitter = float(np.linalg.norm(left_norm - l_med)) + 1e-4
+            r_jitter = float(np.linalg.norm(right_norm - r_med)) + 1e-4
+            w_left = r_jitter / (l_jitter + r_jitter)
+            w_right = l_jitter / (l_jitter + r_jitter)
+            eye_only_norm = w_left * left_norm + w_right * right_norm
+
             nose_pt = nplm_to_xy(lm, FACEMESH_LANDMARKS["nose_tip"], w, h)
             head_offset = np.array([
                 (nose_pt[0] / float(w)) - 0.5,
                 (nose_pt[1] / float(h)) - 0.5,
             ], dtype=np.float32)
 
-            eye_only_norm = 0.5 * (left_norm + right_norm)
             combined_norm = eye_only_norm + HEAD_POSE_WEIGHT * head_offset
             raw_norm = combined_norm.copy()
 

@@ -70,7 +70,7 @@
             border: 1px solid var(--border);
             padding: 8px 14px;
             border-radius: 8px;
-            font-size: 0.86rem;
+            font-size: 0.85rem;
             font-weight: 600;
             cursor: pointer;
             text-decoration: none;
@@ -174,7 +174,7 @@
         .instructions-bar {
             margin-top: 14px;
             color: var(--muted);
-            font-size: 0.9rem;
+            font-size: 0.88rem;
             text-align: center;
         }
     </style>
@@ -182,24 +182,25 @@
 <body>
     <header>
         <div class="title-group">
-            <h2 style="font-size: 1.25rem;">👁️ Latent Space — Gaze Painter</h2>
+            <h2 style="font-size: 1.2rem;">Latent Space — Gaze Painter</h2>
             <span class="status-badge" id="statusBadge">Ready (Move eyes or mouse/touch to draw)</span>
         </div>
         <div class="controls">
-            <button class="btn" id="camBtn" onclick="startWebcamGaze()">📷 Start Webcam Eye Tracking</button>
-            <button class="btn" id="modeBtn" onclick="toggleGazeMode()" title="Switch between Anti-Snap Direct mapping and Gaze Flow Steering">🧭 Mode: Stabilized Direct</button>
-            <button class="btn" id="calibBtn" onclick="startCalibration()" style="display:none;">🎯 Recalibrate</button>
+            <button class="btn" id="camBtn" onclick="startWebcamGaze()">Start Webcam Eye Tracking</button>
+            <button class="btn" id="centerBtn" onclick="recenterCursorNow()" style="display:none;" title="Press Spacebar anytime to re-center the cursor to your current gaze">Center Cursor [Space]</button>
+            <button class="btn" id="calibBtn" onclick="startCalibration()" style="display:none;">Recalibrate</button>
+            <button class="btn" id="modeBtn" onclick="toggleGazeMode()" title="Switch between Anti-Snap Direct mapping and Gaze Flow Steering">Mode: Stabilized Direct</button>
             <select class="btn-select" id="brushTheme" title="Brush Ink Style">
-                <option value="classic">🖋️ Classic Obsidian Ink</option>
-                <option value="ember">🔥 Velocity Ember</option>
-                <option value="indigo">🌌 Midnight Indigo</option>
+                <option value="classic">Classic Obsidian Ink</option>
+                <option value="ember">Velocity Ember</option>
+                <option value="indigo">Midnight Indigo</option>
             </select>
-            <button class="btn" onclick="startTimedSession()">⏱️ 15s Session</button>
-            <button class="btn" onclick="clearCanvas()">🧹 Clear</button>
-            <button class="btn btn-primary" id="submitBtn" onclick="submitDrawing()">✨ Submit & Analyze</button>
-            <a href="/" class="btn">🖼️ Gallery</a>
-            <a href="/kiosk" class="btn">🖨️ Kiosk</a>
-            <a href="/admin" class="btn">🎛️ Admin</a>
+            <button class="btn" onclick="startTimedSession()">15s Session</button>
+            <button class="btn" onclick="clearCanvas()">Clear</button>
+            <button class="btn btn-primary" id="submitBtn" onclick="submitDrawing()">Submit &amp; Analyze</button>
+            <a href="/" class="btn">Gallery</a>
+            <a href="/kiosk" class="btn">Kiosk</a>
+            <a href="/admin" class="btn">Admin</a>
         </div>
     </header>
 
@@ -209,7 +210,7 @@
             <canvas id="cursorCanvas" width="1280" height="720"></canvas>
         </div>
         <div class="instructions-bar" id="helperText">
-            <strong>Stabilized Direct Mode</strong> dampens involuntary eye snap-backs toward the center. Switch to <strong>Gaze Flow (Steering)</strong> if you want your gaze direction to glide the brush smoothly without ever returning to the middle!
+            Tip: Press <strong>Spacebar</strong> at any time while looking at the center of the canvas to instantly re-center the cursor (especially helpful when wearing glasses).
         </div>
     </div>
 
@@ -258,8 +259,8 @@
             gazeControlMode = (gazeControlMode === 'hybrid') ? 'flow' : 'hybrid';
             const btn = document.getElementById('modeBtn');
             btn.textContent = gazeControlMode === 'hybrid'
-                ? '🧭 Mode: Stabilized Direct'
-                : '🌊 Mode: Gaze Flow (Steering)';
+                ? 'Mode: Stabilized Direct'
+                : 'Mode: Gaze Flow (Steering)';
         };
 
         function getStrokeColor(speedFactor) {
@@ -275,6 +276,39 @@
             }
             const shade = Math.min(75, Math.floor(speedFactor * 55));
             return `rgb(${shade}, 0, 0)`;
+        }
+
+        function drawCalibrationTarget(pct) {
+            cursorCtx.clearRect(0, 0, W, H);
+            let tx = W * 0.5;
+            let ty = H * 0.5;
+            let instruction = 'Look at the center dot';
+
+            if (pct > 35) {
+                const angle = ((pct - 35) / 65.0) * Math.PI * 2.0;
+                tx = W * (0.5 + 0.36 * Math.cos(angle));
+                ty = H * (0.5 + 0.34 * Math.sin(angle));
+                instruction = 'Follow the moving target with your eyes';
+            }
+
+            // Outer ring
+            cursorCtx.strokeStyle = '#10b981';
+            cursorCtx.lineWidth = 3;
+            cursorCtx.beginPath();
+            cursorCtx.arc(tx, ty, 24, 0, Math.PI * 2);
+            cursorCtx.stroke();
+
+            // Center bullseye
+            cursorCtx.fillStyle = '#10b981';
+            cursorCtx.beginPath();
+            cursorCtx.arc(tx, ty, 7, 0, Math.PI * 2);
+            cursorCtx.fill();
+
+            // Label
+            cursorCtx.fillStyle = '#111827';
+            cursorCtx.font = '600 18px Segoe UI, sans-serif';
+            cursorCtx.textAlign = 'center';
+            cursorCtx.fillText(`${instruction} (${pct}%)`, W * 0.5, H - 30);
         }
 
         function updateStroke(normX, normY) {
@@ -422,12 +456,12 @@
 
         window.submitDrawing = async function() {
             if (!hasDrawn) {
-                alert('Please draw something on the canvas first (using your eyes or mouse/touch)!');
+                alert('Please draw something on the canvas first (using your eyes or mouse/touch).');
                 return;
             }
             const btn = document.getElementById('submitBtn');
             btn.disabled = true;
-            btn.textContent = '⏳ Uploading & Analyzing...';
+            btn.textContent = 'Uploading & Analyzing...';
             statusBadge.textContent = 'Sending drawing to AI pipeline...';
 
             try {
@@ -439,17 +473,17 @@
                 });
                 const result = await res.json();
                 if (res.ok && result.status === 'success') {
-                    statusBadge.textContent = '✨ Analysis Pipeline Running! Updating Gallery...';
+                    statusBadge.textContent = 'Analysis Pipeline Running — Updating Gallery...';
                     pollPipelineUntilDone();
                 } else {
                     alert('Upload failed: ' + (result.error || 'Unknown error'));
                     btn.disabled = false;
-                    btn.textContent = '✨ Submit & Analyze';
+                    btn.textContent = 'Submit & Analyze';
                 }
             } catch (e) {
                 alert('Error submitting drawing: ' + e);
                 btn.disabled = false;
-                btn.textContent = '✨ Submit & Analyze';
+                btn.textContent = 'Submit & Analyze';
             }
         };
 
@@ -461,47 +495,67 @@
                     const res = await fetch('/api/pipeline/status');
                     const state = await res.json();
                     if (!state.running) {
-                        statusBadge.textContent = '✅ Artwork & Poem Ready! Redirecting to Gallery...';
+                        statusBadge.textContent = 'Artwork & Poem Ready — Redirecting to Gallery...';
                         btn.disabled = false;
-                        btn.textContent = '✨ Submit & Analyze';
+                        btn.textContent = 'Submit & Analyze';
                         setTimeout(() => { window.location.href = '/'; }, 1200);
                         return;
                     }
                 } catch (_) {}
             }
             btn.disabled = false;
-            btn.textContent = '✨ Submit & Analyze';
+            btn.textContent = 'Submit & Analyze';
             window.location.href = '/';
         }
 
-        // --- MediaPipe FaceLandmarker Webcam Gaze Tracking (Upgraded Canthus + Anti-Snap Math) ---
+        // --- MediaPipe FaceLandmarker Webcam Gaze Tracking ---
         let faceLandmarker = null;
         let webcamRunning = false;
         let isCalibrating = false;
         let calibSamples = [];
-        const CALIB_NEEDED = 80;
-        let rangeMin = [-0.08, -0.05];
-        let rangeMax = [0.08, 0.05];
+        let centerSamples = [];
+        const CALIB_NEEDED = 85;
+        let centerNorm = [0.0, 0.0];
+        let spanNorm = [0.11, 0.075];
         let smoothedNorm = null;
+        let leftHist = [];
+        let rightHist = [];
 
-        function softSCurve(x, gain = 1.35) {
+        function softSCurve(x, gain = 1.2) {
             const c = (x - 0.5) * 2.0;
             const curved = Math.tanh(c * gain) / Math.tanh(gain);
             return Math.max(0.0, Math.min(1.0, 0.5 + 0.5 * curved));
         }
 
+        window.recenterCursorNow = function() {
+            if (smoothedNorm) {
+                centerNorm = [smoothedNorm[0], smoothedNorm[1]];
+            }
+            cursorPos = [0.5, 0.5];
+            prevPoint = null;
+            statusBadge.textContent = 'Cursor re-centered to current gaze';
+        };
+
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && webcamRunning) {
+                e.preventDefault();
+                window.recenterCursorNow();
+            }
+        });
+
         window.startCalibration = function() {
             calibSamples = [];
+            centerSamples = [];
             isCalibrating = true;
             cursorPos = [0.5, 0.5];
             prevPoint = null;
-            statusBadge.textContent = 'Calibrating 0% — Move your eyes comfortably around the screen';
+            statusBadge.textContent = 'Calibrating 0% — Look at the center dot first';
         };
 
         window.startWebcamGaze = async function() {
             const camBtn = document.getElementById('camBtn');
             camBtn.disabled = true;
-            camBtn.textContent = '⏳ Loading Eye Tracker...';
+            camBtn.textContent = 'Loading Eye Tracker...';
             statusBadge.textContent = 'Loading MediaPipe FaceLandmarker...';
 
             try {
@@ -527,15 +581,16 @@
 
                 document.getElementById('pipBox').style.display = 'block';
                 document.getElementById('calibBtn').style.display = 'inline-block';
-                camBtn.textContent = '📷 Webcam Active';
+                document.getElementById('centerBtn').style.display = 'inline-block';
+                camBtn.textContent = 'Webcam Active';
                 webcamRunning = true;
                 window.startCalibration();
                 requestAnimationFrame(processVideoFrame);
             } catch (err) {
                 console.error(err);
-                alert('Could not start webcam eye tracker: ' + err.message + '\nYou can still draw using mouse or touch!');
+                alert('Could not start webcam eye tracker: ' + err.message + '\nYou can still draw using mouse or touch.');
                 camBtn.disabled = false;
-                camBtn.textContent = '📷 Start Webcam Eye Tracking';
+                camBtn.textContent = 'Start Webcam Eye Tracking';
                 statusBadge.textContent = 'Mouse / Touch Drawing Active';
             }
         };
@@ -553,15 +608,18 @@
                 }
                 return [sx / indices.length, sy / indices.length];
             }
-            function canthusEye(irisIndices, outerIdx, innerIdx, topIdx, botIdx) {
+            function canthusEye(irisIndices, cornerAIdx, cornerBIdx, topIdx, botIdx) {
                 const iris = avgPts(irisIndices);
-                const outer = pt(outerIdx);
-                const inner = pt(innerIdx);
+                const cA = pt(cornerAIdx);
+                const cB = pt(cornerBIdx);
+                // Always orient from left (smaller X) to right (larger X) so both eyes have +X rightward!
+                const leftPt = cA[0] <= cB[0] ? cA : cB;
+                const rightPt = cA[0] <= cB[0] ? cB : cA;
                 const top = pt(topIdx);
                 const bot = pt(botIdx);
 
-                const vx = inner[0] - outer[0];
-                const vy = inner[1] - outer[1];
+                const vx = rightPt[0] - leftPt[0];
+                const vy = rightPt[1] - leftPt[1];
                 const eyeW = Math.hypot(vx, vy);
                 if (eyeW < 1e-4) return { norm: [0, 0], ear: 0.3 };
 
@@ -570,12 +628,11 @@
                 let nx = -uy, ny = ux;
                 if (ny < 0) { nx = -nx; ny = -ny; }
 
-                const midX = 0.5 * (outer[0] + inner[0]);
-                const midY = 0.5 * (outer[1] + inner[1]);
+                const midX = 0.5 * (leftPt[0] + rightPt[0]);
+                const midY = 0.5 * (leftPt[1] + rightPt[1]);
                 const rx = iris[0] - midX;
                 const ry = iris[1] - midY;
 
-                // Both X and Y normalized by bone-anchored eye width (no moving bounding box cancellation!)
                 const normX = (rx * ux + ry * uy) / eyeW;
                 const normY = (rx * nx + ry * ny) / eyeW;
 
@@ -585,18 +642,42 @@
             }
 
             const left = canthusEye([468, 469, 470, 471], 33, 133, 159, 145);
-            const right = canthusEye([473, 474, 475, 476], 263, 362, 386, 374);
+            const right = canthusEye([473, 474, 475, 476], 362, 263, 386, 374);
             const ear = 0.5 * (left.ear + right.ear);
-            const isBlinking = ear < 0.17;
+            const isBlinking = ear < 0.165;
 
-            // Subtle head-pose assist from nose tip (1)
+            // Glasses glare outlier rejection: weight the steadier eye higher
+            leftHist.push(left.norm);
+            rightHist.push(right.norm);
+            if (leftHist.length > 5) leftHist.shift();
+            if (rightHist.length > 5) rightHist.shift();
+
+            function median2D(arr) {
+                const xs = arr.map(p => p[0]).sort((a, b) => a - b);
+                const ys = arr.map(p => p[1]).sort((a, b) => a - b);
+                const m = Math.floor(arr.length / 2);
+                return [xs[m], ys[m]];
+            }
+            const lMed = median2D(leftHist);
+            const rMed = median2D(rightHist);
+            const lJit = Math.hypot(left.norm[0] - lMed[0], left.norm[1] - lMed[1]) + 1e-4;
+            const rJit = Math.hypot(right.norm[0] - rMed[0], right.norm[1] - rMed[1]) + 1e-4;
+            const wLeft = rJit / (lJit + rJit);
+            const wRight = lJit / (lJit + rJit);
+
+            const fusedEye = [
+                wLeft * left.norm[0] + wRight * right.norm[0],
+                wLeft * left.norm[1] + wRight * right.norm[1]
+            ];
+
+            // Gentle head-pose assist from nose tip (1)
             const nose = pt(1);
             const headOffset = [nose[0] - 0.5, nose[1] - 0.5];
-            const HEAD_WEIGHT = 0.28;
+            const HEAD_WEIGHT = 0.22;
 
             const norm = [
-                0.5 * (left.norm[0] + right.norm[0]) + HEAD_WEIGHT * headOffset[0],
-                0.5 * (left.norm[1] + right.norm[1]) + HEAD_WEIGHT * headOffset[1]
+                fusedEye[0] + HEAD_WEIGHT * headOffset[0],
+                fusedEye[1] + HEAD_WEIGHT * headOffset[1]
             ];
 
             return { norm, isBlinking, ear };
@@ -639,8 +720,8 @@
                             smoothedNorm = norm;
                         } else {
                             smoothedNorm = [
-                                0.55 * smoothedNorm[0] + 0.45 * norm[0],
-                                0.55 * smoothedNorm[1] + 0.45 * norm[1]
+                                0.60 * smoothedNorm[0] + 0.40 * norm[0],
+                                0.60 * smoothedNorm[1] + 0.40 * norm[1]
                             ];
                         }
                     }
@@ -648,26 +729,44 @@
                     if (isCalibrating && smoothedNorm && !isBlinking) {
                         calibSamples.push([...smoothedNorm]);
                         const pct = Math.min(100, Math.round((calibSamples.length / CALIB_NEEDED) * 100));
-                        statusBadge.textContent = `Calibrating ${pct}% — Look comfortably around the screen`;
+                        if (pct <= 35) {
+                            centerSamples.push([...smoothedNorm]);
+                        }
+                        drawCalibrationTarget(pct);
+                        statusBadge.textContent = pct <= 35
+                            ? `Calibrating ${pct}% — Look at the center dot`
+                            : `Calibrating ${pct}% — Follow the target dot`;
+
                         if (calibSamples.length >= CALIB_NEEDED) {
                             const xs = calibSamples.map(s => s[0]).sort((a, b) => a - b);
                             const ys = calibSamples.map(s => s[1]).sort((a, b) => a - b);
-                            const midIdx = Math.floor(xs.length * 0.5);
-                            const p12 = Math.floor(xs.length * 0.12);
-                            const p88 = Math.floor(xs.length * 0.88);
-                            const spanX = Math.max(0.025, xs[p88] - xs[p12]);
-                            const spanY = Math.max(0.018, ys[p88] - ys[p12]);
-                            rangeMin = [xs[midIdx] - 0.5 * spanX, ys[midIdx] - 0.5 * spanY];
-                            rangeMax = [xs[midIdx] + 0.5 * spanX, ys[midIdx] + 0.5 * spanY];
+
+                            if (centerSamples.length > 3) {
+                                const cxs = centerSamples.map(s => s[0]).sort((a, b) => a - b);
+                                const cys = centerSamples.map(s => s[1]).sort((a, b) => a - b);
+                                const cm = Math.floor(centerSamples.length / 2);
+                                centerNorm = [cxs[cm], cys[cm]];
+                            } else {
+                                const m = Math.floor(xs.length / 2);
+                                centerNorm = [xs[m], ys[m]];
+                            }
+
+                            const p10 = Math.floor(xs.length * 0.10);
+                            const p90 = Math.floor(xs.length * 0.90);
+                            // Physiological minimum span prevents corner-jumping when user stares mostly near center
+                            spanNorm = [
+                                Math.max(0.11, xs[p90] - xs[p10]),
+                                Math.max(0.075, ys[p90] - ys[p10])
+                            ];
                             isCalibrating = false;
+                            cursorPos = [0.5, 0.5];
+                            prevPoint = null;
                             window.startTimedSession();
                         }
                     } else if (!isCalibrating && smoothedNorm) {
                         if (!isBlinking) {
-                            const spanX = Math.max(1e-4, rangeMax[0] - rangeMin[0]);
-                            const spanY = Math.max(1e-4, rangeMax[1] - rangeMin[1]);
-                            const linX = Math.max(0, Math.min(1, (smoothedNorm[0] - rangeMin[0]) / spanX));
-                            const linY = Math.max(0, Math.min(1, (smoothedNorm[1] - rangeMin[1]) / spanY));
+                            const linX = Math.max(0, Math.min(1, 0.5 + (smoothedNorm[0] - centerNorm[0]) / spanNorm[0]));
+                            const linY = Math.max(0, Math.min(1, 0.5 + (smoothedNorm[1] - centerNorm[1]) / spanNorm[1]));
                             const targetX = softSCurve(linX);
                             const targetY = softSCurve(linY);
 
@@ -684,7 +783,7 @@
                                 const newDist = Math.hypot(targetX - 0.5, targetY - 0.5);
                                 const stepDist = Math.hypot(targetX - cursorPos[0], targetY - cursorPos[1]);
                                 const isSnapBack = (prevDist > 0.22 && newDist < prevDist - 0.06 && stepDist > 0.08);
-                                const alpha = isSnapBack ? 0.04 : 0.28;
+                                const alpha = isSnapBack ? 0.05 : 0.22;
                                 cursorPos[0] = (1.0 - alpha) * cursorPos[0] + alpha * targetX;
                                 cursorPos[1] = (1.0 - alpha) * cursorPos[1] + alpha * targetY;
                             }

@@ -159,7 +159,7 @@ class GazeTrackingPainter:
         if self.remote_url:
             print(f"Remote Sync URL:  {self.remote_url}")
         print("=" * 60)
-        print("Controls: [q] Quit | [c] Recalibrate | [m] Toggle Hybrid/Flow Mode")
+        print("Controls: [q] Quit | [Space] Center Cursor Here | [c] Recalibrate | [m] Toggle Hybrid/Flow")
         print()
 
         cv2.namedWindow(self.eyes_window)
@@ -190,6 +190,7 @@ class GazeTrackingPainter:
 
                 if gaze_info is not None:
                     if self.has_calibration:
+                        self.tracker.recenter_now()
                         self.state = STATE_DRAWING
                         self.draw_start_time = now
                         self.painter.clear()
@@ -252,6 +253,9 @@ class GazeTrackingPainter:
                 self.close_canvas()
             elif key == ord("m"):
                 self.tracker.toggle_control_mode()
+            elif key == ord(" "):
+                self.tracker.recenter_now()
+                self.painter.prev_point = None
 
         self.release()
 
