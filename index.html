@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Latent Space, Through the Eyes of the Algorithm</title>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
     <style>
         @font-face {
             font-family: 'Korolev Medium';
@@ -31,15 +32,16 @@
             padding: 20px 20px 40px;
         }
 
-        /* Subtle floating navigation bar (hidden in print) */
+        /* Subtle floating navigation & history bar (hidden in print) */
         .floating-nav {
             position: fixed;
             top: 14px;
             right: 18px;
             display: flex;
-            gap: 8px;
+            flex-wrap: wrap;
+            gap: 6px;
             z-index: 100;
-            opacity: 0.25;
+            opacity: 0.3;
             transition: opacity 0.25s ease;
         }
         .floating-nav:hover {
@@ -50,14 +52,18 @@
             color: #fff;
             text-decoration: none;
             border: none;
-            padding: 6px 12px;
+            padding: 6px 11px;
             border-radius: 6px;
-            font-size: 0.78rem;
+            font-size: 0.76rem;
             cursor: pointer;
             font-family: inherit;
         }
         .floating-nav a:hover, .floating-nav button:hover {
             background: #3a3a3a;
+        }
+        .floating-nav .live-active {
+            background: #10b981;
+            color: #fff;
         }
         
         /* Main scribble section - centerpiece */
@@ -65,7 +71,7 @@
             display: flex;
             justify-content: center;
             align-items: center;
-            margin-bottom: 24px;
+            margin-bottom: 22px;
         }
         
         .scribble-container {
@@ -77,7 +83,7 @@
         
         .scribble-container img {
             width: 92%;
-            max-height: 460px;
+            max-height: 450px;
             object-fit: contain;
             display: block;
         }
@@ -85,13 +91,14 @@
         .archetype-badge {
             display: inline-block;
             margin-top: 6px;
-            padding: 3px 12px;
-            font-size: 0.75em;
+            padding: 4px 14px;
+            font-size: 0.74em;
             text-transform: uppercase;
             letter-spacing: 1.5px;
-            color: #555;
-            border: 1px solid #ddd;
+            color: #444;
+            border: 1px solid #d0d0d0;
             border-radius: 20px;
+            background: #fafafa;
         }
         
         /* Two columns below - using table for consistent print rendering */
@@ -128,20 +135,45 @@
             white-space: pre-line;
         }
         
-        /* Heatmap - center */
-        .heatmap-container {
+        /* Heatmap + QR row */
+        .visual-metrics-row {
             display: flex;
-            justify-content: flex-start;
             align-items: flex-start;
-            height: 100%;
+            justify-content: space-between;
+            gap: 24px;
+            margin-top: 26px;
         }
         
         .heatmap-container img {
-            width: 45%;
-            max-width: 180px;
-            height: auto;
+            width: 140px;
+            height: 140px;
             object-fit: contain;
             border: 1px solid #eee;
+        }
+
+        .qr-card {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+            padding: 8px 12px;
+            border: 1px solid #eaeaea;
+            border-radius: 8px;
+            background: #fcfcfc;
+        }
+
+        .qr-card svg {
+            width: 96px;
+            height: 96px;
+            display: block;
+        }
+
+        .qr-caption {
+            font-size: 0.68em;
+            color: #666;
+            margin-top: 4px;
+            line-height: 1.25;
+            max-width: 115px;
         }
         
         /* Poem - right */
@@ -238,6 +270,9 @@
 </head>
 <body>
     <nav class="floating-nav">
+        <button onclick="stepHistory(1)" title="Older Artwork (Left Arrow)">◀ Prev</button>
+        <button id="liveModeBtn" class="live-active" onclick="returnToLive()" title="Return to Live Feed">🔴 Live</button>
+        <button onclick="stepHistory(-1)" title="Newer Artwork (Right Arrow)">Next ▶</button>
         <a href="/draw">👁️ Gaze Draw</a>
         <a href="/kiosk">🖨️ Print Kiosk</a>
         <a href="/admin">🎛️ Admin</a>
@@ -252,7 +287,7 @@
             </div>
         </div>
         
-        <!-- Page title below scribble -->
+        <!-- Page title & Fractal/Archetype Pill below scribble -->
         <header style="text-align: center; margin-bottom: 4px;">
             <h1 style="font-size: 1.5em; font-weight: 400; letter-spacing: 2px; color: #2a2a2a;">
                 Latent Space, Through the Eyes of the Algorithm
@@ -262,7 +297,7 @@
             </div>
         </header>
         
-        <!-- Two columns below: Psychoanalysis left, Poem+Heatmap right -->
+        <!-- Two columns below: Psychoanalysis left, Poem+Heatmap+QR right -->
         <table class="bottom-grid">
             <tr>
                 <!-- Left column: Psychoanalysis -->
@@ -273,7 +308,7 @@
                     </div>
                 </td>
                 
-                <!-- Right column: Poem and Heatmap stacked -->
+                <!-- Right column: Poem, Heatmap, and Digital Memento QR -->
                 <td class="grid-item" style="width: 45%;">
                     <h2 class="section-title">Poem</h2>
                     <div class="poem-text" id="poemText">A mark, a trace, a whispered name—
@@ -285,11 +320,17 @@ No two the same, yet all the same.</div>
                         Your browser does not support the audio element.
                     </audio>
                     
-                    <!-- Heatmap below poem -->
-                    <div style="margin-top: 26px;">
-                        <h2 class="section-title" style="margin-bottom: 14px;">Attention Span</h2>
-                        <div class="heatmap-container">
-                            <img id="heatmapImage" src="/shared_output/heatmap.png" alt="Heatmap visualization">
+                    <!-- Heatmap + Digital Memento QR Code -->
+                    <div class="visual-metrics-row">
+                        <div>
+                            <h2 class="section-title" style="margin-bottom: 10px;">Attention Span</h2>
+                            <div class="heatmap-container">
+                                <img id="heatmapImage" src="/shared_output/heatmap.png" alt="Heatmap visualization">
+                            </div>
+                        </div>
+                        <div class="qr-card" id="qrCard" style="display: none;">
+                            <div id="qrCodeBox"></div>
+                            <div class="qr-caption">Scan to save your digital print</div>
                         </div>
                     </div>
                 </td>
@@ -315,11 +356,18 @@ No two the same, yet all the same.</div>
         const CONFIG = {
             dataFile: '/shared_output/content.json',
             attributionsApi: '/api/settings/attributions',
+            statusApi: '/api/status',
+            printsApi: '/api/files/prints',
             refreshInterval: 4000,
         };
         
         let lastContentSignature = null;
         let lastAttrSignature = null;
+        let lanBaseUrl = window.location.origin;
+
+        // History browsing state (-1 = Live Mode, 0..N = index into archive prints)
+        let historyList = [];
+        let historyIdx = -1;
 
         function buildPath(path) {
             if (!path) return '';
@@ -336,6 +384,42 @@ No two the same, yet all the same.</div>
             const div = document.createElement('div');
             div.textContent = str || '';
             return div.innerHTML;
+        }
+
+        function renderQRCode(targetPath) {
+            const qrCard = document.getElementById('qrCard');
+            const qrBox = document.getElementById('qrCodeBox');
+            if (typeof qrcode === 'undefined' || !targetPath) {
+                qrCard.style.display = 'none';
+                return;
+            }
+            try {
+                const fullUrl = targetPath.startsWith('http')
+                    ? targetPath
+                    : `${lanBaseUrl}${buildPath(targetPath)}`;
+                const qr = qrcode(0, 'M');
+                qr.addData(fullUrl);
+                qr.make();
+                qrBox.innerHTML = qr.createSvgTag({ cellSize: 3, margin: 1 });
+                qrCard.style.display = 'flex';
+            } catch (e) {
+                qrCard.style.display = 'none';
+            }
+        }
+
+        function renderBadge(archetype, fractalDim, spatialEntropy) {
+            const container = document.getElementById('archetypeContainer');
+            const badge = document.getElementById('archetypeBadge');
+            if (!archetype && !fractalDim) {
+                container.style.display = 'none';
+                return;
+            }
+            let parts = [];
+            if (archetype) parts.push(archetype);
+            if (typeof fractalDim === 'number') parts.push(`Fractal D=${fractalDim.toFixed(2)}`);
+            if (typeof spatialEntropy === 'number') parts.push(`Entropy=${Math.round(spatialEntropy * 100)}%`);
+            badge.textContent = parts.join('  ·  ');
+            container.style.display = 'block';
         }
 
         function renderAttribution(attr) {
@@ -403,10 +487,102 @@ No two the same, yet all the same.</div>
 
             textEl.innerHTML = html;
         }
+
+        function applyViewData(data, isHistorical = false) {
+            if (data.scribblePath) {
+                document.getElementById('mainScribble').src = buildPath(data.scribblePath) + '?t=' + (data.timestamp || Date.now());
+            }
+            if (data.heatmapPath) {
+                document.getElementById('heatmapImage').src = buildPath(data.heatmapPath) + '?t=' + (data.timestamp || Date.now());
+            }
+            renderBadge(data.archetype, data.fractalDimension, data.spatialEntropy);
+
+            if (data.psychoanalysis) {
+                document.getElementById('psychoanalysisText').textContent = data.psychoanalysis;
+            }
+            if (data.poem) {
+                document.getElementById('poemText').textContent = data.poem;
+            }
+            const poemAudio = document.getElementById('poemAudio');
+            if (data.poemAudio && !isHistorical) {
+                poemAudio.style.display = 'block';
+                poemAudio.src = buildPath(data.poemAudio) + '?t=' + Date.now();
+                poemAudio.load();
+                poemAudio.play().catch(() => {});
+            } else {
+                poemAudio.style.display = 'none';
+            }
+
+            renderQRCode(data.printPDF || '/kiosk');
+
+            if (data.timestamp) {
+                const updateDate = new Date(data.timestamp);
+                const formatted = isNaN(updateDate) ? data.timestamp : updateDate.toLocaleDateString('en-US', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+                document.getElementById('lastUpdate').textContent = isHistorical
+                    ? `Archive View (${historyIdx + 1}/${historyList.length}) — ${formatted}`
+                    : formatted;
+            }
+        }
+
+        async function stepHistory(delta) {
+            try {
+                const res = await fetch(CONFIG.printsApi + '?t=' + Date.now());
+                if (res.ok) {
+                    const prints = await res.json();
+                    historyList = prints.filter(p => p.poem || p.psychoanalysis || p.thumb_url);
+                }
+            } catch (_) {}
+
+            if (!historyList.length) return;
+            const nextIdx = historyIdx + delta;
+            if (nextIdx < 0) {
+                returnToLive();
+                return;
+            }
+            historyIdx = Math.min(historyList.length - 1, nextIdx);
+            document.getElementById('liveModeBtn').classList.remove('live-active');
+
+            const item = historyList[historyIdx];
+            applyViewData({
+                scribblePath: item.thumb_url,
+                heatmapPath: '/shared_output/heatmap.png',
+                archetype: item.archetype,
+                fractalDimension: item.fractalDimension,
+                spatialEntropy: item.spatialEntropy,
+                psychoanalysis: item.psychoanalysis || 'Archived gaze drawing memento.',
+                poem: item.poem || '',
+                printPDF: item.pdf_url,
+                timestamp: item.date,
+            }, true);
+        }
+
+        function returnToLive() {
+            historyIdx = -1;
+            lastContentSignature = null;
+            document.getElementById('liveModeBtn').classList.add('live-active');
+            loadContent();
+        }
         
         async function loadContent() {
+            if (historyIdx !== -1) return; // Paused while browsing archive
             try {
-                // Fetch content.json
+                // Discover LAN IP once so QR codes work when scanned by phones on Wi-Fi
+                if (lanBaseUrl.includes('localhost') || lanBaseUrl.includes('127.0.0.1')) {
+                    try {
+                        const st = await fetch(CONFIG.statusApi);
+                        if (st.ok) {
+                            const stJson = await st.json();
+                            if (stJson.lan_url) lanBaseUrl = stJson.lan_url;
+                        }
+                    } catch (_) {}
+                }
+
                 const response = await fetch(CONFIG.dataFile + '?t=' + Date.now());
                 if (response.ok) {
                     const data = await response.json();
@@ -415,49 +591,13 @@ No two the same, yet all the same.</div>
                         h: data.heatmapPath,
                         p: data.psychoanalysis,
                         m: data.poem,
+                        pdf: data.printPDF,
                         t: data.timestamp
                     });
 
                     if (sig !== lastContentSignature) {
                         lastContentSignature = sig;
-
-                        if (data.scribblePath) {
-                            document.getElementById('mainScribble').src = buildPath(data.scribblePath) + '?t=' + Date.now();
-                        }
-                        if (data.heatmapPath) {
-                            document.getElementById('heatmapImage').src = buildPath(data.heatmapPath) + '?t=' + Date.now();
-                        }
-                        if (data.archetype) {
-                            document.getElementById('archetypeBadge').textContent = data.archetype;
-                            document.getElementById('archetypeContainer').style.display = 'block';
-                        } else {
-                            document.getElementById('archetypeContainer').style.display = 'none';
-                        }
-                        if (data.psychoanalysis) {
-                            document.getElementById('psychoanalysisText').textContent = data.psychoanalysis;
-                        }
-                        if (data.poem) {
-                            document.getElementById('poemText').textContent = data.poem;
-                        }
-                        const poemAudio = document.getElementById('poemAudio');
-                        if (data.poemAudio) {
-                            poemAudio.style.display = 'block';
-                            poemAudio.src = buildPath(data.poemAudio) + '?t=' + Date.now();
-                            poemAudio.load();
-                            poemAudio.play().catch(() => {});
-                        } else {
-                            poemAudio.style.display = 'none';
-                        }
-                        if (data.timestamp) {
-                            const updateDate = new Date(data.timestamp);
-                            document.getElementById('lastUpdate').textContent = updateDate.toLocaleDateString('en-US', {
-                                year: 'numeric',
-                                month: 'long',
-                                day: 'numeric',
-                                hour: '2-digit',
-                                minute: '2-digit'
-                            });
-                        }
+                        applyViewData(data, false);
                     }
 
                     // Check live attribution settings from API (or fallback to content.json)
@@ -488,6 +628,10 @@ No two the same, yet all the same.</div>
             if (event.key === 'p' || event.key === 'P') {
                 event.preventDefault();
                 window.print();
+            } else if (event.key === 'ArrowLeft') {
+                stepHistory(1);
+            } else if (event.key === 'ArrowRight') {
+                stepHistory(-1);
             }
         });
         

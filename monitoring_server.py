@@ -180,6 +180,18 @@ def _sync_attributions_to_content_json(attr_data: dict):
 
 # --- Core API Business Logic ---
 
+def _get_lan_ip() -> str:
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "localhost"
+
+
 def api_get_status() -> dict:
     settings = load_settings()
     services = {
@@ -201,8 +213,11 @@ def api_get_status() -> dict:
         printed_count = 0
 
     host_name = os.environ.get("COMPUTERNAME") or (os.uname().nodename if hasattr(os, "uname") else "Local Host")
+    port = int(os.environ.get("PORT", settings.get("server", {}).get("port", 8000)))
+    lan_ip = _get_lan_ip()
     return {
         "device": host_name,
+        "lan_url": f"http://{lan_ip}:{port}",
         "services": services,
         "pipeline": _pipeline_state,
         "system": get_system_stats(),
@@ -255,6 +270,8 @@ def api_list_prints() -> list:
             "is_today": dt.date() == datetime.now().date(),
             "printed": f.name in printed_set,
             "archetype": meta.get("archetype", ""),
+            "fractalDimension": meta.get("fractalDimension"),
+            "spatialEntropy": meta.get("spatialEntropy"),
             "poem": meta.get("poem", ""),
             "psychoanalysis": meta.get("psychoanalysis", ""),
         })
