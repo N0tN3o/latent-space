@@ -17,14 +17,13 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize, QEvent
 from PyQt6.QtGui import QFont, QPixmap, QIcon
 
-sys.path.append(str(Path(__file__).parent.parent / "scripts"))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+from config_manager import SHARED_DIR, DOCS_DIR, PRINTED_DIR
 
 # Configuration
 INACTIVITY_TIMEOUT_SEC = 60  # Reset search after 60s of no activity
 
-SHARED_DIR = Path("/home/kasboek/LatentSpace/shared_output")
-DOCS_DIR = SHARED_DIR / "docs"
-PRINTED_DIR = DOCS_DIR / "printed"
 PRINT_LOG = DOCS_DIR / "print_history.json"
 PRINTER_NAME = "default"
 
@@ -333,7 +332,10 @@ class EnhancedPrintKioskUI(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes: return
         
         try:
-            subprocess.run(["lp", "-d", PRINTER_NAME, str(record.path)], check=True)
+            if sys.platform == "win32":
+                os.startfile(str(record.path), "print")
+            else:
+                subprocess.run(["lp", "-d", PRINTER_NAME, str(record.path)], check=True)
             record.mark_as_printed()
             QMessageBox.information(self, "Success", "Print job sent!")
             self.update_queue_display()
