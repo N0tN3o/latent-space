@@ -39,12 +39,16 @@ def extract_ink_mask(img: np.ndarray) -> tuple:
     """
     Extract a binary foreground ink mask (255 = ink, 0 = background) consistently
     across preprocessing, heatmap generation, and stroke geometry analysis.
-    Supports both light canvases (white/cream bg, dark strokes) and dark canvases
-    (black/dark bg, light strokes) without inverting dark backgrounds into ink.
+    Uses border-pixel median so dense central drawings never invert canvas polarity.
     Returns (mask_uint8, is_dark_bg, bg_val).
     """
     gray = to_grayscale(img)
-    bg_val = float(np.median(gray))
+    h, w = gray.shape[:2]
+    if h >= 3 and w >= 3:
+        border = np.concatenate([gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]])
+        bg_val = float(np.median(border))
+    else:
+        bg_val = float(np.median(gray))
     is_dark_bg = bg_val <= 127.0
     if is_dark_bg:
         thresh_val = max(INK_DARK_THRESHOLD, int(round(bg_val)) + 5)

@@ -192,6 +192,18 @@ class TestCVAndGeometry(unittest.TestCase):
         edge_mask[130:135, 130:135] = 255
         self.assertGreaterEqual(analysis.compute_fractal_dimension(edge_mask), 1.0)
 
+        # 7. Dense central drawing covering >50% of white canvas stays light-polarity via border median
+        dense_path = TEST_TMP / "dense.png"
+        dense_proc = TEST_TMP / "dense_proc.png"
+        dense = np.ones((200, 200), dtype=np.uint8) * 255
+        dense[20:180, 20:180] = 0
+        cv2.imwrite(str(dense_path), dense)
+        preprocess_image(str(dense_path), str(dense_proc))
+        dense_mask, is_dark, _ = preprocess_image.__globals__["extract_ink_mask"](dense)
+        self.assertFalse(is_dark)
+        self.assertEqual(int(dense_mask[10, 10]), 0)
+        self.assertEqual(int(dense_mask[100, 100]), 255)
+
     def test_chat_skips_image_payload_for_text_only_ollama_in_auto_mode(self):
         with chat._OLLAMA_CAPS_LOCK:
             chat._OLLAMA_VISION_CAPS.clear()

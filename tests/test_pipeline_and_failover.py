@@ -23,7 +23,7 @@ import config_manager
 import monitoring_server
 import qr_utils
 import run_analysis_watcher
-from chat import LLMModel
+from chat import AIGenerationError, LLMModel
 
 TEST_TMP = None
 
@@ -317,6 +317,13 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertFalse(content_file.exists())
+
+        # chat() aborts immediately without HTTP calls when cancel_event is already set
+        m = LLMModel("analysis")
+        with mock.patch("chat.requests.post") as post_mock:
+            with self.assertRaises(AIGenerationError):
+                m.chat("Hi", allow_failover=True, cancel_event=cancel_ev)
+            self.assertEqual(post_mock.call_count, 0)
 
         # Orphaned temp files cleanup
         orphan_in = config_manager.SHARED_DIR / "input_20250101_000000_001.png"

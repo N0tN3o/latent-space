@@ -676,6 +676,7 @@
                 alert('Please draw something on the canvas first (using your eyes or mouse/touch).');
                 return;
             }
+            hideDrawError();
             setState(STATES.SUBMITTING);
             const pollId = ++activePollId;
             const btn = document.getElementById('submitBtn');

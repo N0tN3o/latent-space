@@ -1028,7 +1028,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/qr.svg":
             target_url = (query.get("url") or [""])[0].strip()
-            if not target_url or len(target_url) > 210:
+            if not target_url or len(target_url.encode("utf-8")) > 213:
                 return self._send_text("Invalid QR url parameter", status=400)
             try:
                 svg = qr_svg(target_url, cell_size=3, quiet=4)
@@ -1207,10 +1207,6 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             if not AI_AVAILABLE:
                 atomic_write_bytes(target_path, img_bytes)
                 return self._send_json({"status": "error", "error": "Analysis pipeline unavailable"}, 503)
-
-            with _pipeline_lock:
-                if _pipeline_queue.qsize() >= MAX_PIPELINE_QUEUE_SIZE:
-                    raise QueueFullError("Analysis queue is full. Please try again in a moment.")
 
             is_sync = (query.get("sync") or [""])[0] == "1"
             done_event = threading.Event() if is_sync else None

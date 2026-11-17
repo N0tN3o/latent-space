@@ -224,6 +224,23 @@ def _fit_text_block(text: str, base_width: int, base_fontsize: float, max_height
     return wrapped, fontsize
 
 
+def _get_qr_base_url(settings: dict) -> str:
+    remote_url = (settings.get("server", {}).get("remote_server_url") or "").strip().rstrip("/")
+    if remote_url.startswith(("http://", "https://")):
+        return remote_url
+    port = os.environ.get("PORT") or settings.get("server", {}).get("port", 8000)
+    host_ip = "127.0.0.1"
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        host_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        host_ip = "127.0.0.1"
+    return f"http://{host_ip}:{port}"
+
+
 def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> str:
     """
     Fallback PDF renderer using thread-safe Matplotlib Figure API if Playwright/Chrome is unavailable.
@@ -306,8 +323,7 @@ def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> 
             ax_hm.axis("off")
 
     pdf_rel = website_data.get("printPDF") or f"docs/{pdf_path.name}"
-    port = os.environ.get("PORT") or settings.get("server", {}).get("port", 8000)
-    qr_target = f"http://127.0.0.1:{port}/shared_output/{pdf_rel.lstrip('/')}"
+    qr_target = f"{_get_qr_base_url(settings)}/shared_output/{pdf_rel.lstrip('/')}"
     try:
         qr_mat = generate_qr_matrix(qr_target, quiet=2)
         import numpy as np
@@ -422,9 +438,8 @@ def save_print_pdf(url=None, out_dir=None, website_data=None, run_id=None):
                             const upd = document.getElementById('lastUpdate');
                             if (!upd || upd.textContent === 'Waiting for data...') return false;
                             if (document.fonts && document.fonts.ready) await document.fonts.ready;
-                            const imgs = ['mainScribble', 'heatmapImage', 'attributionLogo']
-                                .map(id => document.getElementById(id))
-                                .filter(el => el && el.getAttribute('src') && el.style.display !== 'none');
+                            const imgs = Array.from(document.querySelectorAll('img'))
+                                .filter(el => el.getAttribute('src') && el.style.display !== 'none');
                             return imgs.every(img => img.complete && img.naturalWidth > 0);
                         }""",
                         timeout=6000,
@@ -646,7 +661,10 @@ def run_analysis_pipeline(
 
         # 4. Psychoanalytical Interpretation
         main_logger.info(f"[{rid}] Starting psychoanalysis via {analysis_model._provider} ({analysis_model._llm})")
-        analysis_text = analysis_model.chat(message=prompt_context, image_path=str(image_path), allow_failover=True)
+        analysis_kwargs = {"message": prompt_context, "image_path": str(image_path), "allow_failover": True}
+        if cancel_event is not None:
+            analysis_kwargs["cancel_event"] = cancel_event
+        analysis_text = analysis_model.chat(**analysis_kwargs)
         main_logger.info(f"[{rid}] Psychoanalysis complete via {analysis_model._last_used_provider} ({analysis_model._last_used_model})")
         response_logger.info(
             json.dumps({
@@ -662,7 +680,10 @@ def run_analysis_pipeline(
 
         # 5. Poem Generation
         main_logger.info(f"[{rid}] Starting poem generation via {poem_model._provider} ({poem_model._llm})")
-        poem_text = poem_model.chat(message=analysis_text, allow_failover=True)
+        poem_kwargs = {"message": analysis_text, "allow_failover": True}
+        if cancel_event is not None:
+            poem_kwargs["cancel_event"] = cancel_event
+        poem_text = poem_model.chat(**poem_kwargs)
         main_logger.info(f"[{rid}] Poem complete via {poem_model._last_used_provider} ({poem_model._last_used_model})")
         response_logger.info(
             json.dumps({

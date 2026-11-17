@@ -35,9 +35,9 @@ ASSISTANT_KEY_TO_ROLE = {
     "poem": "poem",
 }
 
-MAX_CHAT_BUDGET_SEC = 50.0
+MAX_CHAT_BUDGET_SEC = 65.0
 CONNECT_TIMEOUT_SEC = 5.0
-READ_TIMEOUT_SEC = 25.0
+READ_TIMEOUT_SEC = 45.0
 
 
 class AIGenerationError(RuntimeError):
@@ -237,8 +237,8 @@ class LLMModel:
                 "_capabilities": p_json.get("capabilities", self._capabilities),
                 "_restrictions": p_json.get("restrictions", self._restrictions),
                 "_additional": p_json.get("additional", self._additional),
-                "_llm": p_json.get("llm", self._llm),
-                "_temperature": float(p_json.get("temperature", self._temperature)),
+                "_llm": p_json.get("llm") or self._llm,
+                "_temperature": float(p_json.get("temperature") if p_json.get("temperature") is not None else self._temperature),
             }
             for attr, val in overrides.items():
                 setattr(self, attr, val)
@@ -340,12 +340,14 @@ class LLMModel:
                 is_local_openai = other_prov == "openai_compatible" and bool(other_url) and not _is_cloud_openai_compatible_host(other_url)
                 is_buas_ready = other_prov == "buas" and bool(env.get("ACCESS_TOKEN") and env.get("USER_KEY"))
                 if other_prov == "ollama" or other_key or is_local_openai or is_buas_ready:
-                    add_candidate(
-                        other_prov,
-                        other_cfg.get("model", ""),
-                        other_url,
-                        other_key,
-                    )
+                    other_model = other_cfg.get("model") or ("llama3.2" if other_prov == "ollama" else "")
+                    if other_model or other_prov in ("gemini", "anthropic", "buas"):
+                        add_candidate(
+                            other_prov,
+                            other_model,
+                            other_url,
+                            other_key,
+                        )
 
         # 3. Cloud API failovers (from .env or settings) — always use matching keys & provider default models
         gemini_key = self._resolve_key_for_provider("gemini", settings, env)
@@ -398,11 +400,12 @@ class LLMModel:
             raise RuntimeError(f"Empty response from {provider} ({used_model})")
         return reply.strip(), used_model
 
-    def chat(self, message: str, image_path: str = None, allow_failover: bool = True) -> str:
+    def chat(self, message: str, image_path: str = None, allow_failover: bool = True,
+             cancel_event=None) -> str:
         """
         Send a prompt (and optional drawing image for Vision LLMs) to the configured provider.
         Retries transient primary failures and fails over across providers within a bounded time budget.
-        Raises AIGenerationError if all attempts fail.
+        Raises AIGenerationError if all attempts fail or cancel_event is set.
         """
         self._load_local_config()
         use_vision = (
@@ -416,6 +419,13 @@ class LLMModel:
         # Step A: Primary provider (1 quick retry only on transient failures)
         primary_err = None
         for attempt in range(2):
+            if cancel_event is not None and cancel_event.is_set():
+                raise AIGenerationError(
+                    code=f"ERR_{self.role.upper()}_CANCELLED",
+                    message=f"{self.role} generation cancelled after timeout",
+                    provider=self._provider,
+                    model=self._llm,
+                )
             rem = max(3.0, deadline - time.monotonic())
             req_timeout = (min(CONNECT_TIMEOUT_SEC, rem), min(READ_TIMEOUT_SEC, rem))
             try:
@@ -438,6 +448,9 @@ class LLMModel:
         failover_errs = []
         if allow_failover:
             for fb_prov, fb_model, fb_url, fb_key in self._build_failover_candidates():
+                if cancel_event is not None and cancel_event.is_set():
+                    failover_errs.append("cancelled")
+                    break
                 rem = deadline - time.monotonic()
                 if rem <= 1.0:
                     failover_errs.append("budget exhausted")
