@@ -183,6 +183,12 @@
             object-fit: contain;
         }
 
+        .thumb-placeholder {
+            color: #6b7280;
+            font-size: 0.9rem;
+            font-weight: 600;
+        }
+
         .status-pill {
             position: absolute;
             top: 12px;
@@ -369,6 +375,8 @@
 
     <script>
         let allPrints = [];
+        let printsMap = new Map();
+        let lastRenderSignature = null;
         let isStaffUnlocked = false;
         let pendingStaffAction = null;
 
@@ -458,6 +466,7 @@
                 const res = await fetch('/api/files/prints?t=' + Date.now());
                 if (!res.ok) return;
                 allPrints = await res.json();
+                printsMap = new Map(allPrints.map(item => [item.name, item]));
                 renderGrid();
             } catch (e) {
                 console.error('Error loading prints:', e);
@@ -557,15 +566,26 @@
 
             document.getElementById('queueCount').textContent = `Showing ${filtered.length} of ${allPrints.length} drawings`;
 
+            const sig = JSON.stringify({
+                q: query,
+                items: filtered.map(i => [i.name, !!i.printed, i.thumb_url || '', i.timestamp])
+            });
+            if (sig === lastRenderSignature) {
+                return;
+            }
+            lastRenderSignature = sig;
+
             if (filtered.length === 0) {
                 grid.innerHTML = `<div class="empty-state">No drawings match your filter.</div>`;
                 return;
             }
 
-            grid.innerHTML = filtered.map((item, idx) => `
-                <div class="print-card">
-                    <div class="thumb-wrapper" onclick="openPrintPdf(${idx})">
-                        <img src="${safeUrl(item.thumb_url)}?t=${encodeURIComponent(item.timestamp)}" alt="${escapeHtml(item.name)}">
+            grid.innerHTML = filtered.map(item => `
+                <div class="print-card" data-filename="${escapeHtml(item.name)}">
+                    <div class="thumb-wrapper" data-action="open">
+                        ${item.thumb_url
+                            ? `<img src="${safeUrl(item.thumb_url)}" alt="${escapeHtml(item.name)}" loading="lazy">`
+                            : `<div class="thumb-placeholder">PDF Memento</div>`}
                         <span class="status-pill ${item.printed ? 'status-printed' : 'status-available'}">
                             ${item.printed ? 'Printed' : 'Available'}
                         </span>
@@ -578,52 +598,54 @@
                         ${item.archetype ? `<div style="font-size: 0.78rem; color: #10b981; text-transform: uppercase; letter-spacing: 1px;">${escapeHtml(item.archetype)}</div>` : ''}
                         ${item.poem ? `<div class="poem-preview">${escapeHtml(item.poem)}</div>` : ''}
                         <div class="card-actions">
-                            <button class="btn btn-primary" onclick="browserPrintByIdx(${idx})">
+                            <button class="btn btn-primary" data-action="browser-print">
                                 Print Sheet
                             </button>
-                            <button class="btn" onclick="hostPrintByIdx(${idx})" title="Print directly on the server's connected printer">
+                            <button class="btn" data-action="host-print" title="Print directly on the server's connected printer">
                                 Host Print
                             </button>
                         </div>
                     </div>
                 </div>
             `).join('');
-            window._kioskFiltered = filtered;
         }
 
-        function openPrintPdf(idx) {
-            const item = (window._kioskFiltered || [])[idx];
-            if (item && item.pdf_url) window.open(item.pdf_url, '_blank');
-        }
+        document.getElementById('printGrid').addEventListener('click', (e) => {
+            const actionEl = e.target.closest('[data-action]');
+            if (!actionEl) return;
+            const card = actionEl.closest('.print-card');
+            if (!card) return;
+            const filename = card.dataset.filename;
+            const item = printsMap.get(filename);
+            if (!item) return;
 
-        function browserPrintByIdx(idx) {
-            const item = (window._kioskFiltered || [])[idx];
-            if (item) browserPrint(item.name, item.pdf_url);
-        }
-
-        function hostPrintByIdx(idx) {
-            const item = (window._kioskFiltered || [])[idx];
-            if (item) hostPrint(item.name);
-        }
-
-        async function browserPrint(filename, pdfUrl) {
-            if (isStaffUnlocked) {
-                try {
-                    await fetch('/api/files/print', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({filename: filename, mark_only: true})
-                    });
-                } catch (_) {}
+            const action = actionEl.dataset.action;
+            if (action === 'open' && item.pdf_url) {
+                window.open(item.pdf_url, '_blank');
+            } else if (action === 'browser-print') {
+                browserPrint(item.name, item.pdf_url);
+            } else if (action === 'host-print') {
+                hostPrint(item.name);
             }
+        });
 
-            const w = window.open(pdfUrl, '_blank');
+        function browserPrint(filename, pdfUrl) {
+            // Open synchronously inside click gesture so Safari/iOS/Chrome popup blockers allow it
+            const w = pdfUrl ? window.open(pdfUrl, '_blank') : null;
             if (w) {
                 w.addEventListener('load', () => {
                     try { w.print(); } catch (_) {}
                 });
             }
-            loadPrints();
+            if (isStaffUnlocked) {
+                fetch('/api/files/print', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({filename: filename, mark_only: true})
+                }).then(() => loadPrints()).catch(() => {});
+            } else {
+                loadPrints();
+            }
         }
 
         async function hostPrint(filename) {

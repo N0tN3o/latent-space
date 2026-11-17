@@ -10,30 +10,31 @@ Serves:
   - /kiosk or /kiosk.html     -> Web Print Kiosk (web_ui/kiosk.html)
   - /admin or /admin.html     -> Admin Command Center (web_ui/admin.html)
   - /shared_output/*          -> Drawings, heatmaps, PDFs, audio, content.json
-  - /api/*                    -> Status, AI config, attributions, drawings, printing, logs
+  - /api/*                    -> Status, AI config, attributions, drawings, printing, logs, QR fallback
 """
 
 import base64
+from datetime import datetime
 from email.parser import BytesParser
 from email.policy import default as email_default_policy
 import hmac
 from http.cookies import SimpleCookie
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import io
 import json
 import mimetypes
 import os
+from pathlib import Path
 import queue
 import secrets
+import struct
 import sys
 import threading
 import time
-from datetime import datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import parse_qs, unquote, urlparse
 
 try:
     import psutil
-    # Prime non-blocking CPU percent measurement
     psutil.cpu_percent(interval=None)
 except ImportError:
     psutil = None
@@ -44,33 +45,33 @@ for p in (str(PROJECT_DIR), str(ANALYSIS_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
+import config_manager
 from config_manager import (
-    SHARED_DIR,
-    DOCS_DIR,
-    LOGS_DIR,
-    WEB_UI_DIR,
     atomic_write_bytes,
-    atomic_write_text,
+    ensure_directories,
+    get_configured_ollama_host,
     get_or_create_admin_password,
     load_settings,
+    mark_file_printed,
     mask_settings_secrets,
+    remove_from_print_history,
     save_settings,
+    send_pdf_to_printer,
+    update_content_json,
     update_settings_section,
-    ensure_directories,
     validate_printer_name,
 )
+from qr_utils import qr_svg
 
 ensure_directories()
 
 try:
-    from chat import LLMModel, AIGenerationError
+    from chat import AIGenerationError, LLMModel
     from run_analysis_watcher import (
         PipelineStageError,
+        cleanup_orphaned_temp_files,
         generate_run_id,
-        mark_file_printed,
-        remove_from_print_history,
         run_analysis_pipeline,
-        send_pdf_to_printer,
         snapshot_drawing_input,
         watch_loop,
         write_live_image_and_mark_handled,
@@ -85,6 +86,7 @@ _pipeline_queue = queue.Queue()
 _worker_thread = None
 _run_statuses = {}  # run_id -> {"run_id", "state", "status", "error_code", "error", "updated_at"}
 MAX_RUN_HISTORY = 100
+MAX_PIPELINE_QUEUE_SIZE = 20
 _pipeline_state = {
     "state": "IDLE",  # "IDLE" | "QUEUED" | "RUNNING" | "ERROR"
     "running": False,
@@ -109,13 +111,23 @@ def _record_run_status_unlocked(rid: str, state: str, status: str, error_code: s
     while len(_run_statuses) > MAX_RUN_HISTORY:
         oldest_key = next(iter(_run_statuses))
         _run_statuses.pop(oldest_key, None)
+
+
 _watcher_thread = None
 _watcher_stop = threading.Event()
 _ollama_cache = {"status": "unknown", "ts": 0.0}
 _ollama_cache_lock = threading.Lock()
+_ollama_probe_lock = threading.Lock()
+_lan_ip_cache = {"ip": "localhost", "ts": 0.0}
+_lan_ip_lock = threading.Lock()
+_prints_meta_cache = {}  # meta_path_str -> (mtime_ns, size, meta_dict)
+_prints_cache_lock = threading.Lock()
 
 MAX_JSON_BODY_BYTES = 1 * 1024 * 1024        # 1 MB for settings/auth/config JSON
 MAX_DRAWING_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB for drawing uploads
+MAX_IMAGE_WIDTH = 4096
+MAX_IMAGE_HEIGHT = 4096
+MAX_IMAGE_PIXELS = 4096 * 4096
 SYNC_PIPELINE_TIMEOUT_SEC = 90.0
 REQUEST_SOCKET_TIMEOUT_SEC = 30.0
 ADMIN_SESSION_COOKIE = "ls_admin_session"
@@ -123,10 +135,21 @@ ADMIN_SESSION_TTL_SEC = 12 * 3600
 MAX_ADMIN_SESSIONS = 128
 LOGIN_WINDOW_SEC = 300
 LOGIN_MAX_FAILURES = 8
+UPLOAD_WINDOW_SEC = 60
+UPLOAD_MAX_PER_WINDOW = 15
+MAX_TRACKED_IPS = 4096
 
 _auth_lock = threading.Lock()
-_admin_sessions = {}   # token -> expiry_monotonic
-_login_failures = {}   # client_ip -> [monotonic_timestamps]
+_admin_sessions = {}     # token -> expiry_monotonic
+_login_failures = {}     # client_ip -> [monotonic_timestamps]
+_upload_timestamps = {}  # client_ip -> [monotonic_timestamps]
+
+ALLOWED_AI_CONFIG_KEYS = {
+    "name", "description", "purpose", "expertise", "capabilities",
+    "restrictions", "additional", "llm", "model", "temperature",
+    "provider", "base_url", "api_key", "fallback_provider",
+    "fallback_model", "vision_mode", "ollama_vision_model",
+}
 
 
 def _prune_sessions_unlocked(now: float):
@@ -168,14 +191,26 @@ def _revoke_admin_session(token: str):
             _admin_sessions.pop(token, None)
 
 
+def _prune_ip_bucket_unlocked(bucket: dict, window_sec: float, now: float):
+    stale_ips = []
+    for ip, stamps in bucket.items():
+        fresh = [ts for ts in stamps if (now - ts) < window_sec]
+        if fresh:
+            bucket[ip] = fresh
+        else:
+            stale_ips.append(ip)
+    for ip in stale_ips:
+        bucket.pop(ip, None)
+    while len(bucket) > MAX_TRACKED_IPS:
+        oldest_ip = min(bucket.items(), key=lambda kv: kv[1][-1])[0]
+        bucket.pop(oldest_ip, None)
+
+
 def _check_login_rate_limit(client_ip: str) -> tuple:
     now = time.monotonic()
     with _auth_lock:
-        recent = [ts for ts in _login_failures.get(client_ip, []) if (now - ts) < LOGIN_WINDOW_SEC]
-        if recent:
-            _login_failures[client_ip] = recent
-        else:
-            _login_failures.pop(client_ip, None)
+        _prune_ip_bucket_unlocked(_login_failures, LOGIN_WINDOW_SEC, now)
+        recent = _login_failures.get(client_ip, [])
         if len(recent) >= LOGIN_MAX_FAILURES:
             retry_after = max(1, int(LOGIN_WINDOW_SEC - (now - recent[0])))
             return False, retry_after
@@ -185,7 +220,8 @@ def _check_login_rate_limit(client_ip: str) -> tuple:
 def _record_login_failure(client_ip: str):
     now = time.monotonic()
     with _auth_lock:
-        recent = [ts for ts in _login_failures.get(client_ip, []) if (now - ts) < LOGIN_WINDOW_SEC]
+        _prune_ip_bucket_unlocked(_login_failures, LOGIN_WINDOW_SEC, now)
+        recent = _login_failures.get(client_ip, [])
         recent.append(now)
         _login_failures[client_ip] = recent
 
@@ -195,26 +231,82 @@ def _clear_login_failures(client_ip: str):
         _login_failures.pop(client_ip, None)
 
 
+def _check_and_record_upload_rate_limit(client_ip: str) -> tuple:
+    now = time.monotonic()
+    with _auth_lock:
+        _prune_ip_bucket_unlocked(_upload_timestamps, UPLOAD_WINDOW_SEC, now)
+        recent = _upload_timestamps.get(client_ip, [])
+        if len(recent) >= UPLOAD_MAX_PER_WINDOW:
+            retry_after = max(1, int(UPLOAD_WINDOW_SEC - (now - recent[0])))
+            return False, retry_after
+        recent.append(now)
+        _upload_timestamps[client_ip] = recent
+        return True, 0
+
+
 def _is_valid_image_bytes(data: bytes) -> bool:
-    """Verify uploaded drawing bytes start with a recognized image magic header."""
+    """Verify uploaded drawing bytes have a valid image header and safe dimensions (anti-decompression bomb)."""
     if not data or len(data) < 12:
         return False
-    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+    is_magic_ok = (
+        data.startswith(b"\x89PNG\r\n\x1a\n")
+        or data.startswith(b"\xff\xd8\xff")
+        or (data[:4] == b"RIFF" and data[8:12] == b"WEBP")
+        or data.startswith(b"BM")
+    )
+    if not is_magic_ok:
+        return False
+
+    try:
+        from PIL import Image
+        orig_limit = Image.MAX_IMAGE_PIXELS
+        Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+        try:
+            with Image.open(io.BytesIO(data)) as im:
+                w, h = im.size
+                if w <= 0 or h <= 0 or w > MAX_IMAGE_WIDTH or h > MAX_IMAGE_HEIGHT or (w * h) > MAX_IMAGE_PIXELS:
+                    return False
+                im.verify()
+            return True
+        finally:
+            Image.MAX_IMAGE_PIXELS = orig_limit
+    except ImportError:
+        # Minimal fallback header dimension check when Pillow is unavailable
+        if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24 and data[12:16] == b"IHDR":
+            w, h = struct.unpack(">II", data[16:24])
+            return 0 < w <= MAX_IMAGE_WIDTH and 0 < h <= MAX_IMAGE_HEIGHT and (w * h) <= MAX_IMAGE_PIXELS
         return True
-    if data.startswith(b"\xff\xd8\xff"):
-        return True
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return True
-    if data.startswith(b"BM"):
-        return True
-    return False
+    except Exception:
+        return False
 
 
 def _pipeline_worker_loop():
     """Single dedicated FIFO worker thread processing every queued drawing sequentially."""
     while True:
-        rid, snap_path, done_event, result_holder, dwell_grid = _pipeline_queue.get()
+        item = _pipeline_queue.get()
+        rid, snap_path, done_event, result_holder, dwell_grid, cancel_event = item
         try:
+            if cancel_event is not None and cancel_event.is_set():
+                if snap_path and Path(snap_path).name.startswith("input_"):
+                    try:
+                        Path(snap_path).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                with _pipeline_lock:
+                    _pipeline_state["last_status"] = "error"
+                    _pipeline_state["last_error_code"] = "ERR_PIPELINE_TIMEOUT"
+                    _pipeline_state["last_error"] = "Queued job cancelled after caller timeout"
+                    _record_run_status_unlocked(
+                        rid, state="ERROR", status="error",
+                        error_code="ERR_PIPELINE_TIMEOUT", error="Cancelled after caller timeout",
+                    )
+                if result_holder is not None:
+                    result_holder["ok"] = False
+                    result_holder["run_id"] = rid
+                    result_holder["error_code"] = "ERR_PIPELINE_TIMEOUT"
+                    result_holder["error"] = "Cancelled after caller timeout"
+                continue
+
             with _pipeline_lock:
                 _pipeline_state["state"] = "RUNNING"
                 _pipeline_state["running"] = True
@@ -225,24 +317,34 @@ def _pipeline_worker_loop():
                 _pipeline_state["last_error"] = None
                 _record_run_status_unlocked(rid, state="RUNNING", status="running")
 
-            ok = run_analysis_pipeline(
-                run_id=rid,
-                snapshot_path=snap_path,
-                raise_on_error=True,
-                dwell_grid=dwell_grid,
-            )
+            pipeline_kwargs = {
+                "run_id": rid,
+                "snapshot_path": snap_path,
+                "raise_on_error": True,
+                "dwell_grid": dwell_grid,
+            }
+            if cancel_event is not None:
+                pipeline_kwargs["cancel_event"] = cancel_event
+            ok = run_analysis_pipeline(**pipeline_kwargs)
             with _pipeline_lock:
-                _pipeline_state["last_status"] = "success" if ok else "failed"
                 _pipeline_state["last_run"] = datetime.now().isoformat()
                 if not ok:
+                    _pipeline_state["last_status"] = "error"
                     _pipeline_state["last_error_code"] = "ERR_PIPELINE_FAILED"
                     _pipeline_state["last_error"] = "Pipeline returned failure"
-                    _record_run_status_unlocked(rid, state="ERROR", status="failed", error_code="ERR_PIPELINE_FAILED", error="Pipeline returned failure")
+                    _record_run_status_unlocked(
+                        rid, state="ERROR", status="error",
+                        error_code="ERR_PIPELINE_FAILED", error="Pipeline returned failure",
+                    )
                 else:
+                    _pipeline_state["last_status"] = "success"
                     _record_run_status_unlocked(rid, state="COMPLETED", status="success")
             if result_holder is not None:
                 result_holder["ok"] = bool(ok)
                 result_holder["run_id"] = rid
+                if not ok:
+                    result_holder["error_code"] = "ERR_PIPELINE_FAILED"
+                    result_holder["error"] = "Pipeline returned failure"
 
         except (PipelineStageError, AIGenerationError) as err:
             with _pipeline_lock:
@@ -279,7 +381,7 @@ def _pipeline_worker_loop():
                 _pipeline_state["queue_length"] = qlen
                 if qlen > 0:
                     _pipeline_state["state"] = "QUEUED"
-                elif _pipeline_state["last_status"] == "error":
+                elif _pipeline_state["last_status"] in ("error", "failed"):
                     _pipeline_state["state"] = "ERROR"
                 else:
                     _pipeline_state["state"] = "IDLE"
@@ -295,6 +397,10 @@ def _ensure_pipeline_worker():
             _worker_thread.start()
 
 
+class QueueFullError(RuntimeError):
+    """Raised when the drawing analysis queue has reached MAX_PIPELINE_QUEUE_SIZE."""
+
+
 def enqueue_pipeline_job(
     source_path: Path = None,
     image_bytes: bytes = None,
@@ -302,35 +408,31 @@ def enqueue_pipeline_job(
     done_event: threading.Event = None,
     result_holder: dict = None,
     dwell_grid=None,
+    cancel_event: threading.Event = None,
 ) -> tuple:
-    """Snapshot drawing input to input_{run_id}.png and enqueue into FIFO worker queue."""
+    """Snapshot drawing input to input_{run_id}.png and enqueue into bounded FIFO worker queue."""
     if not AI_AVAILABLE:
         raise RuntimeError("Analysis pipeline is unavailable")
     _ensure_pipeline_worker()
     rid = run_id or generate_run_id()
-    if image_bytes is not None:
-        snap = SHARED_DIR / f"input_{rid}.png"
-        atomic_write_bytes(snap, image_bytes)
-    else:
-        _, snap = snapshot_drawing_input(source_path or (SHARED_DIR / "image.png"), run_id=rid)
 
     with _pipeline_lock:
+        if _pipeline_queue.qsize() >= MAX_PIPELINE_QUEUE_SIZE:
+            raise QueueFullError("Analysis queue is full. Please try again in a moment.")
+
+        if image_bytes is not None:
+            snap = config_manager.SHARED_DIR / f"input_{rid}.png"
+            atomic_write_bytes(snap, image_bytes)
+        else:
+            _, snap = snapshot_drawing_input(source_path or (config_manager.SHARED_DIR / "image.png"), run_id=rid)
+
         _record_run_status_unlocked(rid, state="QUEUED", status="queued")
-    _pipeline_queue.put((rid, str(snap), done_event, result_holder, dwell_grid))
-    with _pipeline_lock:
+        _pipeline_queue.put((rid, str(snap), done_event, result_holder, dwell_grid, cancel_event))
         qlen = _pipeline_queue.qsize()
         _pipeline_state["queue_length"] = qlen
         if not _pipeline_state["running"]:
             _pipeline_state["state"] = "QUEUED"
     return rid, qlen
-
-
-def trigger_pipeline_async(source_path: Path = None):
-    """Snapshot current drawing and enqueue it on the unbounded FIFO pipeline queue."""
-    if not AI_AVAILABLE:
-        return False
-    enqueue_pipeline_job(source_path=source_path)
-    return True
 
 
 def start_background_watcher():
@@ -355,12 +457,15 @@ def _snapshot_process_cmdlines() -> list:
     if psutil is None:
         return []
     cmdlines = []
+    my_pid = os.getpid()
     try:
-        for proc in psutil.process_iter(["name", "cmdline"]):
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
+                if proc.info.get("pid") == my_pid:
+                    continue
                 pname = (proc.info.get("name") or "").lower()
-                cmd = " ".join(proc.info.get("cmdline") or [])
-                cmdlines.append((pname, cmd))
+                argv = proc.info.get("cmdline") or []
+                cmdlines.append((pname, argv))
             except Exception:
                 pass
     except Exception:
@@ -371,13 +476,19 @@ def _snapshot_process_cmdlines() -> list:
 def get_service_status(service_name: str, cmdlines: list = None) -> str:
     if service_name == "run_analysis_watcher" and _watcher_thread and _watcher_thread.is_alive():
         return "running (in-process)"
-    if psutil is None:
+    if psutil is None and cmdlines is None:
         return "ready"
     try:
         entries = cmdlines if cmdlines is not None else _snapshot_process_cmdlines()
-        for pname, cmdline in entries:
-            if service_name in cmdline or (service_name == "ollama" and pname in ("ollama", "ollama.exe")):
-                return "running"
+        target_script = f"{service_name}.py"
+        for pname, argv in entries:
+            if service_name == "ollama":
+                exe_name = Path(argv[0]).name.lower() if argv else ""
+                if pname in ("ollama", "ollama.exe") or exe_name in ("ollama", "ollama.exe"):
+                    return "running"
+            elif argv and "python" in pname:
+                if any(Path(arg).name == target_script for arg in argv[1:] if arg and not arg.startswith("-")):
+                    return "running"
         return "stopped"
     except Exception:
         return "unknown"
@@ -387,10 +498,11 @@ def get_system_stats() -> dict:
     if psutil is None:
         return {"cpu_percent": 0, "memory_percent": 0, "disk_usage": 0, "temperature": get_device_temp()}
     try:
+        sd = config_manager.SHARED_DIR
         return {
             "cpu_percent": psutil.cpu_percent(interval=None),
             "memory_percent": psutil.virtual_memory().percent,
-            "disk_usage": psutil.disk_usage(str(SHARED_DIR)).percent if SHARED_DIR.exists() else 0,
+            "disk_usage": psutil.disk_usage(str(sd)).percent if sd.exists() else 0,
             "temperature": get_device_temp(),
         }
     except Exception:
@@ -409,7 +521,7 @@ def get_device_temp() -> str:
 
 
 def _get_printed_set() -> set:
-    print_log = DOCS_DIR / "print_history.json"
+    print_log = config_manager.DOCS_DIR / "print_history.json"
     if not print_log.exists():
         return set()
     try:
@@ -420,28 +532,32 @@ def _get_printed_set() -> set:
 
 
 def _sync_attributions_to_content_json(attr_data: dict):
-    content_file = SHARED_DIR / "content.json"
-    if content_file.exists():
-        try:
-            content = json.loads(content_file.read_text(encoding="utf-8"))
-            content["attributions"] = attr_data
-            atomic_write_text(content_file, json.dumps(content, indent=2, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
+    def _apply(current: dict) -> dict:
+        current["attributions"] = attr_data
+        return current
+    update_content_json(_apply)
 
 
 # --- Core API Business Logic ---
 
 def _get_lan_ip() -> str:
+    now = time.monotonic()
+    with _lan_ip_lock:
+        if (now - _lan_ip_cache["ts"]) < 30.0:
+            return _lan_ip_cache["ip"]
     import socket
+    ip = "localhost"
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         ip = s.getsockname()[0]
         s.close()
-        return ip
     except Exception:
-        return "localhost"
+        ip = "localhost"
+    with _lan_ip_lock:
+        _lan_ip_cache["ip"] = ip
+        _lan_ip_cache["ts"] = time.monotonic()
+    return ip
 
 
 def _check_ollama_status(cmdlines: list = None, force: bool = False) -> str:
@@ -450,22 +566,28 @@ def _check_ollama_status(cmdlines: list = None, force: bool = False) -> str:
         if not force and (now - _ollama_cache["ts"]) < 3.0 and _ollama_cache["status"] != "unknown":
             return _ollama_cache["status"]
 
-    status = "stopped"
-    try:
-        from start_everything import _is_ollama_running
-        if _is_ollama_running():
-            status = "running"
-    except Exception:
-        pass
-    if status == "stopped":
-        proc_status = get_service_status("ollama", cmdlines=cmdlines)
-        if proc_status == "running":
-            status = "running"
+    with _ollama_probe_lock:
+        now = time.monotonic()
+        with _ollama_cache_lock:
+            if not force and (now - _ollama_cache["ts"]) < 3.0 and _ollama_cache["status"] != "unknown":
+                return _ollama_cache["status"]
 
-    with _ollama_cache_lock:
-        _ollama_cache["status"] = status
-        _ollama_cache["ts"] = now
-    return status
+        status = "stopped"
+        try:
+            from start_everything import _is_ollama_running
+            if _is_ollama_running(get_configured_ollama_host()):
+                status = "running"
+        except Exception:
+            pass
+        if status == "stopped":
+            proc_status = get_service_status("ollama", cmdlines=cmdlines)
+            if proc_status == "running":
+                status = "running"
+
+        with _ollama_cache_lock:
+            _ollama_cache["status"] = status
+            _ollama_cache["ts"] = time.monotonic()
+        return status
 
 
 def api_get_status() -> dict:
@@ -484,7 +606,7 @@ def api_get_status() -> dict:
     }
 
     try:
-        all_pdfs = list(DOCS_DIR.glob("print_*.pdf"))
+        all_pdfs = list(config_manager.DOCS_DIR.glob("print_*.pdf"))
         today_prefix = f"print_{datetime.now().strftime('%Y%m%d')}"
         today_files = sum(1 for f in all_pdfs if f.name.startswith(today_prefix))
         printed_count = len(_get_printed_set())
@@ -509,6 +631,7 @@ def api_get_status() -> dict:
         "system": sys_stats,
         "ai_summary": {
             "vision_mode": settings.get("ai", {}).get("vision_mode", "auto"),
+            "ollama_vision_model": settings.get("ai", {}).get("ollama_vision_model", "moondream"),
             "analysis_provider": settings.get("ai", {}).get("analysis", {}).get("provider", "ollama"),
             "analysis_model": settings.get("ai", {}).get("analysis", {}).get("model", ""),
             "poem_provider": settings.get("ai", {}).get("poem", {}).get("provider", "ollama"),
@@ -529,35 +652,65 @@ def api_get_status() -> dict:
     }
 
 
+def _read_cached_meta(meta_file: Path) -> dict:
+    try:
+        st = meta_file.stat()
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+    key = str(meta_file)
+    sig = (st.st_mtime_ns, st.st_size)
+    with _prints_cache_lock:
+        cached = _prints_meta_cache.get(key)
+        if cached and cached[0] == sig[0] and cached[1] == sig[1]:
+            return cached[2]
+    try:
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        if not isinstance(meta, dict):
+            meta = {}
+    except Exception:
+        meta = {}
+    with _prints_cache_lock:
+        _prints_meta_cache[key] = (sig[0], sig[1], meta)
+    return meta
+
+
 def api_list_prints() -> list:
-    if not DOCS_DIR.exists():
+    docs_dir = config_manager.DOCS_DIR
+    if not docs_dir.exists():
         return []
     printed_set = _get_printed_set()
+    entries = []
+    for f in docs_dir.glob("print_*.pdf"):
+        try:
+            st = f.stat()
+            entries.append((st.st_mtime, st.st_size, f))
+        except FileNotFoundError:
+            continue
+        except Exception:
+            continue
+
+    entries.sort(key=lambda item: item[0], reverse=True)
     files = []
-    for f in sorted(DOCS_DIR.glob("print_*.pdf"), key=lambda x: x.stat().st_mtime, reverse=True):
+    today_date = datetime.now().date()
+    for mtime, size_bytes, f in entries:
         thumb_file = f.with_suffix(".png")
         heatmap_file = f.with_name(f"{f.stem}.heatmap.png")
-        meta_file = f.with_suffix(".json")
-        meta = {}
-        if meta_file.exists():
-            try:
-                meta = json.loads(meta_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        mtime = f.stat().st_mtime
+        meta = _read_cached_meta(f.with_suffix(".json"))
         dt = datetime.fromtimestamp(mtime)
         files.append({
             "name": f.name,
             "run_id": meta.get("runId", f.stem.replace("print_", "")),
             "pdf_url": f"/shared_output/docs/{f.name}",
-            "thumb_url": f"/shared_output/docs/{thumb_file.name}" if thumb_file.exists() else "/shared_output/image.png",
-            "heatmap_url": f"/shared_output/docs/{heatmap_file.name}" if heatmap_file.exists() else "/shared_output/heatmap.png",
-            "size": f"{f.stat().st_size / 1024:.1f} KB",
+            "thumb_url": f"/shared_output/docs/{thumb_file.name}" if thumb_file.exists() else "",
+            "heatmap_url": f"/shared_output/docs/{heatmap_file.name}" if heatmap_file.exists() else "",
+            "size": f"{size_bytes / 1024:.1f} KB",
             "timestamp": mtime,
             "date": dt.strftime("%Y-%m-%d %H:%M"),
             "display_date": dt.strftime("%B %d, %Y"),
             "display_time": dt.strftime("%I:%M %p"),
-            "is_today": dt.date() == datetime.now().date(),
+            "is_today": dt.date() == today_date,
             "printed": f.name in printed_set,
             "archetype": meta.get("archetype", ""),
             "fractalDimension": meta.get("fractalDimension"),
@@ -571,14 +724,15 @@ def api_list_prints() -> list:
 def api_get_logs(log_type: str) -> str:
     if "/" in log_type or "\\" in log_type or ".." in log_type:
         return "Invalid log name"
+    logs_dir = config_manager.LOGS_DIR
     candidates = [
-        LOGS_DIR / f"{log_type}.log",
-        LOGS_DIR / f"{log_type}.csv",
+        logs_dir / f"{log_type}.log",
+        logs_dir / f"{log_type}.csv",
         ANALYSIS_DIR / f"{log_type}.log",
         ANALYSIS_DIR / f"{log_type}.csv",
     ]
     if log_type == "analysis":
-        candidates.insert(0, LOGS_DIR / "installation.log")
+        candidates.insert(0, logs_dir / "installation.log")
         candidates.insert(1, ANALYSIS_DIR / "installation.log")
     for log_file in candidates:
         if log_file.exists():
@@ -591,11 +745,11 @@ def api_get_logs(log_type: str) -> str:
 
 
 class InvalidJSONError(ValueError):
-    """Raised when an HTTP request body is not valid JSON."""
+    """Raised when an HTTP request body is malformed."""
 
 
 class PayloadTooLargeError(ValueError):
-    """Raised when Content-Length exceeds the configured limit."""
+    """Raised when request body exceeds the configured limit."""
 
 
 class LockedThreadingHTTPServer(ThreadingHTTPServer):
@@ -612,7 +766,6 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             pass
 
     def log_message(self, fmt, *args):
-        # Quiet routine polling logs; print errors or mutations
         if len(args) >= 2 and str(args[1]).startswith(("4", "5")):
             super().log_message(fmt, *args)
 
@@ -622,9 +775,17 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "same-origin")
         super().end_headers()
 
-    def _send_cors_headers(self):
-        # Omit wildcard Access-Control-Allow-Origin so arbitrary third-party websites cannot invoke local APIs
-        pass
+    def _get_client_ip(self) -> str:
+        peer = self.client_address[0] if self.client_address else "unknown"
+        trust_proxy = os.environ.get("LATENT_SPACE_TRUST_PROXY") == "1" or any(
+            os.environ.get(var) for var in ("RENDER", "SPACE_ID", "RAILWAY_ENVIRONMENT", "FLY_APP_NAME")
+        )
+        if trust_proxy:
+            for hdr in ("CF-Connecting-IP", "Fly-Client-IP", "X-Forwarded-For"):
+                val = (self.headers.get(hdr) or "").strip()
+                if val:
+                    return val.split(",")[0].strip()
+        return peer
 
     def _get_session_cookie_token(self) -> str:
         raw_cookie = self.headers.get("Cookie", "")
@@ -684,28 +845,88 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def _send_file(self, file_path: Path):
+    def _send_file(self, file_path: Path, cacheable: bool = False):
         if not file_path.exists() or not file_path.is_file():
             self._send_text("File not found", status=404)
             return
+        try:
+            stat = file_path.stat()
+        except FileNotFoundError:
+            self._send_text("File not found", status=404)
+            return
+
+        etag = f'W/"{stat.st_mtime_ns}-{stat.st_size}"'
+        if cacheable and self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "public, max-age=300")
+            self.end_headers()
+            return
+
         ctype, _ = mimetypes.guess_type(str(file_path))
         if not ctype:
             if file_path.suffix == ".otf":
                 ctype = "font/otf"
+            elif file_path.suffix == ".svg":
+                ctype = "image/svg+xml"
             else:
                 ctype = "application/octet-stream"
-        data = file_path.read_bytes()
-        stat = file_path.stat()
+
         self.send_response(200)
         self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Content-Length", str(stat.st_size))
+        self.send_header("ETag", etag)
+        if cacheable:
+            self.send_header("Cache-Control", "public, max-age=300")
+        else:
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
         self.end_headers()
         if self.command != "HEAD":
-            self.wfile.write(data)
+            with file_path.open("rb") as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+
+    def _read_chunked_body(self, max_bytes: int) -> bytes:
+        chunks = []
+        total = 0
+        while True:
+            size_line = self.rfile.readline(128)
+            if not size_line:
+                raise InvalidJSONError("Incomplete chunked request body")
+            size_token = size_line.split(b";", 1)[0].strip()
+            try:
+                chunk_size = int(size_token, 16)
+            except ValueError as e:
+                raise InvalidJSONError("Malformed chunk size header") from e
+            if chunk_size < 0:
+                raise InvalidJSONError("Negative chunk size")
+            if chunk_size == 0:
+                while True:
+                    trailer = self.rfile.readline(256)
+                    if not trailer or trailer in (b"\r\n", b"\n"):
+                        break
+                break
+            total += chunk_size
+            if total > max_bytes:
+                raise PayloadTooLargeError(f"Request body exceeds {max_bytes} byte limit")
+            data = self.rfile.read(chunk_size)
+            if len(data) != chunk_size:
+                raise InvalidJSONError("Incomplete chunked body payload")
+            chunks.append(data)
+            crlf = self.rfile.read(2)
+            if crlf != b"\r\n":
+                raise InvalidJSONError("Malformed chunk terminator")
+        return b"".join(chunks)
 
     def _read_raw_body(self, max_bytes: int = MAX_JSON_BODY_BYTES) -> bytes:
+        te = (self.headers.get("Transfer-Encoding") or "").lower()
+        if "chunked" in te:
+            return self._read_chunked_body(max_bytes=max_bytes)
+
         try:
             length = int(self.headers.get("Content-Length", 0))
         except ValueError as e:
@@ -760,11 +981,11 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             return self._send_file(PROJECT_DIR / "index.html")
         if path in ("/admin", "/admin.html"):
-            return self._send_file(WEB_UI_DIR / "admin.html")
+            return self._send_file(config_manager.WEB_UI_DIR / "admin.html")
         if path in ("/draw", "/draw.html"):
-            return self._send_file(WEB_UI_DIR / "draw.html")
+            return self._send_file(config_manager.WEB_UI_DIR / "draw.html")
         if path in ("/kiosk", "/kiosk.html"):
-            return self._send_file(WEB_UI_DIR / "kiosk.html")
+            return self._send_file(config_manager.WEB_UI_DIR / "kiosk.html")
         if path == "/kasboek-logo.jpg":
             is_preview = (query.get("preview") or [""])[0] == "1"
             attr_cfg = load_settings().get("attributions", {})
@@ -773,19 +994,47 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 return
-            return self._send_file(PROJECT_DIR / "kasboek-logo.jpg")
+            return self._send_file(PROJECT_DIR / "kasboek-logo.jpg", cacheable=True)
         if path == "/korolev-medium.otf":
-            return self._send_file(PROJECT_DIR / "korolev-medium.otf")
+            return self._send_file(PROJECT_DIR / "korolev-medium.otf", cacheable=True)
+
+        if path.startswith("/vendor/"):
+            rel = path[len("/vendor/"):]
+            rel_parts = Path(rel).parts
+            vendor_root = (config_manager.WEB_UI_DIR / "vendor").resolve()
+            if not rel or any(part.startswith(".") for part in rel_parts):
+                return self._send_text("Forbidden", status=403)
+            target = (vendor_root / rel).resolve()
+            if not target.is_relative_to(vendor_root):
+                return self._send_text("Forbidden", status=403)
+            return self._send_file(target, cacheable=True)
 
         if path.startswith("/shared_output/"):
             rel = path[len("/shared_output/"):]
             rel_parts = Path(rel).parts
             if not rel or any(part.startswith(".") for part in rel_parts):
                 return self._send_text("Forbidden", status=403)
-            target = (SHARED_DIR / rel).resolve()
-            if not target.is_relative_to(SHARED_DIR.resolve()):
+            shared_root = config_manager.SHARED_DIR.resolve()
+            target = (shared_root / rel).resolve()
+            if not target.is_relative_to(shared_root):
                 return self._send_text("Forbidden", status=403)
-            return self._send_file(target)
+            is_archived_doc = (
+                len(rel_parts) == 2
+                and rel_parts[0] == "docs"
+                and rel_parts[1].startswith("print_")
+                and rel_parts[1].endswith((".png", ".pdf"))
+            )
+            return self._send_file(target, cacheable=is_archived_doc)
+
+        if path == "/api/qr.svg":
+            target_url = (query.get("url") or [""])[0].strip()
+            if not target_url or len(target_url) > 210:
+                return self._send_text("Invalid QR url parameter", status=400)
+            try:
+                svg = qr_svg(target_url, cell_size=3, quiet=4)
+                return self._send_text(svg, status=200, content_type="image/svg+xml; charset=utf-8")
+            except Exception as e:
+                return self._send_text(str(e), status=400)
 
         # Public auth & gallery metadata routes
         if path == "/api/auth/status":
@@ -840,6 +1089,8 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             if not self._require_admin():
                 return
             model_type = (query.get("type") or ["analysis"])[0]
+            if model_type not in ("analysis", "poem"):
+                return self._send_json({"status": "error", "error": "type must be 'analysis' or 'poem'"}, 400)
             try:
                 model = LLMModel(model_type)
                 model.initialize()
@@ -861,8 +1112,12 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             self._handle_post()
         except PayloadTooLargeError as e:
             self._send_json({"status": "error", "error": str(e)}, status=413)
-        except (InvalidJSONError, ValueError) as e:
+        except QueueFullError as e:
+            self._send_json({"status": "error", "error_code": "ERR_QUEUE_FULL", "error": str(e)}, status=429)
+        except (InvalidJSONError, ValueError, TypeError) as e:
             self._send_json({"status": "error", "error": str(e)}, status=400)
+        except Exception as e:
+            self._send_json({"status": "error", "error": str(e)}, status=500)
 
     def _handle_post(self):
         parsed = urlparse(self.path)
@@ -870,7 +1125,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
 
         if path == "/api/auth/login":
-            client_ip = self.client_address[0] if self.client_address else "unknown"
+            client_ip = self._get_client_ip()
             allowed, retry_after = _check_login_rate_limit(client_ip)
             if not allowed:
                 return self._send_json(
@@ -907,93 +1162,108 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             )
 
         if path == "/api/drawings":
-            target_path = SHARED_DIR / "image.png"
+            client_ip = self._get_client_ip()
+            allowed, retry_after = _check_and_record_upload_rate_limit(client_ip)
+            if not allowed:
+                return self._send_json(
+                    {"status": "error", "error_code": "ERR_RATE_LIMIT", "error": f"Too many uploads. Retry in {retry_after}s."},
+                    status=429,
+                    extra_headers=[("Retry-After", str(retry_after))],
+                )
+
+            target_path = config_manager.SHARED_DIR / "image.png"
             ctype = self.headers.get("Content-Type", "")
-            try:
-                dwell_grid = None
-                if "multipart/form-data" in ctype:
-                    raw_body = self._read_raw_body(max_bytes=MAX_DRAWING_UPLOAD_BYTES)
-                    img_bytes = self._extract_multipart_file(ctype, raw_body, "file")
-                    if not img_bytes:
-                        return self._send_json({"status": "error", "error": "Missing file field"}, 400)
-                    dwell_raw = self._extract_multipart_file(ctype, raw_body, "dwell_grid")
-                    if dwell_raw:
-                        try:
-                            dwell_grid = json.loads(dwell_raw.decode("utf-8"))
-                        except Exception:
-                            dwell_grid = None
-                else:
-                    data = self._read_json_body(max_bytes=MAX_DRAWING_UPLOAD_BYTES)
-                    img_data = data.get("image", "")
-                    dwell_grid = data.get("dwell_grid")
-                    if not img_data or not isinstance(img_data, str):
-                        return self._send_json({"status": "error", "error": "No image provided"}, 400)
-                    if "," in img_data:
-                        img_data = img_data.split(",", 1)[1]
+            dwell_grid = None
+            if "multipart/form-data" in ctype.lower():
+                raw_body = self._read_raw_body(max_bytes=MAX_DRAWING_UPLOAD_BYTES)
+                img_bytes = self._extract_multipart_file(ctype, raw_body, "file")
+                if not img_bytes:
+                    return self._send_json({"status": "error", "error": "Missing file field"}, 400)
+                dwell_raw = self._extract_multipart_file(ctype, raw_body, "dwell_grid")
+                if dwell_raw:
                     try:
-                        img_bytes = base64.b64decode(img_data, validate=True)
-                    except Exception as dec_err:
-                        return self._send_json({"status": "error", "error": f"Invalid base64 image: {dec_err}"}, 400)
+                        dwell_grid = json.loads(dwell_raw.decode("utf-8"))
+                    except Exception:
+                        dwell_grid = None
+            else:
+                data = self._read_json_body(max_bytes=MAX_DRAWING_UPLOAD_BYTES)
+                img_data = data.get("image", "")
+                dwell_grid = data.get("dwell_grid")
+                if not img_data or not isinstance(img_data, str):
+                    return self._send_json({"status": "error", "error": "No image provided"}, 400)
+                if "," in img_data:
+                    img_data = img_data.split(",", 1)[1]
+                try:
+                    img_bytes = base64.b64decode(img_data, validate=True)
+                except Exception as dec_err:
+                    return self._send_json({"status": "error", "error": f"Invalid base64 image: {dec_err}"}, 400)
 
-                if not _is_valid_image_bytes(img_bytes):
-                    return self._send_json({"status": "error", "error": "Uploaded data is not a valid image"}, 400)
+            if not _is_valid_image_bytes(img_bytes):
+                return self._send_json(
+                    {"status": "error", "error": "Uploaded data is not a valid image or exceeds max 4096x4096 bounds"},
+                    400,
+                )
 
-                if not AI_AVAILABLE:
-                    atomic_write_bytes(target_path, img_bytes)
-                    return self._send_json({"status": "error", "error": "Analysis pipeline unavailable"}, 503)
+            if not AI_AVAILABLE:
+                atomic_write_bytes(target_path, img_bytes)
+                return self._send_json({"status": "error", "error": "Analysis pipeline unavailable"}, 503)
 
-                write_live_image_and_mark_handled(target_path, img_bytes)
+            with _pipeline_lock:
+                if _pipeline_queue.qsize() >= MAX_PIPELINE_QUEUE_SIZE:
+                    raise QueueFullError("Analysis queue is full. Please try again in a moment.")
 
-                if (query.get("sync") or [""])[0] == "1":
-                    done_event = threading.Event()
-                    result_holder = {}
-                    rid, qlen = enqueue_pipeline_job(
-                        image_bytes=img_bytes,
-                        done_event=done_event,
-                        result_holder=result_holder,
-                        dwell_grid=dwell_grid,
-                    )
-                    if not done_event.wait(timeout=SYNC_PIPELINE_TIMEOUT_SEC):
-                        return self._send_json(
-                            {
-                                "status": "error",
-                                "run_id": rid,
-                                "error_code": "ERR_PIPELINE_TIMEOUT",
-                                "error": "Analysis timed out waiting for completion",
-                            },
-                            status=504,
-                        )
-                    ok = result_holder.get("ok", False)
+            is_sync = (query.get("sync") or [""])[0] == "1"
+            done_event = threading.Event() if is_sync else None
+            cancel_event = threading.Event() if is_sync else None
+            result_holder = {} if is_sync else None
+
+            rid, qlen = enqueue_pipeline_job(
+                image_bytes=img_bytes,
+                done_event=done_event,
+                result_holder=result_holder,
+                dwell_grid=dwell_grid,
+                cancel_event=cancel_event,
+            )
+            write_live_image_and_mark_handled(target_path, img_bytes)
+
+            if is_sync:
+                if not done_event.wait(timeout=SYNC_PIPELINE_TIMEOUT_SEC):
+                    cancel_event.set()
                     return self._send_json(
                         {
-                            "status": "success" if ok else "error",
+                            "status": "error",
                             "run_id": rid,
-                            "pipeline": "completed",
-                            "error_code": result_holder.get("error_code"),
-                            "error": result_holder.get("error"),
+                            "error_code": "ERR_PIPELINE_TIMEOUT",
+                            "error": "Analysis timed out waiting for completion",
                         },
-                        status=200 if ok else 500,
+                        status=504,
                     )
-                else:
-                    rid, qlen = enqueue_pipeline_job(image_bytes=img_bytes, dwell_grid=dwell_grid)
-                    return self._send_json({
-                        "status": "success",
+                ok = result_holder.get("ok", False)
+                return self._send_json(
+                    {
+                        "status": "success" if ok else "error",
                         "run_id": rid,
-                        "queue_length": qlen,
-                        "message": "Drawing saved and queued for analysis",
-                        "pipeline_started": True,
-                    })
-            except (InvalidJSONError, PayloadTooLargeError):
-                raise
-            except Exception as e:
-                return self._send_json({"status": "error", "error": str(e)}, 500)
+                        "pipeline": "completed",
+                        "error_code": result_holder.get("error_code"),
+                        "error": result_holder.get("error"),
+                    },
+                    status=200 if ok else 500,
+                )
+
+            return self._send_json({
+                "status": "success",
+                "run_id": rid,
+                "queue_length": qlen,
+                "message": "Drawing saved and queued for analysis",
+                "pipeline_started": True,
+            })
 
         # All remaining POST routes require Admin authentication
         if not self._require_admin():
             return
 
         if path == "/api/pipeline/run":
-            live_img = SHARED_DIR / "image.png"
+            live_img = config_manager.SHARED_DIR / "image.png"
             if not live_img.exists():
                 return self._send_json({"status": "error", "error": "No shared_output/image.png found"}, 404)
             rid, qlen = enqueue_pipeline_job(source_path=live_img)
@@ -1038,18 +1308,30 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             config_data = data.get("config", {})
             if not isinstance(config_data, dict):
                 return self._send_json({"status": "error", "error": "config must be an object"}, 400)
-            try:
-                model = LLMModel(model_type)
-                response = model.update_assistant(**config_data)
-                return self._send_json(response)
-            except Exception as e:
-                return self._send_json({"status": "Error", "error": str(e)}, 500)
+            unknown_keys = set(config_data.keys()) - ALLOWED_AI_CONFIG_KEYS
+            if unknown_keys:
+                return self._send_json(
+                    {"status": "error", "error": f"Unknown AI config keys: {sorted(unknown_keys)}"},
+                    400,
+                )
+            clean_cfg = dict(config_data)
+            if "model" in clean_cfg and "llm" not in clean_cfg:
+                clean_cfg["llm"] = clean_cfg.pop("model")
+            else:
+                clean_cfg.pop("model", None)
+            if not AI_AVAILABLE:
+                return self._send_json({"status": "error", "error": "AI pipeline module unavailable"}, 503)
+            model = LLMModel(model_type)
+            response = model.update_assistant(**clean_cfg)
+            return self._send_json(response)
 
         if path == "/api/ai/test":
             data = self._read_json_body()
             model_type = data.get("model_type", "analysis")
             if model_type not in ("analysis", "poem"):
                 return self._send_json({"status": "error", "error": "model_type must be 'analysis' or 'poem'"}, 400)
+            if not AI_AVAILABLE:
+                return self._send_json({"status": "error", "error": "AI pipeline module unavailable"}, 503)
             try:
                 model = LLMModel(model_type)
                 reply = model.chat(
@@ -1064,27 +1346,27 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                 })
             except AIGenerationError as e:
                 return self._send_json({"status": "error", "error_code": e.code, "error": str(e)}, 500)
-            except Exception as e:
-                return self._send_json({"status": "error", "error": str(e)}, 500)
 
         if path == "/api/ollama/stop":
-            try:
-                from start_everything import stop_ollama_serving
-                stop_ollama_serving(kill_external=True)
-                with _ollama_cache_lock:
-                    _ollama_cache["status"] = "stopped"
-                    _ollama_cache["ts"] = time.monotonic()
-                return self._send_json({"status": "success", "message": "Ollama models unloaded and server stopped"})
-            except Exception as e:
-                return self._send_json({"status": "error", "error": str(e)}, 500)
+            from start_everything import stop_ollama_serving
+            stop_ollama_serving(kill_external=True)
+            with _ollama_cache_lock:
+                _ollama_cache["status"] = "stopped"
+                _ollama_cache["ts"] = time.monotonic()
+            return self._send_json({"status": "success", "message": "Ollama models unloaded and server stopped"})
 
         if path == "/api/files/print":
             data = self._read_json_body()
             filename = data.get("filename", "")
             mark_only = bool(data.get("mark_only", False))
-            if not isinstance(filename, str) or not filename or "/" in filename or "\\" in filename or ".." in filename:
+            if (
+                not isinstance(filename, str)
+                or not filename.startswith("print_")
+                or not filename.endswith(".pdf")
+                or "/" in filename or "\\" in filename or ".." in filename
+            ):
                 return self._send_json({"status": "error", "error": "Invalid filename"}, 400)
-            pdf_path = DOCS_DIR / filename
+            pdf_path = config_manager.DOCS_DIR / filename
             if not pdf_path.exists():
                 return self._send_json({"status": "error", "error": "PDF file not found"}, 404)
             if mark_only:
@@ -1100,50 +1382,68 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             data = self._read_json_body()
             action = data.get("action")
             filename = data.get("filename")
-            deleted_names = []
+            if action not in ("specific", "all"):
+                return self._send_json({"status": "error", "error": "action must be 'specific' or 'all'"}, 400)
 
-            def _delete_print_artifacts(pdf_file: Path) -> str:
+            deleted_names = []
+            docs_dir = config_manager.DOCS_DIR
+            shared_dir = config_manager.SHARED_DIR
+
+            def _delete_print_artifacts(pdf_file: Path) -> bool:
                 stem = pdf_file.stem
+                removed_any = False
                 for suffix in (".pdf", ".png", ".json", ".heatmap.png"):
                     p = pdf_file.with_name(f"{stem}{suffix}")
                     if p.exists():
                         p.unlink()
+                        removed_any = True
                 if stem.startswith("print_"):
                     rid = stem[len("print_"):]
-                    audio_p = SHARED_DIR / f"output_{rid}.mp3"
+                    audio_p = shared_dir / f"output_{rid}.mp3"
                     if audio_p.exists():
                         audio_p.unlink()
-                return pdf_file.name
+                return removed_any
 
-            try:
-                if action == "specific" and isinstance(filename, str) and filename and "/" not in filename and "\\" not in filename and ".." not in filename:
-                    deleted_names.append(_delete_print_artifacts(DOCS_DIR / filename))
-                elif action == "all":
-                    today_int = int(datetime.now().strftime("%Y%m%d"))
-                    for f in DOCS_DIR.glob("print_*.pdf"):
-                        try:
-                            f_date = int(f.name.split("_")[1])
-                            if f_date < today_int:
-                                deleted_names.append(_delete_print_artifacts(f))
-                        except Exception:
-                            pass
-                if deleted_names and AI_AVAILABLE:
-                    remove_from_print_history(deleted_names)
-                return self._send_json({"status": "success", "deleted": len(deleted_names)})
-            except Exception as e:
-                return self._send_json({"error": str(e)}, 500)
+            if action == "specific":
+                if (
+                    not isinstance(filename, str)
+                    or not filename.startswith("print_")
+                    or not filename.endswith(".pdf")
+                    or "/" in filename or "\\" in filename or ".." in filename
+                ):
+                    return self._send_json({"status": "error", "error": "Invalid print PDF filename"}, 400)
+                target_pdf = docs_dir / filename
+                if not target_pdf.exists():
+                    return self._send_json({"status": "error", "error": "Print PDF not found"}, 404)
+                if _delete_print_artifacts(target_pdf):
+                    deleted_names.append(target_pdf.name)
+            elif action == "all":
+                today_int = int(datetime.now().strftime("%Y%m%d"))
+                for f in docs_dir.glob("print_*.pdf"):
+                    try:
+                        f_date = int(f.name.split("_")[1])
+                        if f_date < today_int and _delete_print_artifacts(f):
+                            deleted_names.append(f.name)
+                    except Exception:
+                        pass
+
+            if deleted_names:
+                remove_from_print_history(deleted_names)
+            return self._send_json({"status": "success", "deleted": len(deleted_names)})
 
         return self._send_json({"error": "Not Found"}, 404)
 
 
 def run_server(host="0.0.0.0", port=8000):
+    if AI_AVAILABLE:
+        cleanup_orphaned_temp_files()
     start_background_watcher()
     admin_pw, auth_src = get_or_create_admin_password()
     server = LockedThreadingHTTPServer((host, port), LatentSpaceRequestHandler)
     print("=" * 64)
     print("LATENT SPACE UNIFIED SERVER")
     print(f"Project Root:  {PROJECT_DIR}")
-    print(f"Shared Output: {SHARED_DIR}")
+    print(f"Shared Output: {config_manager.SHARED_DIR}")
     if auth_src.startswith("env:"):
         print(f"Admin Auth:    Configured via {auth_src}")
     else:

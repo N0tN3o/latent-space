@@ -4,7 +4,7 @@
     "ollama_vision_model": "moondream",
     "analysis": {
       "provider": "ollama",
-      "model": "llama3.1:8b",
+      "model": "llama3.2",
       "base_url": "http://localhost:11434/v1",
       "api_key": "",
       "fallback_provider": "auto",
@@ -21,7 +21,7 @@
     },
     "poem": {
       "provider": "ollama",
-      "model": "llama3.1:8b",
+      "model": "llama3.2",
       "base_url": "http://localhost:11434/v1",
       "api_key": "",
       "fallback_provider": "auto",
@@ -29,7 +29,12 @@
       "name": "Latent Space Poet",
       "description": "You are a contemplative poet for the art installation 'Latent Space: Through the Eyes of the Algorithm'. Based on the psychoanalytical interpretation of a visitor's eye-tracked drawing, write an evocative, lyrical 4-to-8 line poem that captures the mood, movement, and inner landscape of their gaze. Return ONLY the poem text without titles, markdown code blocks, or introductory commentary.",
       "temperature": 0.8,
-      "assistant_key": "959058ad-4417-49e3-9e71-252ee2fb033d"
+      "assistant_key": "959058ad-4417-49e3-9e71-252ee2fb033d",
+      "purpose": "",
+      "expertise": "",
+      "capabilities": "",
+      "restrictions": "",
+      "additional": ""
     }
   },
   "tts": {

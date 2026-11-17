@@ -29,6 +29,7 @@ An interactive art installation that transforms human gaze into AI-interpreted a
    ```bash
    pip install -r requirements.txt
    ```
+   *(If running the native Desktop Gaze Painter in `gaze_painter/`, install `gaze_painter/requirements.txt` in a separate virtual environment so `opencv-python` does not conflict with `opencv-python-headless`.)*
 
 2. **Start the Unified Server & Web Suite**
    ```bash

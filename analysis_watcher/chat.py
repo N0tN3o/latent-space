@@ -1,10 +1,10 @@
 import base64
-import json
 import logging
-import os
-import sys
-import time
 from pathlib import Path
+import sys
+import threading
+import time
+from urllib.parse import urlparse
 import requests
 
 # Add project root so config_manager can be imported
@@ -12,14 +12,20 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config_manager import load_settings, update_settings_section, load_env_vars
+from config_manager import (
+    get_configured_ollama_host,
+    load_env_vars,
+    load_settings,
+    update_settings_section,
+)
 
 logger = logging.getLogger("image_analysis_pipeline")
 
+_OLLAMA_CAPS_LOCK = threading.Lock()
 _OLLAMA_VISION_CAPS = {}
 _VISION_NAME_HINTS = (
     "vision", "llava", "bakllava", "moondream", "minicpm-v",
-    "qwen2-vl", "qwen2.5vl", "pixtral", "gemma3",
+    "qwen2-vl", "qwen2.5vl", "pixtral", "gemma3:4b", "gemma3:12b", "gemma3:27b",
 )
 
 ASSISTANT_KEY_TO_ROLE = {
@@ -28,6 +34,10 @@ ASSISTANT_KEY_TO_ROLE = {
     "analysis": "analysis",
     "poem": "poem",
 }
+
+MAX_CHAT_BUDGET_SEC = 50.0
+CONNECT_TIMEOUT_SEC = 5.0
+READ_TIMEOUT_SEC = 25.0
 
 
 class AIGenerationError(RuntimeError):
@@ -41,22 +51,39 @@ class AIGenerationError(RuntimeError):
         self.model = model
 
 
+def _is_cloud_openai_compatible_host(base_url: str) -> str:
+    """Return canonical cloud vendor ('groq', 'openrouter', 'openai') or '' for local/custom."""
+    host = (urlparse(base_url or "").hostname or "").lower()
+    if "groq.com" in host:
+        return "groq"
+    if "openrouter.ai" in host:
+        return "openrouter"
+    if "openai.com" in host:
+        return "openai"
+    return ""
+
+
+def _should_skip_primary_retry(exc: Exception) -> bool:
+    """Skip redundant retries on non-transient configuration/auth/client/connect failures."""
+    if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout)):
+        return True
+    if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
+        if exc.response.status_code in (400, 401, 403, 404):
+            return True
+    msg = str(exc)
+    return "not configured" in msg or "Unknown AI provider" in msg or "BUas init failed" in msg
+
+
 class LLMModel:
     """
     Multi-provider LLM adapter for Latent Space.
     Supports:
-      - 'ollama' (Local Ollama server via /api/chat or /v1/chat/completions)
+      - 'ollama' (Local Ollama server via /v1/chat/completions)
       - 'openai_compatible' (OpenAI, LM Studio, vLLM, Groq, OpenRouter)
-      - 'gemini' (Google Gemini API - free tier & pro/flash models, native vision)
+      - 'gemini' (Google Gemini API, native vision)
       - 'anthropic' (Anthropic Claude API, native vision)
       - 'buas' (Legacy BUas AI platform)
     """
-
-    _attributes = [
-        "name", "description", "purpose", "expertise",
-        "capabilities", "restrictions", "additional",
-        "llm", "creativity", "provider", "base_url"
-    ]
 
     def __init__(self, key="analysis"):
         self.assistant_key = key
@@ -80,6 +107,8 @@ class LLMModel:
         self._last_used_provider = ""
         self._last_used_model = ""
         self.__chat_key = None
+        self._buas_remote_loaded = False
+        self._buas_overrides = {}
 
         # Legacy BUas endpoints
         self.__url_api = "https://ai-assistants.buas.nl/aioda-api"
@@ -91,6 +120,27 @@ class LLMModel:
 
         self._load_local_config()
 
+    def _resolve_openai_compatible_key(self, base_url: str, settings: dict, env: dict) -> str:
+        """Resolve API key matching the specific OpenAI-compatible base_url (never cross-sending keys)."""
+        norm_url = (base_url or "").rstrip("/")
+        ai_cfg = settings.get("ai", {})
+        other_role = "poem" if self.role == "analysis" else "analysis"
+        for role_name in (self.role, other_role):
+            rc = ai_cfg.get(role_name, {})
+            if (rc.get("provider") or "").lower() == "openai_compatible" and rc.get("api_key"):
+                rc_url = (rc.get("base_url") or "").rstrip("/")
+                if not norm_url or not rc_url or rc_url == norm_url:
+                    return rc["api_key"]
+
+        vendor = _is_cloud_openai_compatible_host(norm_url)
+        if vendor == "groq":
+            return env.get("GROQ_API_KEY", "")
+        if vendor == "openrouter":
+            return env.get("OPENROUTER_API_KEY", "")
+        if vendor == "openai":
+            return env.get("OPENAI_API_KEY", "")
+        return env.get("OPENAI_COMPATIBLE_API_KEY", "")
+
     def _load_local_config(self):
         settings = load_settings()
         env = load_env_vars()
@@ -98,7 +148,15 @@ class LLMModel:
         self._vision_mode = ai_cfg.get("vision_mode", "auto")
         role_cfg = ai_cfg.get(self.role, {})
 
-        self._provider = role_cfg.get("provider", "ollama").lower()
+        new_provider = role_cfg.get("provider", "ollama").lower()
+        new_key = role_cfg.get("assistant_key") or self.assistant_key
+        buas_preserved = (
+            self._buas_remote_loaded
+            and new_provider == "buas"
+            and new_key == self.assistant_key
+        )
+
+        self._provider = new_provider
         self._llm = role_cfg.get("model", "llama3.2")
         self._base_url = role_cfg.get("base_url", "http://localhost:11434/v1")
         self._api_key = role_cfg.get("api_key", "")
@@ -113,24 +171,24 @@ class LLMModel:
         self._additional = role_cfg.get("additional", "")
         self._temperature = float(role_cfg.get("temperature", 0.7))
         self._creativity = self._temperature
-        if role_cfg.get("assistant_key"):
-            self.assistant_key = role_cfg["assistant_key"]
+        self.assistant_key = new_key
 
-        # Resolve API keys from environment if not set in settings.json
+        if buas_preserved and self._buas_overrides:
+            for attr, val in self._buas_overrides.items():
+                setattr(self, attr, val)
+            self._creativity = self._temperature
+        elif new_provider != "buas":
+            self._buas_remote_loaded = False
+            self._buas_overrides = {}
+
         if not self._api_key:
             if self._provider == "gemini":
                 self._api_key = env.get("GEMINI_API_KEY", "")
             elif self._provider == "anthropic":
                 self._api_key = env.get("ANTHROPIC_API_KEY", "")
             elif self._provider == "openai_compatible":
-                self._api_key = (
-                    env.get("OPENAI_API_KEY")
-                    or env.get("OPENROUTER_API_KEY")
-                    or env.get("GROQ_API_KEY")
-                    or ""
-                )
+                self._api_key = self._resolve_openai_compatible_key(self._base_url, settings, env)
 
-        # Legacy BUas credentials
         self._access_token = env.get("ACCESS_TOKEN", "")
         self._user_key = env.get("USER_KEY", "")
 
@@ -156,6 +214,7 @@ class LLMModel:
                 raise RuntimeError("BUas provider selected, but ACCESS_TOKEN or USER_KEY is missing in .env")
             init_data = {"user_key": self._user_key, "assistant_key": self.assistant_key}
             resp = requests.post(self.__init_endpoint_url, json=init_data, headers=self.__headers, timeout=15)
+            resp.raise_for_status()
             init_response = resp.json()
             if init_response.get("status") == "Failed":
                 raise RuntimeError(f"BUas init failed: {init_response.get('error')}")
@@ -168,24 +227,31 @@ class LLMModel:
                 "chat_key": self.__chat_key,
             }
             p_resp = requests.post(self.__assistant_configs_endpoint_url, json=params_data, headers=self.__headers, timeout=15)
+            p_resp.raise_for_status()
             p_json = p_resp.json()
-            self._name = p_json.get("name", self._name)
-            self._description = p_json.get("description", self._description)
-            self._purpose = p_json.get("purpose", self._purpose)
-            self._expertise = p_json.get("expertise", self._expertise)
-            self._capabilities = p_json.get("capabilities", self._capabilities)
-            self._restrictions = p_json.get("restrictions", self._restrictions)
-            self._additional = p_json.get("additional", self._additional)
-            self._llm = p_json.get("llm", self._llm)
-            self._creativity = p_json.get("temperature", self._temperature)
-            self._temperature = self._creativity
+            overrides = {
+                "_name": p_json.get("name", self._name),
+                "_description": p_json.get("description", self._description),
+                "_purpose": p_json.get("purpose", self._purpose),
+                "_expertise": p_json.get("expertise", self._expertise),
+                "_capabilities": p_json.get("capabilities", self._capabilities),
+                "_restrictions": p_json.get("restrictions", self._restrictions),
+                "_additional": p_json.get("additional", self._additional),
+                "_llm": p_json.get("llm", self._llm),
+                "_temperature": float(p_json.get("temperature", self._temperature)),
+            }
+            for attr, val in overrides.items():
+                setattr(self, attr, val)
+            self._creativity = self._temperature
+            self._buas_overrides = overrides
+            self._buas_remote_loaded = True
             return init_response
 
         return {
             "status": "Success",
             "provider": self._provider,
             "model": self._llm,
-            "role": self.role
+            "role": self.role,
         }
 
     @staticmethod
@@ -197,8 +263,10 @@ class LLMModel:
         except Exception:
             return None
 
-    def _resolve_key_for_provider(self, provider: str, settings: dict, env: dict) -> str:
-        """Find an API key for a given provider from settings (either role) or environment."""
+    def _resolve_key_for_provider(self, provider: str, settings: dict, env: dict, base_url: str = "") -> str:
+        """Find an API key for a given provider from settings or environment, matching URL for OpenAI-compatible."""
+        if provider == "openai_compatible":
+            return self._resolve_openai_compatible_key(base_url, settings, env)
         ai_cfg = settings.get("ai", {})
         other_role = "poem" if self.role == "analysis" else "analysis"
         for role_name in (self.role, other_role):
@@ -209,8 +277,6 @@ class LLMModel:
             return env.get("GEMINI_API_KEY", "")
         if provider == "anthropic":
             return env.get("ANTHROPIC_API_KEY", "")
-        if provider == "openai_compatible":
-            return env.get("GROQ_API_KEY") or env.get("OPENROUTER_API_KEY") or env.get("OPENAI_API_KEY") or ""
         return ""
 
     def _build_failover_candidates(self) -> list:
@@ -223,6 +289,8 @@ class LLMModel:
         ai_cfg = settings.get("ai", {})
         other_role = "poem" if self.role == "analysis" else "analysis"
         other_cfg = ai_cfg.get(other_role, {})
+        other_prov = (other_cfg.get("provider") or "").lower()
+        default_ollama_v1 = f"{get_configured_ollama_host(settings)}/v1"
 
         candidates = []
         seen = {(self._provider, self._llm, (self._base_url or "").rstrip("/"))}
@@ -238,8 +306,9 @@ class LLMModel:
             fb_prov = self._fallback_provider
             fb_model = self._fallback_model
             if fb_prov == "ollama":
-                fb_model = fb_model or (other_cfg.get("model") if other_cfg.get("provider") == "ollama" else "") or "llama3.2"
-                add_candidate("ollama", fb_model, "http://localhost:11434/v1", "")
+                fb_model = fb_model or (other_cfg.get("model") if other_prov == "ollama" else "") or "llama3.2"
+                fb_url = (other_cfg.get("base_url") if other_prov == "ollama" else "") or default_ollama_v1
+                add_candidate("ollama", fb_model, fb_url, "")
             elif fb_prov == "gemini":
                 key = self._resolve_key_for_provider("gemini", settings, env)
                 if key:
@@ -249,26 +318,36 @@ class LLMModel:
                 if key:
                     add_candidate("anthropic", fb_model or "claude-3-5-haiku-latest", "", key)
             elif fb_prov == "openai_compatible":
-                key = self._resolve_key_for_provider("openai_compatible", settings, env)
-                base_url = other_cfg.get("base_url") if other_cfg.get("provider") == "openai_compatible" else ""
-                if key:
-                    add_candidate("openai_compatible", fb_model or "llama-3.3-70b-versatile", base_url or "https://api.groq.com/openai/v1", key)
+                if other_prov == "openai_compatible" and other_cfg.get("base_url"):
+                    url = other_cfg["base_url"]
+                    key = other_cfg.get("api_key") or self._resolve_openai_compatible_key(url, settings, env)
+                    if key or not _is_cloud_openai_compatible_host(url):
+                        add_candidate("openai_compatible", fb_model or other_cfg.get("model") or "llama-3.3-70b-versatile", url, key)
+                elif env.get("GROQ_API_KEY"):
+                    add_candidate("openai_compatible", fb_model or "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1", env["GROQ_API_KEY"])
+                elif env.get("OPENROUTER_API_KEY"):
+                    add_candidate("openai_compatible", fb_model or "meta-llama/llama-3.2-11b-vision-instruct:free", "https://openrouter.ai/api/v1", env["OPENROUTER_API_KEY"])
+                elif env.get("OPENAI_API_KEY"):
+                    add_candidate("openai_compatible", fb_model or "gpt-4o-mini", "https://api.openai.com/v1", env["OPENAI_API_KEY"])
             elif fb_prov == "buas" and env.get("ACCESS_TOKEN") and env.get("USER_KEY"):
                 add_candidate("buas", fb_model or "llama3.3:latest", self.__url_api, "")
 
-        # 2. Other role's configured provider if different from current failed primary
-        other_prov = (other_cfg.get("provider") or "").lower()
-        if other_prov and other_prov != self._provider:
-            other_key = other_cfg.get("api_key") or self._resolve_key_for_provider(other_prov, settings, env)
-            if other_prov == "ollama" or other_key:
-                add_candidate(
-                    other_prov,
-                    other_cfg.get("model", ""),
-                    other_cfg.get("base_url", ""),
-                    other_key,
-                )
+        # 2. Other role's configured provider/endpoint if distinct from current failed primary
+        if other_prov:
+            other_url = other_cfg.get("base_url", "")
+            if (other_prov, other_url.rstrip("/")) != (self._provider, (self._base_url or "").rstrip("/")):
+                other_key = other_cfg.get("api_key") or self._resolve_key_for_provider(other_prov, settings, env, base_url=other_url)
+                is_local_openai = other_prov == "openai_compatible" and bool(other_url) and not _is_cloud_openai_compatible_host(other_url)
+                is_buas_ready = other_prov == "buas" and bool(env.get("ACCESS_TOKEN") and env.get("USER_KEY"))
+                if other_prov == "ollama" or other_key or is_local_openai or is_buas_ready:
+                    add_candidate(
+                        other_prov,
+                        other_cfg.get("model", ""),
+                        other_url,
+                        other_key,
+                    )
 
-        # 3. Cloud API failovers (from .env or settings) — always use each provider's own default model
+        # 3. Cloud API failovers (from .env or settings) — always use matching keys & provider default models
         gemini_key = self._resolve_key_for_provider("gemini", settings, env)
         if gemini_key:
             add_candidate("gemini", "gemini-2.0-flash", "", gemini_key)
@@ -289,27 +368,28 @@ class LLMModel:
 
         # 4. Self-hosted Ollama failover when a Cloud provider failed
         if self._provider != "ollama":
-            ollama_model = (
-                (other_cfg.get("model") if other_prov == "ollama" else "")
-                or "llama3.2"
-            )
-            add_candidate("ollama", ollama_model, "http://localhost:11434/v1", "")
+            ollama_model = (other_cfg.get("model") if other_prov == "ollama" else "") or "llama3.2"
+            ollama_url = (other_cfg.get("base_url") if other_prov == "ollama" else "") or default_ollama_v1
+            add_candidate("ollama", ollama_model, ollama_url, "")
 
         return candidates
 
-    def _call_provider(self, provider: str, model: str, base_url: str, api_key: str, message: str, img_b64: str = None) -> tuple:
+    def _call_provider(self, provider: str, model: str, base_url: str, api_key: str,
+                       message: str, img_b64: str = None, timeout=None) -> tuple:
+        req_timeout = timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC)
         used_model = model
         if provider == "gemini":
             used_model = model or self._llm or "gemini-2.0-flash"
-            reply = self._chat_gemini(message, img_b64, model_name=used_model, api_key=api_key)
+            reply = self._chat_gemini(message, img_b64, model_name=used_model, api_key=api_key, timeout=req_timeout)
         elif provider == "anthropic":
             used_model = model or self._llm or "claude-3-5-haiku-latest"
-            reply = self._chat_anthropic(message, img_b64, model_name=used_model, api_key=api_key)
+            reply = self._chat_anthropic(message, img_b64, model_name=used_model, api_key=api_key, timeout=req_timeout)
         elif provider == "buas":
-            reply = self._chat_buas(message)
+            reply = self._chat_buas(message, timeout=req_timeout)
         elif provider in ("ollama", "openai_compatible"):
             reply, used_model = self._chat_openai_or_ollama(
-                message, img_b64, provider=provider, model_name=model, base_url=base_url, api_key=api_key
+                message, img_b64, provider=provider, model_name=model,
+                base_url=base_url, api_key=api_key, timeout=req_timeout,
             )
         else:
             raise ValueError(f"Unknown AI provider: {provider}")
@@ -321,7 +401,7 @@ class LLMModel:
     def chat(self, message: str, image_path: str = None, allow_failover: bool = True) -> str:
         """
         Send a prompt (and optional drawing image for Vision LLMs) to the configured provider.
-        Retries transient primary failures and fails over across providers if enabled.
+        Retries transient primary failures and fails over across providers within a bounded time budget.
         Raises AIGenerationError if all attempts fail.
         """
         self._load_local_config()
@@ -331,31 +411,43 @@ class LLMModel:
             and self._vision_mode in ("auto", "vision")
         )
         img_b64 = self._encode_image_base64(image_path) if use_vision else None
+        deadline = time.monotonic() + MAX_CHAT_BUDGET_SEC
 
-        # Step A: Primary provider (with 1 quick retry on transient errors)
+        # Step A: Primary provider (1 quick retry only on transient failures)
         primary_err = None
         for attempt in range(2):
+            rem = max(3.0, deadline - time.monotonic())
+            req_timeout = (min(CONNECT_TIMEOUT_SEC, rem), min(READ_TIMEOUT_SEC, rem))
             try:
-                reply, used_model = self._call_provider(self._provider, self._llm, self._base_url, self._api_key, message, img_b64)
+                reply, used_model = self._call_provider(
+                    self._provider, self._llm, self._base_url, self._api_key,
+                    message, img_b64, timeout=req_timeout,
+                )
                 self._last_used_provider = self._provider
                 self._last_used_model = used_model
                 return reply
             except Exception as e:
                 primary_err = e
                 logger.warning(f"[chat] {self.role} primary attempt {attempt + 1} ({self._provider}/{self._llm}) failed: {e}")
-                # Skip futile retry if missing API key or unknown provider
-                if "not configured" in str(e) or "Unknown AI provider" in str(e):
+                if _should_skip_primary_retry(e) or time.monotonic() >= deadline:
                     break
                 if attempt == 0:
                     time.sleep(0.5)
 
-        # Step B: Cross-provider failover
+        # Step B: Cross-provider failover within remaining time budget
         failover_errs = []
         if allow_failover:
             for fb_prov, fb_model, fb_url, fb_key in self._build_failover_candidates():
+                rem = deadline - time.monotonic()
+                if rem <= 1.0:
+                    failover_errs.append("budget exhausted")
+                    break
+                req_timeout = (min(CONNECT_TIMEOUT_SEC, rem), min(15.0, rem))
                 try:
                     logger.warning(f"[chat] {self.role} failing over to {fb_prov} ({fb_model})...")
-                    reply, used_model = self._call_provider(fb_prov, fb_model, fb_url, fb_key, message, img_b64)
+                    reply, used_model = self._call_provider(
+                        fb_prov, fb_model, fb_url, fb_key, message, img_b64, timeout=req_timeout
+                    )
                     self._last_used_provider = fb_prov
                     self._last_used_model = used_model
                     logger.info(f"[chat] {self.role} failover succeeded via {fb_prov} ({used_model})")
@@ -364,7 +456,6 @@ class LLMModel:
                     logger.warning(f"[chat] {self.role} failover {fb_prov} ({fb_model}) failed: {fb_e}")
                     failover_errs.append(f"{fb_prov}/{fb_model}: {fb_e}")
 
-        # Step C: Definitive failure — surface explicit error code (no silent canned fallback)
         code = f"ERR_{self.role.upper()}_AI_FAILED"
         detail = f"Primary {self._provider} ({self._llm}) failed: {primary_err}"
         if failover_errs:
@@ -374,7 +465,8 @@ class LLMModel:
 
     def _discover_ollama_text_model(self, base_url: str, failed_model: str) -> str:
         """Pick an installed non-embedding Ollama model, preferring the other role's model."""
-        host_root = base_url.replace("/v1", "").rstrip("/")
+        host_root = base_url[:-3] if base_url.endswith("/v1") else base_url
+        host_root = host_root.rstrip("/")
         tags_resp = requests.get(f"{host_root}/api/tags", timeout=3)
         if not tags_resp.ok:
             return ""
@@ -397,26 +489,36 @@ class LLMModel:
 
     @staticmethod
     def _ollama_supports_vision(clean_base: str, model_name: str) -> bool:
-        """Check (cached) whether a local Ollama model supports multimodal image inputs."""
+        """Check (thread-safe cached) whether a local Ollama model supports multimodal image inputs."""
         if not model_name:
             return False
         low = model_name.lower()
-        if any(hint in low for hint in _VISION_NAME_HINTS):
-            return True
+        if low.startswith("gemma3:1b"):
+            return False
         host_root = clean_base[:-3] if clean_base.endswith("/v1") else clean_base
+        host_root = host_root.rstrip("/")
         cache_key = (host_root, model_name)
-        if cache_key in _OLLAMA_VISION_CAPS:
-            return _OLLAMA_VISION_CAPS[cache_key]
-        supported = False
-        try:
-            resp = requests.post(f"{host_root}/api/show", json={"model": model_name}, timeout=1.0)
-            if resp.ok:
-                caps = [str(c).lower() for c in resp.json().get("capabilities", [])]
-                supported = "vision" in caps
-        except Exception:
-            supported = False
-        _OLLAMA_VISION_CAPS[cache_key] = supported
-        return supported
+        with _OLLAMA_CAPS_LOCK:
+            if cache_key in _OLLAMA_VISION_CAPS:
+                return _OLLAMA_VISION_CAPS[cache_key]
+
+        supported = None
+        if host_root.startswith(("http://", "https://")):
+            try:
+                resp = requests.post(f"{host_root}/api/show", json={"model": model_name}, timeout=1.0)
+                if resp.ok:
+                    caps = resp.json().get("capabilities")
+                    if isinstance(caps, list):
+                        supported = "vision" in [str(c).lower() for c in caps]
+            except Exception:
+                supported = None
+
+        if supported is None:
+            supported = any(hint in low for hint in _VISION_NAME_HINTS)
+
+        with _OLLAMA_CAPS_LOCK:
+            _OLLAMA_VISION_CAPS[cache_key] = bool(supported)
+        return bool(supported)
 
     def _chat_openai_or_ollama(
         self,
@@ -426,11 +528,13 @@ class LLMModel:
         model_name: str = None,
         base_url: str = None,
         api_key: str = None,
+        timeout=None,
     ) -> tuple:
         prov = (provider or self._provider).lower()
         mod = model_name if model_name is not None else self._llm
-        b_url = (base_url if base_url is not None else self._base_url) or "http://localhost:11434/v1"
+        b_url = (base_url if base_url is not None else self._base_url) or f"{get_configured_ollama_host()}/v1"
         key = api_key if api_key is not None else self._api_key
+        req_timeout = timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC)
 
         system_prompt = self._build_system_prompt()
         clean_base = b_url.rstrip("/")
@@ -447,36 +551,35 @@ class LLMModel:
             if not self._ollama_supports_vision(clean_base, mod):
                 send_img_b64 = None
 
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-
-        if send_img_b64:
-            user_content = [
-                {"type": "text", "text": message},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{send_img_b64}"}}
-            ]
-        else:
-            user_content = message
-
-        messages.append({"role": "user", "content": user_content})
+        def build_messages(include_img: bool) -> list:
+            msgs = []
+            if system_prompt:
+                msgs.append({"role": "system", "content": system_prompt})
+            if include_img and img_b64:
+                user_content = [
+                    {"type": "text", "text": message},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                ]
+            else:
+                user_content = message
+            msgs.append({"role": "user", "content": user_content})
+            return msgs
 
         payload = {
             "model": mod,
-            "messages": messages,
+            "messages": build_messages(bool(send_img_b64)),
             "temperature": float(self._temperature),
         }
 
-        resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+        resp = requests.post(endpoint, json=payload, headers=headers, timeout=req_timeout)
 
-        # If a text-only model on Ollama/OpenAI rejects image_url, retry with text only
-        if resp.status_code >= 400 and send_img_b64 is not None:
-            messages[-1]["content"] = message
-            payload["messages"] = messages
-            resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+        # Only retry without image when server specifically rejects the multimodal request shape
+        if resp.status_code in (400, 422) and send_img_b64 is not None:
+            payload["messages"] = build_messages(False)
+            resp = requests.post(endpoint, json=payload, headers=headers, timeout=req_timeout)
 
         # If Ollama returns 404 because the configured model tag is not pulled locally,
-        # automatically discover an installed non-embedding Ollama model and retry
+        # discover an installed model and preserve image payload if that model supports vision
         used_model = mod
         if resp.status_code == 404 and prov == "ollama":
             try:
@@ -484,9 +587,14 @@ class LLMModel:
                 if fallback_model:
                     logger.warning(f"[chat] Ollama model '{mod}' not found locally; retrying with '{fallback_model}'")
                     payload["model"] = fallback_model
-                    messages[-1]["content"] = message
-                    payload["messages"] = messages
-                    resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+                    keep_img = bool(
+                        img_b64 and (
+                            self._vision_mode == "vision"
+                            or (self._vision_mode == "auto" and self._ollama_supports_vision(clean_base, fallback_model))
+                        )
+                    )
+                    payload["messages"] = build_messages(keep_img)
+                    resp = requests.post(endpoint, json=payload, headers=headers, timeout=req_timeout)
                     if resp.ok:
                         used_model = fallback_model
             except Exception:
@@ -494,9 +602,16 @@ class LLMModel:
 
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"].strip(), used_model
+        msg = (data.get("choices") or [{}])[0].get("message") or {}
+        content = msg.get("content")
+        if isinstance(content, list):
+            content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError(f"Empty or null message content from {prov} ({used_model})")
+        return content.strip(), used_model
 
-    def _chat_gemini(self, message: str, img_b64: str = None, model_name: str = None, api_key: str = None) -> str:
+    def _chat_gemini(self, message: str, img_b64: str = None, model_name: str = None,
+                     api_key: str = None, timeout=None) -> str:
         key = api_key if api_key is not None else self._api_key
         if not key:
             raise RuntimeError("GEMINI_API_KEY is not configured. Add it in Admin -> AI Config or .env")
@@ -512,20 +627,18 @@ class LLMModel:
             parts.append({
                 "inline_data": {
                     "mime_type": "image/png",
-                    "data": img_b64
+                    "data": img_b64,
                 }
             })
 
         payload = {
             "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {
-                "temperature": float(self._temperature)
-            }
+            "generationConfig": {"temperature": float(self._temperature)},
         }
         if system_prompt:
             payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
 
-        resp = requests.post(url, json=payload, timeout=60)
+        resp = requests.post(url, json=payload, timeout=timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC))
         resp.raise_for_status()
         data = resp.json()
         candidates = data.get("candidates", [])
@@ -534,7 +647,8 @@ class LLMModel:
         text_parts = [p.get("text", "") for p in candidates[0].get("content", {}).get("parts", [])]
         return "".join(text_parts).strip()
 
-    def _chat_anthropic(self, message: str, img_b64: str = None, model_name: str = None, api_key: str = None) -> str:
+    def _chat_anthropic(self, message: str, img_b64: str = None, model_name: str = None,
+                        api_key: str = None, timeout=None) -> str:
         key = api_key if api_key is not None else self._api_key
         if not key:
             raise RuntimeError("ANTHROPIC_API_KEY is not configured. Add it in Admin -> AI Config or .env")
@@ -543,7 +657,7 @@ class LLMModel:
         headers = {
             "Content-Type": "application/json",
             "x-api-key": key,
-            "anthropic-version": "2023-06-01"
+            "anthropic-version": "2023-06-01",
         }
         system_prompt = self._build_system_prompt()
 
@@ -555,7 +669,7 @@ class LLMModel:
                     "type": "base64",
                     "media_type": "image/png",
                     "data": img_b64,
-                }
+                },
             })
         content.append({"type": "text", "text": message})
 
@@ -563,23 +677,25 @@ class LLMModel:
             "model": model_name or self._llm or "claude-3-5-haiku-latest",
             "max_tokens": 600,
             "temperature": float(self._temperature),
-            "messages": [{"role": "user", "content": content}]
+            "messages": [{"role": "user", "content": content}],
         }
         if system_prompt:
             payload["system"] = system_prompt
 
-        resp = requests.post(url, json=payload, headers=headers, timeout=60)
+        resp = requests.post(url, json=payload, headers=headers, timeout=timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC))
         resp.raise_for_status()
         data = resp.json()
         blocks = data.get("content", [])
         return "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
 
-    def _chat_buas(self, message: str) -> str:
+    def _chat_buas(self, message: str, timeout=None) -> str:
         if not self._user_key or not self._access_token:
             raise RuntimeError("BUas credentials (ACCESS_TOKEN / USER_KEY) are not configured")
+        req_timeout = timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC)
         if not self.__chat_key:
             init_data = {"user_key": self._user_key, "assistant_key": self.assistant_key}
-            resp = requests.post(self.__init_endpoint_url, json=init_data, headers=self.__headers, timeout=15)
+            resp = requests.post(self.__init_endpoint_url, json=init_data, headers=self.__headers, timeout=min(15.0, req_timeout[1]))
+            resp.raise_for_status()
             init_response = resp.json()
             if init_response.get("status") == "Failed":
                 raise RuntimeError(f"BUas init failed: {init_response.get('error')}")
@@ -591,11 +707,14 @@ class LLMModel:
             "message": message,
             "user_key": self._user_key,
         }
-        resp = requests.post(self.__ask_endpoint_url, json=chat_data, headers=self.__headers, timeout=60)
+        resp = requests.post(self.__ask_endpoint_url, json=chat_data, headers=self.__headers, timeout=req_timeout)
+        resp.raise_for_status()
         text = resp.text.strip()
         if text.startswith("{") and '"status": "Failed"' in text:
             self.__chat_key = None
             raise RuntimeError(f"BUas server error: {text}")
+        if text.lstrip().lower().startswith(("<!doctype", "<html")):
+            raise RuntimeError("BUas returned unexpected HTML error response")
         return text
 
     def update_assistant(
@@ -615,7 +734,7 @@ class LLMModel:
         fallback_provider: str = None,
         fallback_model: str = None,
         vision_mode: str = None,
-        image_generation: bool = False,
+        ollama_vision_model: str = None,
     ):
         """Save updated configuration locally (and on BUas if provider == 'buas')."""
         role_updates = {
@@ -639,7 +758,11 @@ class LLMModel:
         ai_patch = {self.role: role_updates}
         if vision_mode is not None:
             ai_patch["vision_mode"] = vision_mode
+        if ollama_vision_model is not None:
+            ai_patch["ollama_vision_model"] = ollama_vision_model
 
+        self._buas_remote_loaded = False
+        self._buas_overrides = {}
         update_settings_section("ai", ai_patch)
         self._load_local_config()
 
@@ -658,10 +781,11 @@ class LLMModel:
                     "llm": self._llm,
                     "api_key": "",
                     "temperature": self._temperature,
-                    "image_generation": bool(image_generation),
+                    "image_generation": False,
                     "visibility": 0,
                 }
-                requests.post(self.__assistant_update_endpoint_url, json=update_data, headers=self.__headers, timeout=15)
+                u_resp = requests.post(self.__assistant_update_endpoint_url, json=update_data, headers=self.__headers, timeout=15)
+                u_resp.raise_for_status()
             except Exception as e:
                 print(f"[chat] Warning: BUas remote update failed ({e}), saved locally.")
 
@@ -669,6 +793,7 @@ class LLMModel:
 
     def get_config_dict(self) -> dict:
         self._load_local_config()
+        settings = load_settings()
         return {
             "role": self.role,
             "provider": self._provider,
@@ -687,4 +812,5 @@ class LLMModel:
             "additional": self._additional,
             "temperature": self._temperature,
             "vision_mode": self._vision_mode,
+            "ollama_vision_model": settings.get("ai", {}).get("ollama_vision_model", "moondream"),
         }

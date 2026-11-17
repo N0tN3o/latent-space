@@ -10,6 +10,7 @@
             background-color: #0e1015;
             color: #f3f4f6;
             font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            margin: 0;
         }
         .card {
             background-color: #161922;
@@ -19,12 +20,19 @@
         }
         .nav-tabs {
             border-bottom: 1px solid #2b3040;
+            list-style: none;
+            padding-left: 0;
+            display: flex;
+            flex-wrap: wrap;
         }
         .nav-tabs .nav-link {
             color: #9ca3af;
             border: none;
             padding: 12px 18px;
             font-weight: 600;
+            text-decoration: none;
+            display: block;
+            cursor: pointer;
         }
         .nav-tabs .nav-link:hover {
             color: #fff;
@@ -38,6 +46,8 @@
         }
         .table {
             color: #e5e7eb;
+            width: 100%;
+            border-collapse: collapse;
         }
         pre {
             background: #090b0e;
@@ -49,20 +59,6 @@
             color: #34d399;
             font-family: 'Consolas', monospace;
             font-size: 0.86rem;
-        }
-        .status-dot {
-            height: 10px;
-            width: 10px;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 6px;
-        }
-        .online {
-            background-color: #10b981;
-            box-shadow: 0 0 8px #10b981;
-        }
-        .offline {
-            background-color: #ef4444;
         }
         input.form-control, textarea.form-control, select.form-select {
             background-color: #1f2430 !important;
@@ -130,6 +126,33 @@
             max-width: 420px;
             box-shadow: 0 20px 50px rgba(0, 0, 0, 0.65);
         }
+
+        /* Graceful Offline Fallback if CDN Bootstrap CSS/JS cannot load */
+        body.offline-fallback .container { max-width: 1280px; margin: 0 auto; padding: 24px; }
+        body.offline-fallback .d-none { display: none !important; }
+        body.offline-fallback .d-flex { display: flex; }
+        body.offline-fallback .flex-wrap { flex-wrap: wrap; }
+        body.offline-fallback .justify-content-between { justify-content: space-between; }
+        body.offline-fallback .align-items-center { align-items: center; }
+        body.offline-fallback .gap-2 { gap: 8px; }
+        body.offline-fallback .gap-3 { gap: 12px; }
+        body.offline-fallback .mb-2 { margin-bottom: 8px; }
+        body.offline-fallback .mb-3 { margin-bottom: 14px; }
+        body.offline-fallback .mb-4 { margin-bottom: 20px; }
+        body.offline-fallback .p-3 { padding: 16px; }
+        body.offline-fallback .p-4 { padding: 20px; }
+        body.offline-fallback .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+        body.offline-fallback .tab-content > .tab-pane { display: none; }
+        body.offline-fallback .tab-content > .tab-pane.active { display: block; }
+        body.offline-fallback .btn { padding: 7px 14px; border-radius: 6px; border: 1px solid #374151; background: #252a38; color: #f3f4f6; cursor: pointer; text-decoration: none; font-size: 0.9rem; }
+        body.offline-fallback .btn-success { background: #10b981; border-color: #10b981; color: #fff; }
+        body.offline-fallback .btn-primary { background: #3b82f6; border-color: #3b82f6; color: #fff; }
+        body.offline-fallback .btn-outline-danger { border-color: #ef4444; color: #fca5a5; }
+        body.offline-fallback .form-control, body.offline-fallback .form-select { width: 100%; padding: 7px 10px; border-radius: 6px; box-sizing: border-box; }
+        body.offline-fallback .badge { display: inline-block; padding: 3px 8px; border-radius: 5px; font-size: 0.78rem; background: #374151; }
+        body.offline-fallback .bg-success { background: #10b981; color: #fff; }
+        body.offline-fallback .alert-danger { background: rgba(239, 68, 68, 0.16); border: 1px solid #ef4444; padding: 10px; border-radius: 6px; color: #fecaca; }
+        body.offline-fallback th, body.offline-fallback td { padding: 8px; border-bottom: 1px solid #2b3040; text-align: left; }
     </style>
 </head>
 <body>
@@ -229,7 +252,7 @@
             <!-- 2. AI & VISION CONFIG TAB -->
             <div class="tab-pane fade" id="tab-ai">
                 <div class="row g-3 mb-3 align-items-end">
-                    <div class="col-md-6">
+                    <div class="col-md-5">
                         <label class="form-label text-muted">Self-Hosted Abstract Art Perception Mode</label>
                         <select id="aiVisionMode" class="form-select">
                             <option value="auto">Auto (Direct Vision LLM + Self-Hosted Fractal &amp; Rorschach Geometry)</option>
@@ -242,10 +265,14 @@
                         </select>
                     </div>
                     <div class="col-md-3">
-                        <button class="btn btn-outline-light w-100" onclick="loadAIConfig()">Reload Both Models</button>
+                        <label class="form-label text-muted">Ollama Vision Model</label>
+                        <input type="text" id="aiOllamaVisionModel" class="form-control" placeholder="moondream">
                     </div>
-                    <div class="col-md-3">
-                        <button class="btn btn-success w-100" onclick="saveAllAIConfig()">Save Both AI Models</button>
+                    <div class="col-md-2">
+                        <button class="btn btn-outline-light w-100" onclick="loadAIConfig()">Reload Models</button>
+                    </div>
+                    <div class="col-md-2">
+                        <button class="btn btn-success w-100" onclick="saveAllAIConfig()">Save Both AI</button>
                     </div>
                 </div>
 
@@ -289,7 +316,7 @@
                                 <span class="small text-muted d-block mb-1">Quick Presets (Analysis):</span>
                                 <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'llama3.1:8b', 'http://localhost:11434/v1')">Ollama (llama3.1:8b)</span>
                                 <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'llama3.2', 'http://localhost:11434/v1')">Ollama (llama3.2)</span>
-                                <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'llava', 'http://localhost:11434/v1')">Ollama Vision (llava)</span>
+                                <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'llava', 'http://localhost:11434/v1', 'llava')">Ollama Vision (llava)</span>
                                 <span class="badge bg-primary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'gemini', 'gemini-2.0-flash', '')">Gemini 2.0 Flash</span>
                                 <span class="badge bg-info text-dark me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'openai_compatible', 'llama-3.3-70b-versatile', 'https://api.groq.com/openai/v1')">Groq (llama-3.3-70b)</span>
                                 <span class="badge bg-warning text-dark me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'anthropic', 'claude-3-5-haiku-latest', '')">Claude 3.5 Haiku</span>
@@ -308,11 +335,11 @@
                                 </div>
                                 <div class="col-md-4">
                                     <label class="form-label small">Model Name / ID</label>
-                                    <input type="text" class="form-control form-control-sm" id="analysis_model" placeholder="e.g. llama3.1:8b">
+                                    <input type="text" class="form-control form-control-sm" id="analysis_model" placeholder="e.g. llama3.2">
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label small">Temp (0-1.5)</label>
-                                    <input type="number" step="0.05" min="0" max="1.5" class="form-control form-control-sm" id="analysis_temp" value="0.7">
+                                    <label class="form-label small">Temp (0-2)</label>
+                                    <input type="number" step="0.05" min="0" max="2" class="form-control form-control-sm" id="analysis_temp" value="0.7">
                                 </div>
                             </div>
 
@@ -324,32 +351,51 @@
                                 <div class="col-md-6">
                                     <label class="form-label small">API Key <span class="text-muted" id="analysis_api_key_status">(Optional for Ollama)</span></label>
                                     <input type="password" class="form-control form-control-sm" id="analysis_api_key" placeholder="Leave blank to keep existing">
+                                    <div class="form-check mt-1">
+                                        <input class="form-check-input" type="checkbox" id="analysis_clear_api_key">
+                                        <label class="form-check-label small text-muted" for="analysis_clear_api_key">Clear saved API key</label>
+                                    </div>
                                 </div>
                             </div>
 
                             <div class="row g-2 mb-2">
-                                <div class="col-md-6">
+                                <div class="col-md-4">
                                     <label class="form-label small">Failover Provider</label>
                                     <select id="analysis_fallback_provider" class="form-select form-select-sm">
-                                        <option value="auto">Auto (Cloud API &lt;-&gt; Local Ollama)</option>
+                                        <option value="auto">Auto (Cloud &lt;-&gt; Ollama)</option>
                                         <option value="gemini">Google Gemini</option>
                                         <option value="openai_compatible">OpenAI-Compatible</option>
                                         <option value="anthropic">Anthropic (Claude)</option>
                                         <option value="ollama">Local Ollama</option>
                                         <option value="buas">BUas Legacy</option>
-                                        <option value="none">Disabled (No Failover)</option>
+                                        <option value="none">Disabled</option>
                                     </select>
                                 </div>
-                                <div class="col-md-6">
-                                    <label class="form-label small">Assistant Display Name</label>
+                                <div class="col-md-4">
+                                    <label class="form-label small">Failover Model</label>
+                                    <input type="text" class="form-control form-control-sm" id="analysis_fallback_model" placeholder="(Optional override)">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label small">Assistant Name</label>
                                     <input type="text" class="form-control form-control-sm" id="analysis_name">
                                 </div>
                             </div>
 
-                            <div class="mb-3">
+                            <div class="mb-2">
                                 <label class="form-label small">System Prompt / Instructions (Analysis)</label>
-                                <textarea class="form-control form-control-sm" id="analysis_desc" rows="5"></textarea>
+                                <textarea class="form-control form-control-sm" id="analysis_desc" rows="4"></textarea>
                             </div>
+
+                            <details class="mb-3">
+                                <summary class="small text-muted" style="cursor:pointer;">Advanced Persona Fields (Purpose, Expertise, Restrictions...)</summary>
+                                <div class="mt-2 row g-2">
+                                    <div class="col-md-6"><label class="form-label small">Purpose</label><input type="text" class="form-control form-control-sm" id="analysis_purpose"></div>
+                                    <div class="col-md-6"><label class="form-label small">Expertise</label><input type="text" class="form-control form-control-sm" id="analysis_expertise"></div>
+                                    <div class="col-md-6"><label class="form-label small">Capabilities</label><input type="text" class="form-control form-control-sm" id="analysis_capabilities"></div>
+                                    <div class="col-md-6"><label class="form-label small">Restrictions</label><input type="text" class="form-control form-control-sm" id="analysis_restrictions"></div>
+                                    <div class="col-12"><label class="form-label small">Additional Instructions</label><input type="text" class="form-control form-control-sm" id="analysis_additional"></div>
+                                </div>
+                            </details>
 
                             <div class="d-flex flex-wrap gap-2 align-items-center">
                                 <button class="btn btn-sm btn-success" onclick="saveRoleConfig('analysis')">Save Analysis Model</button>
@@ -391,11 +437,11 @@
                                 </div>
                                 <div class="col-md-4">
                                     <label class="form-label small">Model Name / ID</label>
-                                    <input type="text" class="form-control form-control-sm" id="poem_model" placeholder="e.g. llama3.1:8b">
+                                    <input type="text" class="form-control form-control-sm" id="poem_model" placeholder="e.g. llama3.2">
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label small">Temp (0-1.5)</label>
-                                    <input type="number" step="0.05" min="0" max="1.5" class="form-control form-control-sm" id="poem_temp" value="0.8">
+                                    <label class="form-label small">Temp (0-2)</label>
+                                    <input type="number" step="0.05" min="0" max="2" class="form-control form-control-sm" id="poem_temp" value="0.8">
                                 </div>
                             </div>
 
@@ -407,32 +453,51 @@
                                 <div class="col-md-6">
                                     <label class="form-label small">API Key <span class="text-muted" id="poem_api_key_status">(Optional for Ollama)</span></label>
                                     <input type="password" class="form-control form-control-sm" id="poem_api_key" placeholder="Leave blank to keep existing">
+                                    <div class="form-check mt-1">
+                                        <input class="form-check-input" type="checkbox" id="poem_clear_api_key">
+                                        <label class="form-check-label small text-muted" for="poem_clear_api_key">Clear saved API key</label>
+                                    </div>
                                 </div>
                             </div>
 
                             <div class="row g-2 mb-2">
-                                <div class="col-md-6">
+                                <div class="col-md-4">
                                     <label class="form-label small">Failover Provider</label>
                                     <select id="poem_fallback_provider" class="form-select form-select-sm">
-                                        <option value="auto">Auto (Cloud API &lt;-&gt; Local Ollama)</option>
+                                        <option value="auto">Auto (Cloud &lt;-&gt; Ollama)</option>
                                         <option value="gemini">Google Gemini</option>
                                         <option value="openai_compatible">OpenAI-Compatible</option>
                                         <option value="anthropic">Anthropic (Claude)</option>
                                         <option value="ollama">Local Ollama</option>
                                         <option value="buas">BUas Legacy</option>
-                                        <option value="none">Disabled (No Failover)</option>
+                                        <option value="none">Disabled</option>
                                     </select>
                                 </div>
-                                <div class="col-md-6">
-                                    <label class="form-label small">Assistant Display Name</label>
+                                <div class="col-md-4">
+                                    <label class="form-label small">Failover Model</label>
+                                    <input type="text" class="form-control form-control-sm" id="poem_fallback_model" placeholder="(Optional override)">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label small">Assistant Name</label>
                                     <input type="text" class="form-control form-control-sm" id="poem_name">
                                 </div>
                             </div>
 
-                            <div class="mb-3">
+                            <div class="mb-2">
                                 <label class="form-label small">System Prompt / Instructions (Poem)</label>
-                                <textarea class="form-control form-control-sm" id="poem_desc" rows="5"></textarea>
+                                <textarea class="form-control form-control-sm" id="poem_desc" rows="4"></textarea>
                             </div>
+
+                            <details class="mb-3">
+                                <summary class="small text-muted" style="cursor:pointer;">Advanced Persona Fields (Purpose, Expertise, Restrictions...)</summary>
+                                <div class="mt-2 row g-2">
+                                    <div class="col-md-6"><label class="form-label small">Purpose</label><input type="text" class="form-control form-control-sm" id="poem_purpose"></div>
+                                    <div class="col-md-6"><label class="form-label small">Expertise</label><input type="text" class="form-control form-control-sm" id="poem_expertise"></div>
+                                    <div class="col-md-6"><label class="form-label small">Capabilities</label><input type="text" class="form-control form-control-sm" id="poem_capabilities"></div>
+                                    <div class="col-md-6"><label class="form-label small">Restrictions</label><input type="text" class="form-control form-control-sm" id="poem_restrictions"></div>
+                                    <div class="col-12"><label class="form-label small">Additional Instructions</label><input type="text" class="form-control form-control-sm" id="poem_additional"></div>
+                                </div>
+                            </details>
 
                             <div class="d-flex flex-wrap gap-2 align-items-center">
                                 <button class="btn btn-sm btn-success" onclick="saveRoleConfig('poem')">Save Poem Model</button>
@@ -465,11 +530,15 @@
                                     Enable Kasboek Attributions (Master Switch)
                                 </label>
                             </div>
-                            <div class="form-check form-switch">
+                            <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" id="attrShowLogo" onchange="updateAttrPreview()" checked>
                                 <label class="form-check-label text-muted" for="attrShowLogo">
                                     Display Kasboek Logo alongside attribution text
                                 </label>
+                            </div>
+                            <div>
+                                <label class="form-label small text-muted mb-1">Logo Path / URL</label>
+                                <input type="text" class="form-control form-control-sm" id="attrLogoPath" value="/kasboek-logo.jpg" oninput="updateAttrPreview()">
                             </div>
                         </div>
 
@@ -513,36 +582,27 @@
 
                         <h6 class="text-muted mt-3 mb-2">CEO / Owner / Co-Founders (1–3 LinkedIn Links)</h6>
                         <div class="row g-2 mb-2">
-                            <div class="col-md-5">
-                                <input type="text" class="form-control" id="founder1Name" placeholder="Founder / CEO 1 Name" oninput="updateAttrPreview()">
-                            </div>
-                            <div class="col-md-7">
-                                <input type="url" class="form-control" id="founder1Url" placeholder="https://www.linkedin.com/in/..." oninput="updateAttrPreview()">
-                            </div>
+                            <div class="col-md-5"><input type="text" class="form-control" id="founder1Name" placeholder="Founder / CEO 1 Name" oninput="updateAttrPreview()"></div>
+                            <div class="col-md-7"><input type="url" class="form-control" id="founder1Url" placeholder="https://www.linkedin.com/in/..." oninput="updateAttrPreview()"></div>
                         </div>
                         <div class="row g-2 mb-2">
-                            <div class="col-md-5">
-                                <input type="text" class="form-control" id="founder2Name" placeholder="Co-Founder 2 Name" oninput="updateAttrPreview()">
-                            </div>
-                            <div class="col-md-7">
-                                <input type="url" class="form-control" id="founder2Url" placeholder="https://www.linkedin.com/in/..." oninput="updateAttrPreview()">
-                            </div>
+                            <div class="col-md-5"><input type="text" class="form-control" id="founder2Name" placeholder="Co-Founder 2 Name" oninput="updateAttrPreview()"></div>
+                            <div class="col-md-7"><input type="url" class="form-control" id="founder2Url" placeholder="https://www.linkedin.com/in/..." oninput="updateAttrPreview()"></div>
                         </div>
                         <div class="row g-2 mb-3">
-                            <div class="col-md-5">
-                                <input type="text" class="form-control" id="founder3Name" placeholder="Co-Founder 3 Name" oninput="updateAttrPreview()">
-                            </div>
-                            <div class="col-md-7">
-                                <input type="url" class="form-control" id="founder3Url" placeholder="https://www.linkedin.com/in/..." oninput="updateAttrPreview()">
-                            </div>
+                            <div class="col-md-5"><input type="text" class="form-control" id="founder3Name" placeholder="Co-Founder 3 Name" oninput="updateAttrPreview()"></div>
+                            <div class="col-md-7"><input type="url" class="form-control" id="founder3Url" placeholder="https://www.linkedin.com/in/..." oninput="updateAttrPreview()"></div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Custom Footer Note (Optional)</label>
+                            <input type="text" class="form-control" id="attrCustomNote" placeholder="e.g. Exhibition Edition 2026" oninput="updateAttrPreview()">
                         </div>
                     </div>
 
                     <div class="col-lg-5">
                         <label class="form-label text-muted">Live Gallery &amp; Print Footer Preview</label>
-                        <div class="attr-preview-box" id="attrLivePreview">
-                            <!-- Populated by JS -->
-                        </div>
+                        <div class="attr-preview-box" id="attrLivePreview"></div>
                     </div>
                 </div>
             </div>
@@ -604,7 +664,6 @@
                     <button class="btn btn-sm btn-outline-light" onclick="loadLog('installation')">Pipeline Log (installation.log)</button>
                     <button class="btn btn-sm btn-outline-light" onclick="loadLog('responses')">AI Responses Log</button>
                     <button class="btn btn-sm btn-outline-light" onclick="loadLog('predictions')">Archetype Predictions (CSV)</button>
-                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('credits')">TTS Credits Log</button>
                 </div>
                 <pre id="logViewer">Select a log file above to view detailed system output...</pre>
             </div>
@@ -615,6 +674,10 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+    if (typeof window.bootstrap === 'undefined') {
+        document.body.classList.add('offline-fallback');
+    }
+
     function escapeHtml(str) {
         return String(str ?? '')
             .replace(/&/g, '&amp;')
@@ -740,7 +803,7 @@
             document.getElementById('kpiAI').innerHTML =
                 `<div><span class="text-muted small">Analysis:</span> ${escapeHtml(ai.analysis_provider || 'ollama')} (${escapeHtml(ai.analysis_model || '')})</div>` +
                 `<div><span class="text-muted small">Poem:</span> ${escapeHtml(ai.poem_provider || 'ollama')} (${escapeHtml(ai.poem_model || '')})</div>`;
-            document.getElementById('kpiVisionMode').textContent = `Perception: ${ai.vision_mode || 'auto'}`;
+            document.getElementById('kpiVisionMode').textContent = `Perception: ${ai.vision_mode || 'auto'} (${ai.ollama_vision_model || 'moondream'})`;
 
             const stats = data.statistics || {};
             document.getElementById('kpiPrints').textContent = `${stats.prints_today || 0} / ${stats.total_prints || 0}`;
@@ -838,11 +901,14 @@
         }
     }
 
-    // --- 2. AI CONFIG (BOTH ANALYSIS & POEM MODELS) ---
-    function applyRolePreset(role, provider, model, baseUrl) {
+    // --- 2. AI CONFIG ---
+    function applyRolePreset(role, provider, model, baseUrl, ollamaVisionModel = null) {
         document.getElementById(`${role}_provider`).value = provider;
         document.getElementById(`${role}_model`).value = model;
         document.getElementById(`${role}_base_url`).value = baseUrl;
+        if (ollamaVisionModel) {
+            document.getElementById('aiOllamaVisionModel').value = ollamaVisionModel;
+        }
     }
 
     function copyAnalysisToPoem() {
@@ -867,13 +933,21 @@
                 document.getElementById(`${role}_model`).value = c.model || c.llm || '';
                 document.getElementById(`${role}_base_url`).value = c.base_url || '';
                 document.getElementById(`${role}_fallback_provider`).value = c.fallback_provider || 'auto';
+                document.getElementById(`${role}_fallback_model`).value = c.fallback_model || '';
                 document.getElementById(`${role}_name`).value = c.name || '';
                 document.getElementById(`${role}_desc`).value = c.description || '';
+                document.getElementById(`${role}_purpose`).value = c.purpose || '';
+                document.getElementById(`${role}_expertise`).value = c.expertise || '';
+                document.getElementById(`${role}_capabilities`).value = c.capabilities || '';
+                document.getElementById(`${role}_restrictions`).value = c.restrictions || '';
+                document.getElementById(`${role}_additional`).value = c.additional || '';
                 document.getElementById(`${role}_temp`).value = c.temperature ?? (role === 'poem' ? 0.8 : 0.7);
                 if (role === 'analysis') {
                     document.getElementById('aiVisionMode').value = c.vision_mode || 'auto';
+                    document.getElementById('aiOllamaVisionModel').value = c.ollama_vision_model || 'moondream';
                 }
                 document.getElementById(`${role}_api_key`).value = '';
+                document.getElementById(`${role}_clear_api_key`).checked = false;
                 document.getElementById(`${role}_api_key_status`).textContent = c.has_api_key
                     ? '(Saved — leave blank to keep)'
                     : '(Optional for Ollama)';
@@ -906,8 +980,11 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
+            const data = await res.json().catch(() => ({}));
             if (res.ok) {
                 badge.innerHTML = `<span class="text-success">${payload.enabled ? 'Audio ON' : 'Audio OFF'}</span>`;
+            } else {
+                badge.innerHTML = `<span class="text-danger">${escapeHtml(data.error || 'Save error')}</span>`;
             }
         } catch (e) {
             badge.innerHTML = '<span class="text-danger">Save error</span>';
@@ -924,17 +1001,29 @@
 
     function buildRolePayload(role) {
         const apiKeyVal = document.getElementById(`${role}_api_key`).value.trim();
+        const clearKey = document.getElementById(`${role}_clear_api_key`).checked;
+        const parsedTemp = parseFloat(document.getElementById(`${role}_temp`).value);
+        const defaultTemp = (role === 'poem') ? 0.8 : 0.7;
         const config = {
             provider: document.getElementById(`${role}_provider`).value,
             llm: document.getElementById(`${role}_model`).value.trim(),
             base_url: document.getElementById(`${role}_base_url`).value.trim(),
             fallback_provider: document.getElementById(`${role}_fallback_provider`).value,
+            fallback_model: document.getElementById(`${role}_fallback_model`).value.trim(),
             name: document.getElementById(`${role}_name`).value.trim(),
             description: document.getElementById(`${role}_desc`).value,
-            temperature: parseFloat(document.getElementById(`${role}_temp`).value) || 0.7,
-            vision_mode: document.getElementById('aiVisionMode').value
+            purpose: document.getElementById(`${role}_purpose`).value,
+            expertise: document.getElementById(`${role}_expertise`).value,
+            capabilities: document.getElementById(`${role}_capabilities`).value,
+            restrictions: document.getElementById(`${role}_restrictions`).value,
+            additional: document.getElementById(`${role}_additional`).value,
+            temperature: Number.isFinite(parsedTemp) ? parsedTemp : defaultTemp,
+            vision_mode: document.getElementById('aiVisionMode').value,
+            ollama_vision_model: document.getElementById('aiOllamaVisionModel').value.trim() || 'moondream'
         };
-        if (apiKeyVal) {
+        if (clearKey) {
+            config.api_key = '';
+        } else if (apiKeyVal) {
             config.api_key = apiKeyVal;
         }
         return config;
@@ -949,7 +1038,7 @@
                 body: JSON.stringify({ model_type: role, config: config })
             });
             const data = await res.json();
-            if (data.status === 'Success') {
+            if (res.ok && data.status === 'Success') {
                 document.getElementById(`${role}_test_result`).innerHTML = '<span class="text-success">Saved!</span>';
                 if (reloadAfter) {
                     await loadSingleRoleConfig(role);
@@ -957,7 +1046,7 @@
                 }
                 return true;
             } else {
-                alert(`Save (${role}) failed: ` + JSON.stringify(data));
+                alert(`Save (${role}) failed: ` + (data.error || JSON.stringify(data)));
                 return false;
             }
         } catch (e) {
@@ -979,7 +1068,8 @@
     }
 
     async function testRoleConnection(role) {
-        await saveRoleConfig(role, false);
+        const saved = await saveRoleConfig(role, false);
+        if (!saved) return;
         const out = document.getElementById(`${role}_test_result`);
         out.innerHTML = '<span class="text-info">Testing connection...</span>';
         try {
@@ -1000,12 +1090,12 @@
         }
     }
 
-    // --- 3. ATTRIBUTIONS (KASBOEK SWITCH) ---
+    // --- 3. ATTRIBUTIONS ---
     function gatherAttrForm() {
         return {
             enabled: document.getElementById('attrEnabled').checked,
             show_logo: document.getElementById('attrShowLogo').checked,
-            logo_path: '/kasboek-logo.jpg',
+            logo_path: document.getElementById('attrLogoPath').value.trim() || '/kasboek-logo.jpg',
             intro_text: document.getElementById('attrIntro').value,
             learn_more_text: document.getElementById('attrLearnMore').value,
             website_label: document.getElementById('attrWebLabel').value,
@@ -1017,7 +1107,8 @@
                 { name: document.getElementById('founder1Name').value, url: document.getElementById('founder1Url').value },
                 { name: document.getElementById('founder2Name').value, url: document.getElementById('founder2Url').value },
                 { name: document.getElementById('founder3Name').value, url: document.getElementById('founder3Url').value }
-            ]
+            ],
+            custom_footer_note: document.getElementById('attrCustomNote').value
         };
     }
 
@@ -1037,12 +1128,16 @@
             .filter(f => f.name && f.name.trim())
             .map(f => f.url ? `<a href="${safeUrl(f.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(f.name.trim())}</a>` : `<span>${escapeHtml(f.name.trim())}</span>`);
 
+        const previewLogo = safeUrl(attr.logo_path || '/kasboek-logo.jpg');
+        const previewLogoSrc = previewLogo === '/kasboek-logo.jpg' ? '/kasboek-logo.jpg?preview=1' : previewLogo;
+
         box.innerHTML = `
             <div class="d-flex flex-column align-items-center gap-2">
-                ${attr.show_logo ? `<img src="/kasboek-logo.jpg?preview=1" alt="Kasboek" style="max-width: 110px; height: auto;">` : ''}
+                ${attr.show_logo ? `<img src="${previewLogoSrc}" alt="Attribution Logo" style="max-width: 110px; height: auto;">` : ''}
                 <div style="font-size: 0.88rem;">
                     <div><strong>${escapeHtml(attr.intro_text)}</strong> ${links.length ? `${escapeHtml(attr.learn_more_text)} ${links.join(' &middot; ')}.` : ''}</div>
                     ${founders.length ? `<div class="mt-1">${escapeHtml(attr.thanks_text)} ${founders.join(' &middot; ')}</div>` : ''}
+                    ${attr.custom_footer_note && attr.custom_footer_note.trim() ? `<div class="mt-1 fst-italic">${escapeHtml(attr.custom_footer_note.trim())}</div>` : ''}
                 </div>
             </div>
         `;
@@ -1054,6 +1149,7 @@
             const attr = await res.json();
             document.getElementById('attrEnabled').checked = !!attr.enabled;
             document.getElementById('attrShowLogo').checked = attr.show_logo !== false;
+            document.getElementById('attrLogoPath').value = attr.logo_path || '/kasboek-logo.jpg';
             document.getElementById('attrIntro').value = attr.intro_text || 'Made possible by Kasboek.';
             document.getElementById('attrLearnMore').value = attr.learn_more_text || 'To learn more, visit';
             document.getElementById('attrWebLabel').value = attr.website_label || 'Kasboek Website';
@@ -1061,6 +1157,7 @@
             document.getElementById('attrLiLabel').value = attr.company_linkedin_label || 'Kasboek LinkedIn';
             document.getElementById('attrLiUrl').value = attr.company_linkedin_url || '';
             document.getElementById('attrThanks').value = attr.thanks_text || 'Thank you for letting us use this:';
+            document.getElementById('attrCustomNote').value = attr.custom_footer_note || '';
 
             const f = attr.founders || [];
             for (let i = 0; i < 3; i++) {
@@ -1081,9 +1178,12 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
+            const data = await res.json().catch(() => ({}));
             if (res.ok) {
                 alert('Attribution settings saved and live on the Gallery.');
                 updateMonitor();
+            } else {
+                alert('Error saving attributions: ' + (data.error || res.statusText));
             }
         } catch (e) {
             alert('Error saving attributions: ' + e);
@@ -1108,11 +1208,17 @@
             printer_name: document.getElementById('printerNameInput').value.trim() || 'default'
         };
         try {
-            await fetch('/api/settings/printing', {
+            const res = await fetch('/api/settings/printing', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                alert('Error saving print settings: ' + (data.error || res.statusText));
+                await loadPrintSettings();
+                return;
+            }
             updateMonitor();
         } catch (e) {
             alert('Error saving print settings: ' + e);
@@ -1132,12 +1238,13 @@
                 return;
             }
 
-            window._adminFiles = files;
-            tbody.innerHTML = files.map((f, idx) => `
-                <tr>
+            tbody.innerHTML = files.map(f => `
+                <tr data-filename="${escapeHtml(f.name)}">
                     <td>
                         <a href="${safeUrl(f.pdf_url)}" target="_blank">
-                            <img src="${safeUrl(f.thumb_url)}?t=${encodeURIComponent(f.timestamp)}" alt="thumb" style="width: 48px; height: 48px; object-fit: contain; background: #fff; border-radius: 4px;">
+                            ${f.thumb_url
+                                ? `<img src="${safeUrl(f.thumb_url)}" alt="thumb" style="width: 48px; height: 48px; object-fit: contain; background: #fff; border-radius: 4px;">`
+                                : `<span class="badge bg-dark border border-secondary">PDF</span>`}
                         </a>
                     </td>
                     <td><a href="${safeUrl(f.pdf_url)}" target="_blank" class="text-light">${escapeHtml(f.name)}</a></td>
@@ -1151,8 +1258,8 @@
                     <td>${escapeHtml(f.size)}</td>
                     <td class="text-end">
                         <a href="${safeUrl(f.pdf_url)}" target="_blank" class="btn btn-sm btn-outline-light me-1" title="Open PDF">View</a>
-                        <button class="btn btn-sm btn-outline-success me-1" onclick="printOnHostByIdx(${idx})" title="Print on Host Printer">Print</button>
-                        <button class="btn btn-sm btn-outline-danger" onclick="deleteFileByIdx(${idx})" title="Delete">Delete</button>
+                        <button class="btn btn-sm btn-outline-success me-1" data-action="print" title="Print on Host Printer">Print</button>
+                        <button class="btn btn-sm btn-outline-danger" data-action="delete" title="Delete">Delete</button>
                     </td>
                 </tr>
             `).join('');
@@ -1161,15 +1268,18 @@
         }
     }
 
-    function printOnHostByIdx(idx) {
-        const f = (window._adminFiles || [])[idx];
-        if (f) printOnHost(f.name);
-    }
-
-    function deleteFileByIdx(idx) {
-        const f = (window._adminFiles || [])[idx];
-        if (f) deleteFiles('specific', f.name);
-    }
+    document.getElementById('fileTableBody').addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-action]');
+        if (!btn) return;
+        const row = btn.closest('tr[data-filename]');
+        if (!row) return;
+        const filename = row.dataset.filename;
+        if (btn.dataset.action === 'print') {
+            printOnHost(filename);
+        } else if (btn.dataset.action === 'delete') {
+            deleteFiles('specific', filename);
+        }
+    });
 
     async function printOnHost(filename) {
         try {
@@ -1194,11 +1304,16 @@
         const msg = action === 'all' ? "Delete ALL print files older than today?" : `Delete ${filename}?`;
         if (!confirm(msg)) return;
         try {
-            await fetch('/api/files/delete', {
+            const res = await fetch('/api/files/delete', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: action, filename: filename })
             });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                alert('Delete failed: ' + (data.error || res.statusText));
+                return;
+            }
             loadFiles();
             updateMonitor();
         } catch (e) {
@@ -1218,7 +1333,14 @@
         }
     }
 
-    // --- INIT ---
+    // --- INIT & OFFLINE TAB FALLBACK ---
+    function onAdminTabShown(target) {
+        if (!adminAuthenticated) return;
+        if (target === '#tab-files') { loadFiles(); loadPrintSettings(); }
+        if (target === '#tab-ai') loadAIConfig();
+        if (target === '#tab-attributions') loadAttributions();
+    }
+
     (async function initAdmin() {
         try {
             const res = await _nativeFetch('/api/auth/status?t=' + Date.now());
@@ -1231,14 +1353,23 @@
         showAdminLock('');
     })();
 
-    document.querySelectorAll('a[data-bs-toggle="tab"]').forEach(el => {
-        el.addEventListener('shown.bs.tab', event => {
-            if (!adminAuthenticated) return;
-            const target = event.target.getAttribute('href');
-            if (target === '#tab-files') { loadFiles(); loadPrintSettings(); }
-            if (target === '#tab-ai') loadAIConfig();
-            if (target === '#tab-attributions') loadAttributions();
-        });
+    document.querySelectorAll('#adminTabs a[data-bs-toggle="tab"]').forEach(el => {
+        if (typeof window.bootstrap !== 'undefined') {
+            el.addEventListener('shown.bs.tab', event => {
+                onAdminTabShown(event.target.getAttribute('href'));
+            });
+        } else {
+            el.addEventListener('click', event => {
+                event.preventDefault();
+                const target = el.getAttribute('href');
+                document.querySelectorAll('#adminTabs .nav-link').forEach(a => a.classList.remove('active'));
+                document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active', 'show'));
+                el.classList.add('active');
+                const pane = document.querySelector(target);
+                if (pane) pane.classList.add('active', 'show');
+                onAdminTabShown(target);
+            });
+        }
     });
 </script>
 </body>

@@ -12,27 +12,26 @@
             font-weight: normal;
             font-style: normal;
         }
-        
+
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         body {
             font-family: 'Korolev Medium', 'Arial', sans-serif;
             background-color: #ffffff;
             color: #2a2a2a;
             line-height: 1.6;
         }
-        
+
         .container {
             max-width: 1400px;
             margin: 0 auto;
             padding: 20px 20px 40px;
         }
 
-        /* Subtle floating navigation & history bar (hidden in print) */
         .floating-nav {
             position: fixed;
             top: 14px;
@@ -68,27 +67,39 @@
             background: #10b981;
             color: #fff;
         }
-        
-        /* Main scribble section - centerpiece */
+
         .scribble-section {
             display: flex;
             justify-content: center;
             align-items: center;
             margin-bottom: 22px;
+            min-height: 220px;
         }
-        
+
         .scribble-container {
             width: 100%;
             max-width: 520px;
             display: flex;
             justify-content: center;
+            align-items: center;
         }
-        
+
         .scribble-container img {
             width: 92%;
             max-height: 450px;
             object-fit: contain;
             display: block;
+        }
+
+        .scribble-placeholder {
+            color: #888;
+            font-size: 0.92em;
+            letter-spacing: 0.5px;
+            padding: 48px 20px;
+            border: 1px dashed #ddd;
+            border-radius: 10px;
+            text-align: center;
+            width: 100%;
         }
 
         .archetype-badge {
@@ -103,8 +114,7 @@
             border-radius: 20px;
             background: #fafafa;
         }
-        
-        /* Two columns below - using table for consistent print rendering */
+
         .bottom-grid {
             width: 100%;
             border-collapse: separate;
@@ -112,14 +122,14 @@
             margin-top: 6px;
             margin-bottom: 0px;
         }
-        
+
         .grid-item {
             background: rgba(255, 255, 255, 0);
             padding: 20px;
             box-shadow: none;
             vertical-align: top;
         }
-        
+
         .section-title {
             font-size: 0.8em;
             margin-bottom: 10px;
@@ -129,16 +139,14 @@
             font-weight: 600;
             color: #666;
         }
-        
-        /* Psychoanalysis - left */
+
         .psychoanalysis-text {
             text-align: justify;
             font-size: 0.85em;
             line-height: 1.48;
             white-space: pre-line;
         }
-        
-        /* Heatmap + QR row */
+
         .visual-metrics-row {
             display: flex;
             align-items: flex-start;
@@ -146,7 +154,7 @@
             gap: 24px;
             margin-top: 26px;
         }
-        
+
         .heatmap-container img {
             width: 140px;
             height: 140px;
@@ -165,7 +173,7 @@
             background: #fcfcfc;
         }
 
-        .qr-card svg {
+        .qr-card svg, .qr-card img {
             width: 96px;
             height: 96px;
             display: block;
@@ -178,8 +186,7 @@
             line-height: 1.25;
             max-width: 115px;
         }
-        
-        /* Poem - right */
+
         .poem-text {
             font-style: italic;
             white-space: pre-line;
@@ -187,7 +194,7 @@
             font-size: 0.85em;
             text-align: left;
         }
-        
+
         .update-info {
             text-align: center;
             color: #333;
@@ -203,7 +210,6 @@
             border-top: 1px solid #ddd;
         }
 
-        /* Dynamic Attribution Box (Hidden by default unless enabled in Admin) */
         .attribution-section {
             display: none;
             margin-top: 14px;
@@ -245,7 +251,7 @@
         .attribution-text a:hover {
             color: #0d6efd;
         }
-        
+
         @media (max-width: 1024px) {
             .bottom-grid, .bottom-grid tbody, .bottom-grid tr, .bottom-grid td {
                 display: block;
@@ -276,7 +282,7 @@
             font-size: 0.82rem;
             font-weight: 700;
         }
-        
+
         @page {
             size: A4;
             margin: 12mm;
@@ -313,14 +319,15 @@
 
     <div class="container">
         <div id="errorBanner" class="error-banner" style="display: none;"></div>
-        <!-- Main scribble centerpiece -->
         <div class="scribble-section">
             <div class="scribble-container">
-                <img id="mainScribble" src="/shared_output/image.png" alt="Gaze drawing">
+                <img id="mainScribble" alt="Gaze drawing" style="display: none;">
+                <div id="scribblePlaceholder" class="scribble-placeholder">
+                    Waiting for the first gaze drawing — open <a href="/draw" style="color: #2a2a2a;">Gaze Draw</a> to begin.
+                </div>
             </div>
         </div>
-        
-        <!-- Page title & Fractal/Archetype Pill below scribble -->
+
         <header style="text-align: center; margin-bottom: 4px;">
             <h1 style="font-size: 1.5em; font-weight: 400; letter-spacing: 2px; color: #2a2a2a;">
                 Latent Space, Through the Eyes of the Algorithm
@@ -329,53 +336,43 @@
                 <span class="archetype-badge" id="archetypeBadge"></span>
             </div>
         </header>
-        
-        <!-- Two columns below: Psychoanalysis left, Poem+Heatmap+QR right -->
+
         <table class="bottom-grid">
             <tr>
-                <!-- Left column: Psychoanalysis -->
                 <td class="grid-item" style="width: 55%;">
                     <h2 class="section-title">Analysis</h2>
-                    <div class="psychoanalysis-text" id="psychoanalysisText">
-                        The intertwining lines suggest a subconscious wrestling with identity and permanence. The signature, neither fully formed nor entirely abstract, reveals the artist's ambivalence toward self-definition.
-                    </div>
+                    <div class="psychoanalysis-text" id="psychoanalysisText"></div>
                 </td>
-                
-                <!-- Right column: Poem, Heatmap, and Digital Memento QR -->
+
                 <td class="grid-item" style="width: 45%;">
                     <h2 class="section-title">Poem</h2>
-                    <div class="poem-text" id="poemText">A mark, a trace, a whispered name—
-Ink flows where thought and hand became
-One gesture in the light's dim frame,
-No two the same, yet all the same.</div>
+                    <div class="poem-text" id="poemText"></div>
                     <audio id="poemAudio" controls style="width: 100%; margin-top: 18px; display: none;">
                         <source src="" type="audio/mpeg">
                         Your browser does not support the audio element.
                     </audio>
-                    
-                    <!-- Heatmap + Digital Memento QR Code -->
+
                     <div class="visual-metrics-row">
-                        <div>
+                        <div id="heatmapSection" style="display: none;">
                             <h2 class="section-title" style="margin-bottom: 10px;">Attention Span</h2>
                             <div class="heatmap-container">
-                                <img id="heatmapImage" src="/shared_output/heatmap.png" alt="Heatmap visualization">
+                                <img id="heatmapImage" alt="Heatmap visualization">
                             </div>
                         </div>
                         <div class="qr-card" id="qrCard" style="display: none;">
                             <div id="qrCodeBox"></div>
-                            <div class="qr-caption">Scan to save your digital print</div>
+                            <div class="qr-caption" id="qrCaption">Scan to save your digital print</div>
                         </div>
                     </div>
                 </td>
             </tr>
         </table>
-        
+
         <footer class="page-footer">
             <div class="update-info">
                 <p><span id="lastUpdate">Waiting for data...</span></p>
             </div>
 
-            <!-- Dynamic Kasboek Attribution (Controlled by Admin Switch - hidden by default) -->
             <div class="attribution-section" id="attributionSection" style="display: none;">
                 <div class="attribution-inner">
                     <img id="attributionLogo" class="attribution-logo" alt="Kasboek Logo" style="display: none;">
@@ -384,7 +381,7 @@ No two the same, yet all the same.</div>
             </div>
         </footer>
     </div>
-    
+
     <script>
         const CONFIG = {
             dataFile: '/shared_output/content.json',
@@ -393,12 +390,14 @@ No two the same, yet all the same.</div>
             printsApi: '/api/files/prints',
             refreshInterval: 4000,
         };
-        
+
+        const isPrintRender = new URLSearchParams(window.location.search).get('print_render') === '1';
         let lastContentSignature = null;
         let lastAttrSignature = null;
         let lanBaseUrl = window.location.origin;
+        let lanUrlFetched = false;
+        let liveRunId = null;
 
-        // History browsing state (-1 = Live Mode, 0..N = index into archive prints)
         let historyList = [];
         let historyIdx = -1;
 
@@ -425,31 +424,51 @@ No two the same, yet all the same.</div>
             return '';
         }
 
-        function renderQRCode(targetPath) {
+        function parseSafeDate(ts) {
+            if (!ts) return null;
+            const s = String(ts).trim().replace(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})/, '$1T$2');
+            const d = new Date(s);
+            return isNaN(d.getTime()) ? null : d;
+        }
+
+        function renderQRCode(targetPath, isPdfRendering = false) {
             const qrCard = document.getElementById('qrCard');
             const qrBox = document.getElementById('qrCodeBox');
-            if (typeof qrcode === 'undefined' || !targetPath) {
+            const qrCaption = document.getElementById('qrCaption');
+            if (!targetPath) {
                 qrCard.style.display = 'none';
+                qrBox.innerHTML = '';
                 return;
             }
-            try {
-                const fullUrl = targetPath.startsWith('http')
-                    ? targetPath
-                    : `${lanBaseUrl}${buildPath(targetPath)}`;
-                const qr = qrcode(0, 'M');
-                qr.addData(fullUrl);
-                qr.make();
-                qrBox.innerHTML = qr.createSvgTag({ cellSize: 3, margin: 1 });
+            if (isPdfRendering && !isPrintRender) {
+                qrBox.innerHTML = '<div style="width:96px;height:96px;display:flex;align-items:center;justify-content:center;font-size:0.72em;color:#777;">Preparing PDF...</div>';
+                qrCaption.textContent = 'Generating digital print';
                 qrCard.style.display = 'flex';
-            } catch (e) {
-                qrCard.style.display = 'none';
+                return;
             }
+            qrCaption.textContent = 'Scan to save your digital print';
+            const fullUrl = targetPath.startsWith('http')
+                ? targetPath
+                : `${lanBaseUrl}${buildPath(targetPath)}`;
+            if (typeof qrcode !== 'undefined') {
+                try {
+                    const qr = qrcode(0, 'M');
+                    qr.addData(fullUrl);
+                    qr.make();
+                    qrBox.innerHTML = qr.createSvgTag({ cellSize: 3, margin: 1 });
+                    qrCard.style.display = 'flex';
+                    return;
+                } catch (_) {}
+            }
+            // Offline fallback: server-generated SVG QR code
+            qrBox.innerHTML = `<img src="/api/qr.svg?url=${encodeURIComponent(fullUrl)}" alt="Digital print QR code">`;
+            qrCard.style.display = 'flex';
         }
 
         function renderBadge(archetype, fractalDim, spatialEntropy) {
             const container = document.getElementById('archetypeContainer');
             const badge = document.getElementById('archetypeBadge');
-            if (!archetype && !fractalDim) {
+            if (!archetype && typeof fractalDim !== 'number') {
                 container.style.display = 'none';
                 return;
             }
@@ -547,6 +566,31 @@ No two the same, yet all the same.</div>
             } catch (_) {}
         }
 
+        function clearArtworkView(placeholderText) {
+            const scribbleEl = document.getElementById('mainScribble');
+            const placeholderEl = document.getElementById('scribblePlaceholder');
+            scribbleEl.style.display = 'none';
+            scribbleEl.removeAttribute('src');
+            placeholderEl.textContent = placeholderText || '';
+            placeholderEl.style.display = placeholderText ? 'block' : 'none';
+
+            const hmSection = document.getElementById('heatmapSection');
+            const hmImg = document.getElementById('heatmapImage');
+            hmImg.removeAttribute('src');
+            hmSection.style.display = 'none';
+
+            document.getElementById('archetypeContainer').style.display = 'none';
+            document.getElementById('psychoanalysisText').textContent = '';
+            document.getElementById('poemText').textContent = '';
+
+            const poemAudio = document.getElementById('poemAudio');
+            poemAudio.pause();
+            poemAudio.removeAttribute('src');
+            poemAudio.style.display = 'none';
+
+            renderQRCode('');
+        }
+
         function applyViewData(data, isHistorical = false) {
             const errorBanner = document.getElementById('errorBanner');
             if (!isHistorical && data.status === 'error') {
@@ -558,25 +602,45 @@ No two the same, yet all the same.</div>
                     `<div><strong>Reading Failed</strong> — ${msg}</div>` +
                     `<div class="error-code-pill">${code}</div>`;
                 errorBanner.style.display = 'block';
-            } else {
-                errorBanner.style.display = 'none';
-                errorBanner.innerHTML = '';
+                clearArtworkView('');
+                const errDate = parseSafeDate(data.timestamp);
+                document.getElementById('lastUpdate').textContent = errDate
+                    ? errDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                    : 'Reading failed';
+                return;
             }
 
+            errorBanner.style.display = 'none';
+            errorBanner.innerHTML = '';
+
+            const scribbleEl = document.getElementById('mainScribble');
+            const placeholderEl = document.getElementById('scribblePlaceholder');
             if (data.scribblePath) {
-                document.getElementById('mainScribble').src = buildPath(data.scribblePath) + '?t=' + (data.timestamp || Date.now());
+                scribbleEl.src = buildPath(data.scribblePath) + '?t=' + encodeURIComponent(data.timestamp || Date.now());
+                scribbleEl.style.display = 'block';
+                placeholderEl.style.display = 'none';
+            } else {
+                scribbleEl.style.display = 'none';
+                scribbleEl.removeAttribute('src');
+                placeholderEl.textContent = isHistorical ? 'No preview image archived for this print.' : 'Waiting for drawing...';
+                placeholderEl.style.display = 'block';
             }
+
+            const hmSection = document.getElementById('heatmapSection');
+            const hmImg = document.getElementById('heatmapImage');
             if (data.heatmapPath) {
-                document.getElementById('heatmapImage').src = buildPath(data.heatmapPath) + '?t=' + (data.timestamp || Date.now());
+                hmImg.src = buildPath(data.heatmapPath) + '?t=' + encodeURIComponent(data.timestamp || Date.now());
+                hmSection.style.display = 'block';
+            } else {
+                hmImg.removeAttribute('src');
+                hmSection.style.display = 'none';
             }
+
             renderBadge(data.archetype, data.fractalDimension, data.spatialEntropy);
 
-            if (data.psychoanalysis) {
-                document.getElementById('psychoanalysisText').textContent = data.psychoanalysis;
-            }
-            if (data.poem) {
-                document.getElementById('poemText').textContent = data.poem;
-            }
+            document.getElementById('psychoanalysisText').textContent = data.psychoanalysis || '';
+            document.getElementById('poemText').textContent = data.poem || '';
+
             const poemAudio = document.getElementById('poemAudio');
             if (data.poemAudio && !isHistorical) {
                 poemAudio.style.display = 'block';
@@ -589,17 +653,17 @@ No two the same, yet all the same.</div>
                 poemAudio.style.display = 'none';
             }
 
-            renderQRCode(data.printPDF || '/kiosk');
+            renderQRCode(data.printPDF || '', !!data.pdfRendering);
 
             if (data.timestamp) {
-                const updateDate = new Date(data.timestamp);
-                const formatted = isNaN(updateDate) ? data.timestamp : updateDate.toLocaleDateString('en-US', {
+                const updateDate = parseSafeDate(data.timestamp);
+                const formatted = updateDate ? updateDate.toLocaleDateString('en-US', {
                     year: 'numeric',
                     month: 'long',
                     day: 'numeric',
                     hour: '2-digit',
                     minute: '2-digit'
-                });
+                }) : String(data.timestamp);
                 document.getElementById('lastUpdate').textContent = isHistorical
                     ? `Archive View (${historyIdx + 1}/${historyList.length}) — ${formatted}`
                     : formatted;
@@ -607,6 +671,7 @@ No two the same, yet all the same.</div>
         }
 
         async function stepHistory(delta) {
+            const wasLive = (historyIdx === -1);
             try {
                 const res = await fetch(CONFIG.printsApi + '?t=' + Date.now());
                 if (res.ok) {
@@ -616,7 +681,10 @@ No two the same, yet all the same.</div>
             } catch (_) {}
 
             if (!historyList.length) return;
-            const nextIdx = historyIdx + delta;
+            let nextIdx = historyIdx + delta;
+            if (wasLive && delta > 0 && liveRunId && historyList[0] && historyList[0].run_id === liveRunId && historyList.length > 1) {
+                nextIdx = 1;
+            }
             if (nextIdx < 0) {
                 returnToLive();
                 return;
@@ -625,16 +693,18 @@ No two the same, yet all the same.</div>
             document.getElementById('liveModeBtn').classList.remove('live-active');
 
             const item = historyList[historyIdx];
+            const itemTs = item.timestamp ? new Date(item.timestamp * 1000).toISOString() : item.date;
             applyViewData({
                 scribblePath: item.thumb_url,
-                heatmapPath: item.heatmap_url || '/shared_output/heatmap.png',
+                heatmapPath: item.heatmap_url || '',
                 archetype: item.archetype,
                 fractalDimension: item.fractalDimension,
                 spatialEntropy: item.spatialEntropy,
                 psychoanalysis: item.psychoanalysis || 'Archived gaze drawing memento.',
                 poem: item.poem || '',
                 printPDF: item.pdf_url,
-                timestamp: item.date,
+                pdfRendering: false,
+                timestamp: itemTs,
             }, true);
         }
 
@@ -644,12 +714,13 @@ No two the same, yet all the same.</div>
             document.getElementById('liveModeBtn').classList.add('live-active');
             loadContent();
         }
-        
+
         async function loadContent() {
             await refreshAttributions();
-            if (historyIdx !== -1) return; // Paused while browsing archive
+            if (historyIdx !== -1) return;
             try {
-                if (lanBaseUrl.includes('localhost') || lanBaseUrl.includes('127.0.0.1')) {
+                if (!lanUrlFetched && (lanBaseUrl.includes('localhost') || lanBaseUrl.includes('127.0.0.1'))) {
+                    lanUrlFetched = true;
                     try {
                         const st = await fetch(CONFIG.statusApi);
                         if (st.ok) {
@@ -662,6 +733,7 @@ No two the same, yet all the same.</div>
                 const response = await fetch(CONFIG.dataFile + '?t=' + Date.now());
                 if (response.ok) {
                     const data = await response.json();
+                    liveRunId = data.runId || null;
                     const sig = JSON.stringify({
                         st: data.status,
                         ec: data.errorCode,
@@ -671,6 +743,7 @@ No two the same, yet all the same.</div>
                         m: data.poem,
                         pa: data.poemAudio,
                         pdf: data.printPDF,
+                        pr: !!data.pdfRendering,
                         t: data.timestamp
                     });
 
@@ -683,7 +756,7 @@ No two the same, yet all the same.</div>
                 console.log('Waiting for content update:', error.message);
             }
         }
-        
+
         document.addEventListener('keydown', function(event) {
             if (event.key === 'p' || event.key === 'P') {
                 event.preventDefault();
@@ -694,7 +767,7 @@ No two the same, yet all the same.</div>
                 stepHistory(-1);
             }
         });
-        
+
         document.addEventListener('DOMContentLoaded', function() {
             loadContent();
             setInterval(loadContent, CONFIG.refreshInterval);

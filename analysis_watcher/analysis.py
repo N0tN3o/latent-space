@@ -1,8 +1,7 @@
 import base64
-import os
+from pathlib import Path
 import sys
 import threading
-from pathlib import Path
 import cv2
 import numpy as np
 import requests
@@ -14,8 +13,9 @@ for p in (str(PROJECT_ROOT), str(CURRENT_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from config_manager import load_settings
+from config_manager import get_configured_ollama_host, load_settings
 from heatmap import compute_zone_matrix
+from preprocess_image import extract_ink_mask
 
 _CACHE_LOCK = threading.Lock()
 _CLIP_CACHE = {"model": None, "processor": None, "failed": False}
@@ -57,8 +57,8 @@ RORSCHACH_ARCHETYPE_PROMPTS = [
 def compute_fractal_dimension(binary_mask: np.ndarray) -> float:
     """
     Compute the Minkowski-Bouligand Box-Counting Fractal Dimension (Df in [1.0, 2.0])
-    of the visitor's gaze strokes (the same mathematical technique used to analyze
-    Jackson Pollock's abstract expressionist paintings).
+    of the visitor's gaze strokes, padding non-power-of-two canvases instead of
+    truncating edge ink.
     """
     Z = binary_mask > 0
     if not np.any(Z):
@@ -74,18 +74,19 @@ def compute_fractal_dimension(binary_mask: np.ndarray) -> float:
     counts = []
     valid_sizes = []
 
+    h, w = Z.shape
     for size in sizes:
-        h_trim = (Z.shape[0] // size) * size
-        w_trim = (Z.shape[1] // size) * size
-        if h_trim == 0 or w_trim == 0:
-            continue
-        trimmed = Z[:h_trim, :w_trim]
-        reshaped = trimmed.reshape(h_trim // size, size, w_trim // size, size)
+        size_int = int(size)
+        pad_h = (size_int - (h % size_int)) % size_int
+        pad_w = (size_int - (w % size_int)) % size_int
+        grid = np.pad(Z, ((0, pad_h), (0, pad_w)), mode="constant", constant_values=False) if (pad_h or pad_w) else Z
+        gh, gw = grid.shape
+        reshaped = grid.reshape(gh // size_int, size_int, gw // size_int, size_int)
         box_has_ink = np.any(reshaped, axis=(1, 3))
         cnt = int(np.sum(box_has_ink))
         if cnt > 0:
             counts.append(cnt)
-            valid_sizes.append(size)
+            valid_sizes.append(size_int)
 
     if len(counts) < 2:
         return 1.15
@@ -119,10 +120,40 @@ def _dilated_dice(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
     return float((2.0 * inter) / denom)
 
 
-def _count_sharp_bends(contours: list, hierarchy) -> tuple:
+def _contour_depth(hier: np.ndarray, idx: int) -> int:
+    """Return RETR_TREE depth (even = outer stroke boundary, odd = enclosed hole)."""
+    depth = 0
+    parent = int(hier[idx][3])
+    while parent != -1:
+        depth += 1
+        parent = int(hier[parent][3])
+    return depth
+
+
+def _is_ribbon_uturn(binary: np.ndarray, p_curr: np.ndarray, u1: np.ndarray, u2: np.ndarray,
+                     n1: float, n2: float, cos_turn: float) -> bool:
     """
-    Filter anti-aliased specks and measure genuine sharp directional bends
-    (turn angle > ~60 deg across segments >= 12px) on outer stroke contours.
+    Detect 180-degree endpoint U-turns where findContours traces back along the
+    opposite wall of an open thin stroke (vs genuine sharp directional corners).
+    """
+    if cos_turn > -0.75:
+        return False
+    h, w = binary.shape
+    probe = min(n1, n2, 22.0)
+    a = p_curr - probe * u1
+    b = p_curr + probe * u2
+    mid = 0.5 * (a + b)
+    mx = int(np.clip(round(float(mid[0])), 0, w - 1))
+    my = int(np.clip(round(float(mid[1])), 0, h - 1))
+    y1, y2 = max(0, my - 1), min(h, my + 2)
+    x1, x2 = max(0, mx - 1), min(w, mx + 2)
+    return bool(np.any(binary[y1:y2, x1:x2] > 0))
+
+
+def _count_sharp_bends(contours: list, hierarchy, binary: np.ndarray = None) -> tuple:
+    """
+    Distinguish true holes (odd RETR_TREE depth) from nested solid islands (even depth >= 2),
+    filter open-stroke endpoint U-turns, and measure genuine sharp directional bends.
     Returns (valid_components, enclosed_loops, sharp_bends, total_perim).
     """
     if not contours or hierarchy is None:
@@ -140,8 +171,8 @@ def _count_sharp_bends(contours: list, hierarchy) -> tuple:
         if perim < 20.0 and area < 9.0:
             continue
 
-        parent = int(hier[idx][3])
-        if parent != -1:
+        depth = _contour_depth(hier, idx)
+        if depth % 2 == 1:
             if area >= 16.0:
                 enclosed_loops += 1
             continue
@@ -166,6 +197,8 @@ def _count_sharp_bends(contours: list, hierarchy) -> tuple:
                 continue
             cos_turn = float(np.dot(v1, v2) / (n1 * n2))
             if cos_turn < 0.50:  # exterior turn > 60 deg
+                if binary is not None and _is_ribbon_uturn(binary, p_curr, v1 / n1, v2 / n2, n1, n2, cos_turn):
+                    continue
                 sharp_bends += 1
 
     return valid_components, enclosed_loops, sharp_bends, total_perim
@@ -178,18 +211,17 @@ def analyze_stroke_geometry(filename: str, canvas_filename: str = None, dwell_gr
     Shannon spatial entropy, box-counting fractal dimension (Df), bilateral Dice symmetry,
     and loop/angularity topology.
     """
-    img = cv2.imread(str(filename), cv2.IMREAD_GRAYSCALE)
-    if img is None:
+    img = cv2.imread(str(filename), cv2.IMREAD_UNCHANGED)
+    if img is None or img.size == 0:
         return {
             "summary_label": "Abstract Gaze Trace",
             "description": "An abstract gaze-tracked drawing on a blank canvas."
         }
 
-    _, binary = cv2.threshold(img, 230, 255, cv2.THRESH_BINARY_INV)
+    binary, _, _ = extract_ink_mask(img)
     h, w = binary.shape
     stroke_mask = (binary > 0).astype(np.float32)
 
-    # 1. Overall ink coverage / density
     ink_ratio = float(np.mean(stroke_mask))
     if ink_ratio < 0.03:
         density_desc = "sparse, minimalist, and fleeting"
@@ -200,11 +232,10 @@ def analyze_stroke_geometry(filename: str, canvas_filename: str = None, dwell_gr
     else:
         density_desc = "heavily saturated, intense, and consuming"
 
-    # 2. 3x3 Grid spatial attention & Shannon entropy (computed on uncropped canvas or real gaze dwell grid)
     zone_names = [
         ["upper-left", "upper-center", "upper-right"],
         ["mid-left", "center", "mid-right"],
-        ["lower-left", "lower-center", "lower-right"]
+        ["lower-left", "lower-center", "lower-right"],
     ]
     zone_matrix = compute_zone_matrix(scribble_filename=canvas_filename or filename, dwell_grid=dwell_grid)
     zone_scores = []
@@ -228,7 +259,6 @@ def analyze_stroke_geometry(filename: str, canvas_filename: str = None, dwell_gr
     secondary_zone = zone_scores[1][1]
     least_zone = zone_scores[-1][1]
 
-    # 3. Fractal Dimension (Box-Counting)
     fractal_dim = compute_fractal_dimension(binary)
     if fractal_dim < 1.18:
         fractal_desc = f"low-complexity linear trajectory (D={fractal_dim:.2f}), reflecting direct, unknotted movement"
@@ -237,7 +267,6 @@ def analyze_stroke_geometry(filename: str, canvas_filename: str = None, dwell_gr
     else:
         fractal_desc = f"high space-filling fractal intricacy (D={fractal_dim:.2f}), akin to dense abstract expressionist webs"
 
-    # 4. Bilateral Rorschach Symmetry (Scale-invariant 5x5 dilated Dice overlap)
     dilated = cv2.dilate(binary, np.ones((5, 5), dtype=np.uint8), iterations=1) > 0
     left_half = dilated[:, :w // 2]
     right_half_flipped = np.fliplr(dilated[:, w - (w // 2):])
@@ -256,9 +285,8 @@ def analyze_stroke_geometry(filename: str, canvas_filename: str = None, dwell_gr
     else:
         symmetry_desc = "decidedly asymmetrical, driven by directional drift and spontaneous tension"
 
-    # 5. Contours, enclosed loops, and angularity vs. curvature
     contours, hierarchy = cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    num_components, enclosed_loops, sharp_bends, total_perim = _count_sharp_bends(contours, hierarchy)
+    num_components, enclosed_loops, sharp_bends, total_perim = _count_sharp_bends(contours, hierarchy, binary=binary)
 
     if enclosed_loops >= 6:
         structure_desc = f"an intricate lattice of {enclosed_loops} enclosed loops and recurring self-intersecting orbits"
@@ -319,8 +347,9 @@ def run_ollama_vision_analysis(filename: str):
         settings = load_settings()
         ai_cfg = settings.get("ai", {})
         vision_model = ai_cfg.get("ollama_vision_model") or "moondream"
-        base_url = ai_cfg.get("analysis", {}).get("base_url", "http://localhost:11434")
-        host = base_url.replace("/v1", "").rstrip("/")
+        host = get_configured_ollama_host(settings)
+        if not host.startswith(("http://", "https://")):
+            return None
 
         img_b64 = base64.b64encode(Path(filename).read_bytes()).decode("utf-8")
         prompt = (
@@ -360,7 +389,7 @@ def _run_zero_shot_hf_model(filename: str, model_id: str, cache_dict: dict, is_s
     try:
         import torch
         from PIL import Image
-        from transformers import AutoProcessor, AutoModel
+        from transformers import AutoModel, AutoProcessor
 
         if cache_dict["model"] is None:
             cache_dict["processor"] = AutoProcessor.from_pretrained(model_id)
@@ -417,8 +446,8 @@ def run_resnet_classification(filename: str):
     if _RESNET_CACHE["failed"]:
         return None
     try:
-        from tensorflow.keras.preprocessing.image import load_img, img_to_array
         from tensorflow.keras.applications.resnet50 import ResNet50, decode_predictions
+        from tensorflow.keras.preprocessing.image import img_to_array, load_img
 
         if _RESNET_CACHE["model"] is None:
             _RESNET_CACHE["model"] = ResNet50(weights="imagenet")
@@ -431,7 +460,7 @@ def run_resnet_classification(filename: str):
         label = label.replace("_", " ").capitalize()
         return {
             "summary_label": label,
-            "description": f"ImageNet Pareidolia Association: {label}"
+            "description": f"ImageNet Pareidolia Association: {label}",
         }
     except Exception as e:
         _RESNET_CACHE["failed"] = True
@@ -445,9 +474,8 @@ def _is_ollama_vision_model_ready() -> bool:
         settings = load_settings()
         ai_cfg = settings.get("ai", {})
         vision_model = ai_cfg.get("ollama_vision_model") or "moondream"
-        base_url = ai_cfg.get("analysis", {}).get("base_url", "http://localhost:11434")
-        host = base_url.replace("/v1", "").rstrip("/")
-        if not host.startswith("http"):
+        host = get_configured_ollama_host(settings)
+        if not host.startswith(("http://", "https://")):
             return False
         resp = requests.get(f"{host}/api/tags", timeout=0.6)
         if not resp.ok:
@@ -458,18 +486,30 @@ def _is_ollama_vision_model_ready() -> bool:
         return False
 
 
+def _analysis_llm_handles_vision_natively() -> bool:
+    """Return True when the configured analysis LLM already receives the image directly."""
+    try:
+        from chat import LLMModel
+        settings = load_settings()
+        acfg = settings.get("ai", {}).get("analysis", {})
+        prov = (acfg.get("provider") or "ollama").lower()
+        mod = acfg.get("model") or ""
+        if prov in ("gemini", "anthropic"):
+            return True
+        if prov == "ollama":
+            base_url = (acfg.get("base_url") or "http://localhost:11434/v1").rstrip("/")
+            if not base_url.endswith("/v1") and "11434" in base_url and "/api" not in base_url:
+                base_url += "/v1"
+            return LLMModel._ollama_supports_vision(base_url, mod)
+    except Exception:
+        pass
+    return False
+
+
 def analyze_drawing(filename: str, mode: str = "auto", canvas_filename: str = None, dwell_grid=None) -> dict:
     """
     Comprehensive self-hosted drawing analysis returning a short `label` (archetype)
     and a rich `prompt_context` for the Psychoanalysis LLM.
-
-    Supported modes:
-      - "auto" / "vision": Fractal + Entropy + Rorschach Geometry (+ local Ollama Vision / Vision LLM)
-      - "ollama_vision": Self-hosted Ollama Vision model (moondream / llava) + Fractal/Rorschach Geometry
-      - "clip": Self-hosted OpenAI CLIP zero-shot abstract art & Rorschach + Fractal/Rorschach Geometry
-      - "siglip": Self-hosted Google SigLIP zero-shot abstract art & Rorschach + Fractal/Rorschach Geometry
-      - "stroke_metrics": Fast local Fractal + Entropy + Rorschach Geometry only
-      - "resnet50": Legacy ImageNet ResNet50 + Fractal/Rorschach Geometry
     """
     geom = analyze_stroke_geometry(filename, canvas_filename=canvas_filename, dwell_grid=dwell_grid)
     sections = [geom["description"]]
@@ -493,7 +533,7 @@ def analyze_drawing(filename: str, mode: str = "auto", canvas_filename: str = No
                 extra = run_siglip_abstract_analysis(filename)
             elif _CLIP_CACHE["model"] is not None:
                 extra = run_clip_abstract_analysis(filename)
-        if extra is None and _is_ollama_vision_model_ready():
+        if extra is None and not _analysis_llm_handles_vision_natively() and _is_ollama_vision_model_ready():
             extra = run_ollama_vision_analysis(filename)
 
     if extra:
@@ -505,9 +545,3 @@ def analyze_drawing(filename: str, mode: str = "auto", canvas_filename: str = No
         "prompt_context": "\n\n".join(sections),
         "geometry": geom,
     }
-
-
-def run_classification(filename: str, mode: str = "auto") -> str:
-    """Backwards-compatible entry point returning the prompt context for the LLM."""
-    result = analyze_drawing(filename, mode=mode)
-    return result["prompt_context"]

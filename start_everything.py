@@ -20,12 +20,16 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_DIR))
 
-from config_manager import SHARED_DIR, DOCS_DIR, LOGS_DIR, ensure_directories, load_settings
+import config_manager
+from config_manager import ensure_directories, get_configured_ollama_host, load_settings
 
 
-def _is_ollama_running(host_url: str = "http://localhost:11434") -> bool:
+def _is_ollama_running(host_url: str = None) -> bool:
+    target = (host_url or get_configured_ollama_host()).rstrip("/")
+    if not target.startswith(("http://", "https://")):
+        return False
     try:
-        req = urllib.request.Request(f"{host_url.rstrip('/')}/api/tags", method="GET")
+        req = urllib.request.Request(f"{target}/api/tags", method="GET")
         with urllib.request.urlopen(req, timeout=1.5) as resp:
             return resp.status == 200
     except Exception:
@@ -40,14 +44,7 @@ def stop_ollama_serving(kill_external: bool = False, owned_proc: subprocess.Pope
     """
     settings = load_settings()
     ai_cfg = settings.get("ai", {})
-    base_url = (
-        ai_cfg.get("analysis", {}).get("base_url")
-        or ai_cfg.get("poem", {}).get("base_url")
-        or "http://localhost:11434"
-    )
-    host = base_url.replace("/v1", "").rstrip("/")
-    if not host.startswith("http"):
-        host = "http://localhost:11434"
+    host = get_configured_ollama_host(settings)
 
     # 1. Unload any active models via Ollama HTTP API (keep_alive: 0)
     models_to_unload = set()
@@ -210,7 +207,7 @@ class LatentSpaceStarter:
         if not uses_ollama:
             return
 
-        if _is_ollama_running():
+        if _is_ollama_running(get_configured_ollama_host(settings)):
             print("  ✓ Local Ollama server is online")
             return
 
@@ -271,12 +268,13 @@ class LatentSpaceStarter:
                 if proc.poll() is not None:
                     print(f"\n⚠️  {name} exited with code {proc.poll()}")
                     self.processes.remove((name, proc))
-                    if self.mode == "full" and "Gaze Painter" in name:
-                        print("Desktop Gaze Painter closed — shutting down remaining services...")
+                    if proc is not self.ollama_proc and self.mode in ("server", "full"):
+                        print(f"{name} exited — shutting down remaining services...")
                         self.running = False
                         break
-            if not self.processes:
-                print("All child processes have exited.")
+            non_ollama = [(n, p) for n, p in self.processes if p is not self.ollama_proc]
+            if not non_ollama:
+                print("All primary child processes have exited.")
                 break
 
     def run(self):
@@ -285,7 +283,7 @@ class LatentSpaceStarter:
         print("LATENT SPACE INSTALLATION")
         print(f"OS / Platform: {platform.system()} ({platform.machine()})")
         print(f"Project Dir:   {PROJECT_DIR}")
-        print(f"Shared Output: {SHARED_DIR}")
+        print(f"Shared Output: {config_manager.SHARED_DIR}")
         print(f"Launch Mode:   {self.mode.upper()}")
         print("=" * 64)
 

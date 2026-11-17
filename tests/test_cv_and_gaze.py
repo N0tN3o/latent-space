@@ -1,10 +1,10 @@
-import json
+from collections import deque
 import os
+from pathlib import Path
 import shutil
 import sys
 import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 
 import cv2
@@ -13,11 +13,6 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ANALYSIS_DIR = PROJECT_ROOT / "analysis_watcher"
 GAZE_DIR = PROJECT_ROOT / "gaze_painter"
-TEST_TMP = Path(tempfile.mkdtemp(prefix="ls_cv_gaze_test_"))
-os.environ["LATENT_SPACE_CONFIG_DIR"] = str(TEST_TMP / "config")
-os.environ["LATENT_SPACE_SHARED_DIR"] = str(TEST_TMP / "shared_output")
-os.environ["LATENT_SPACE_LOGS_DIR"] = str(TEST_TMP / "logs")
-
 for p in (str(PROJECT_ROOT), str(ANALYSIS_DIR), str(GAZE_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
@@ -30,12 +25,27 @@ from preprocess_image import preprocess_image
 import eye_tracking
 from drawing import GazePainter
 
+TEST_TMP = None
+
+
+def setUpModule():
+    global TEST_TMP
+    TEST_TMP = Path(tempfile.mkdtemp(prefix="ls_cv_gaze_test_"))
+    os.environ["LATENT_SPACE_CONFIG_DIR"] = str(TEST_TMP / "config")
+    os.environ["LATENT_SPACE_SHARED_DIR"] = str(TEST_TMP / "shared_output")
+    os.environ["LATENT_SPACE_LOGS_DIR"] = str(TEST_TMP / "logs")
+    config_manager.reload_paths_from_env()
+    config_manager.ensure_directories()
+
+
+def tearDownModule():
+    global TEST_TMP
+    if TEST_TMP is not None:
+        shutil.rmtree(TEST_TMP, ignore_errors=True)
+        TEST_TMP = None
+
 
 class TestCVAndGeometry(unittest.TestCase):
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(TEST_TMP, ignore_errors=True)
-
     def setUp(self):
         config_manager.ensure_directories()
         config_manager.save_settings(config_manager.DEFAULT_SETTINGS)
@@ -46,7 +56,6 @@ class TestCVAndGeometry(unittest.TestCase):
         hm_path = TEST_TMP / "corner_hm.png"
 
         canvas = np.ones((720, 1280), dtype=np.uint8) * 255
-        # Draw purely in upper-left corner
         cv2.circle(canvas, (140, 110), 45, 0, 6)
         cv2.line(canvas, (90, 90), (200, 140), 0, 6)
         cv2.imwrite(str(canvas_path), canvas)
@@ -64,7 +73,7 @@ class TestCVAndGeometry(unittest.TestCase):
         proc_path = TEST_TMP / "dwell_proc.png"
         hm_path = TEST_TMP / "dwell_hm.png"
         img = np.ones((512, 512), dtype=np.uint8) * 255
-        cv2.line(img, (50, 400), (200, 450), 0, 5)  # lower-left ink
+        cv2.line(img, (50, 400), (200, 450), 0, 5)
         cv2.imwrite(str(proc_path), img)
 
         dwell = [
@@ -124,8 +133,68 @@ class TestCVAndGeometry(unittest.TestCase):
         z_geom = analysis.analyze_stroke_geometry(str(zig_path))
         self.assertIn("angular, darting, and electric", z_geom["description"])
 
+    def test_luminance_235_dark_canvas_color_and_nested_bullseye(self):
+        # 1. Luminance 235 strokes must agree across preprocess, analysis, and heatmap
+        faint_path = TEST_TMP / "faint.png"
+        faint_proc = TEST_TMP / "faint_proc.png"
+        faint = np.ones((256, 256), dtype=np.uint8) * 255
+        cv2.line(faint, (30, 30), (200, 200), 235, 6)
+        cv2.imwrite(str(faint_path), faint)
+        preprocess_image(str(faint_path), str(faint_proc))
+        fg = analysis.analyze_stroke_geometry(str(faint_proc))
+        fh = heatmap.compute_zone_matrix(str(faint_path))
+        self.assertGreater(fg["ink_ratio"], 0.01)
+        self.assertGreater(fg["fractal_dimension"], 1.0)
+        self.assertGreater(float(fh.max()), 0.0)
+
+        # 2. Color shading (Ember/Indigo) preserved in image_processed.png
+        ember_path = TEST_TMP / "ember.png"
+        ember_proc = TEST_TMP / "ember_proc.png"
+        ember = np.ones((256, 256, 3), dtype=np.uint8) * 255
+        cv2.line(ember, (40, 40), (200, 200), (10, 40, 210), 6, cv2.LINE_AA)
+        cv2.imwrite(str(ember_path), ember)
+        preprocess_image(str(ember_path), str(ember_proc))
+        out_ember = cv2.imread(str(ember_proc), cv2.IMREAD_COLOR)
+        self.assertEqual(out_ember.ndim, 3)
+        # Red channel > Blue channel in Ember stroke
+        self.assertGreater(int(np.max(out_ember[:, :, 2] - out_ember[:, :, 0])), 50)
+
+        # 3. Dark canvas with bright strokes must not invert background into ink
+        dark_path = TEST_TMP / "dark.png"
+        dark_proc = TEST_TMP / "dark_proc.png"
+        dark = np.zeros((300, 400), dtype=np.uint8)
+        cv2.circle(dark, (100, 100), 40, 180, 5)
+        cv2.imwrite(str(dark_path), dark)
+        preprocess_image(str(dark_path), str(dark_proc))
+        dg = analysis.analyze_stroke_geometry(str(dark_proc))
+        self.assertLess(dg["ink_ratio"], 0.35)
+        self.assertGreater(dg["ink_ratio"], 0.02)
+
+        # 4. Open smooth semicircle must be fluid, not angular from ribbon U-turns
+        arc_path = TEST_TMP / "arc.png"
+        arc = np.ones((512, 512), dtype=np.uint8) * 255
+        cv2.ellipse(arc, (256, 256), (160, 160), 0, 0, 180, 0, 5)
+        cv2.imwrite(str(arc_path), arc)
+        ag = analysis.analyze_stroke_geometry(str(arc_path))
+        self.assertIn("fluid, sweeping, and organic", ag["description"])
+
+        # 5. Bullseye (outer ring + solid inner dot at level 2) has 1 enclosed loop, not 2
+        eye_path = TEST_TMP / "eye.png"
+        eye = np.ones((512, 512), dtype=np.uint8) * 255
+        cv2.circle(eye, (256, 256), 140, 0, 6)
+        cv2.circle(eye, (256, 256), 30, 0, -1)
+        cv2.imwrite(str(eye_path), eye)
+        eg = analysis.analyze_stroke_geometry(str(eye_path))
+        self.assertEqual(eg["enclosed_loops"], 1)
+
+        # 6. Box-counting on non-power-of-two canvas includes bottom/right edge ink
+        edge_mask = np.zeros((135, 135), dtype=np.uint8)
+        edge_mask[130:135, 130:135] = 255
+        self.assertGreaterEqual(analysis.compute_fractal_dimension(edge_mask), 1.0)
+
     def test_chat_skips_image_payload_for_text_only_ollama_in_auto_mode(self):
-        chat._OLLAMA_VISION_CAPS.clear()
+        with chat._OLLAMA_CAPS_LOCK:
+            chat._OLLAMA_VISION_CAPS.clear()
         config_manager.update_settings_section("ai", {
             "vision_mode": "auto",
             "analysis": {
@@ -151,11 +220,146 @@ class TestCVAndGeometry(unittest.TestCase):
         chat_call_json = post_mock.call_args_list[1].kwargs["json"]
         self.assertIsInstance(chat_call_json["messages"][-1]["content"], str)
 
+    def test_chat_key_matching_keyless_local_and_null_content(self):
+        # 1. OPENAI_API_KEY must NOT be sent to Groq base_url
+        config_manager.update_settings_section("ai", {
+            "analysis": {
+                "provider": "openai_compatible",
+                "model": "llama-3.3-70b-versatile",
+                "base_url": "https://api.groq.com/openai/v1",
+                "api_key": "",
+            },
+            "poem": {
+                "provider": "openai_compatible",
+                "model": "local-qwen",
+                "base_url": "http://localhost:1234/v1",
+                "api_key": "",
+            },
+        })
+        env = {"OPENAI_API_KEY": "sk-openai-only"}
+        with mock.patch("chat.load_env_vars", return_value=env):
+            m = chat.LLMModel("analysis")
+            self.assertEqual(m._api_key, "")
+            # Keyless local openai_compatible (LM Studio/vLLM) must be included in failover
+            candidates = m._build_failover_candidates()
+            local_cands = [c for c in candidates if c[2] == "http://localhost:1234/v1"]
+            self.assertTrue(local_cands)
+
+        # 2. 401 must NOT retry text-only, and gemma3:1b is NOT vision
+        self.assertFalse(chat.LLMModel._ollama_supports_vision("http://localhost:11434/v1", "gemma3:1b"))
+
+        config_manager.update_settings_section("ai", {
+            "vision_mode": "vision",
+            "analysis": {
+                "provider": "openai_compatible",
+                "model": "gpt-4o-mini",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "bad-key",
+            },
+        })
+        img_path = TEST_TMP / "tiny2.png"
+        img_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+        resp_401 = mock.MagicMock(status_code=401, ok=False)
+        resp_401.raise_for_status.side_effect = chat.requests.exceptions.HTTPError("401", response=resp_401)
+        with mock.patch("chat.requests.post", return_value=resp_401) as post_mock:
+            m = chat.LLMModel("analysis")
+            with self.assertRaises(chat.AIGenerationError):
+                m.chat("Hi", image_path=str(img_path), allow_failover=False)
+        self.assertEqual(post_mock.call_count, 1)
+
+        # 3. Null content from OpenAI-compatible reasoning/tool message raises cleanly (not AttributeError)
+        resp_null = mock.MagicMock(status_code=200, ok=True)
+        resp_null.json.return_value = {"choices": [{"message": {"content": None}}]}
+        with mock.patch("chat.requests.post", return_value=resp_null):
+            with self.assertRaises(chat.AIGenerationError) as ctx:
+                m.chat("Hi", allow_failover=False)
+            self.assertNotIn("AttributeError", str(ctx.exception))
+
 
 class TestTimeBasedAffineGazeCalibration(unittest.TestCase):
     def _make_fake_tracker(self):
         with mock.patch.object(eye_tracking.mp.solutions.face_mesh, "FaceMesh", return_value=mock.MagicMock()):
             return eye_tracking.EyeTracker(flip=True)
+
+    def test_glasses_glare_freeze_and_spike_weight_healthy_eye(self):
+        l_hist = deque(maxlen=5)
+        r_hist = deque(maxlen=5)
+        # Seed 4 frames: left eye frozen at reflection (0.0, 0.0), right eye smoothly tracking
+        for step in range(4):
+            l_pt = np.array([0.0, 0.0], dtype=np.float32)
+            r_pt = np.array([0.01 * step, 0.0], dtype=np.float32)
+            eye_tracking.fuse_binocular_eyes(l_pt, r_pt, 0.25, 0.25, l_hist, r_hist, 0.135, False)
+
+        # Frame 5: left still frozen at (0,0), right moved to (0.05, 0) -> healthy right eye must dominate
+        fused = eye_tracking.fuse_binocular_eyes(
+            np.array([0.0, 0.0], dtype=np.float32),
+            np.array([0.05, 0.0], dtype=np.float32),
+            0.25, 0.25, l_hist, r_hist, 0.135, False,
+        )
+        self.assertGreater(float(fused[0]), 0.04)
+
+        # Blink frame must NOT append to histories
+        hist_len_before = len(l_hist)
+        eye_tracking.fuse_binocular_eyes(
+            np.array([0.3, 0.3], dtype=np.float32),
+            np.array([0.3, 0.3], dtype=np.float32),
+            0.05, 0.05, l_hist, r_hist, 0.135, True,
+        )
+        self.assertEqual(len(l_hist), hist_len_before)
+
+        # Single-eye glare jump spike must be suppressed
+        fused_spike = eye_tracking.fuse_binocular_eyes(
+            np.array([0.0, 0.0], dtype=np.float32),
+            np.array([0.25, 0.0], dtype=np.float32),
+            0.25, 0.25, l_hist, r_hist, 0.135, False,
+        )
+        self.assertLess(float(fused_spike[0]), 0.05)
+
+    def test_cross_visitor_reset_recenter_and_frame0_blink(self):
+        tracker = self._make_fake_tracker()
+        # Visitor 1 had wide eyes -> raised blink threshold
+        tracker.blink_ear_thr = 0.155
+        tracker.weights_x = np.array([0.12, 9.0, 0.0], dtype=np.float32)
+        tracker.weights_y = np.array([-0.09, 0.0, 13.0], dtype=np.float32)
+        tracker.smoothed = np.array([0.02, -0.01], dtype=np.float32)
+
+        # Spacebar recenter_now must zero learned intercept biases
+        tracker.recenter_now()
+        self.assertEqual(float(tracker.weights_x[0]), 0.0)
+        self.assertEqual(float(tracker.weights_y[0]), 0.0)
+
+        # New visitor calibration resets poisoned blink threshold back to default
+        with mock.patch("utils.save_calibration"):
+            tracker.start_auto_calibration()
+        self.assertAlmostEqual(tracker.blink_ear_thr, eye_tracking.BLINK_EAR_THRESHOLD, places=4)
+        self.assertIsNone(tracker.smoothed)
+
+        # Frame-0 blink must not set smoothed to closed-eyelid garbage
+        fake_lm = []
+        for idx in range(477):
+            p = mock.MagicMock()
+            p.x, p.y = 0.5, 0.5
+            fake_lm.append(p)
+        # Set eye corners & closed lids (EAR ~ 0.02)
+        fake_lm[33].x, fake_lm[33].y = 0.3, 0.4
+        fake_lm[133].x, fake_lm[133].y = 0.4, 0.4
+        fake_lm[159].x, fake_lm[159].y = 0.35, 0.4
+        fake_lm[145].x, fake_lm[145].y = 0.35, 0.402
+        fake_lm[362].x, fake_lm[362].y = 0.6, 0.4
+        fake_lm[263].x, fake_lm[263].y = 0.7, 0.4
+        fake_lm[386].x, fake_lm[386].y = 0.65, 0.4
+        fake_lm[374].x, fake_lm[374].y = 0.65, 0.402
+        res = mock.MagicMock()
+        face = mock.MagicMock()
+        face.landmark = fake_lm
+        res.multi_face_landmarks = [face]
+        tracker.face_mesh.process.return_value = res
+
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        _, info = tracker.process_frame(frame)
+        self.assertTrue(info["is_blinking"])
+        self.assertIsNone(tracker.smoothed)
+        self.assertIsNone(info["smoothed_norm"])
 
     def test_time_based_calibration_handles_skewed_camera_and_low_fps(self):
         tracker = self._make_fake_tracker()
@@ -164,14 +368,11 @@ class TestTimeBasedAffineGazeCalibration(unittest.TestCase):
              mock.patch("utils.save_calibration"):
             tracker.start_auto_calibration()
 
-            # Simulate 25 FPS over 4.6 seconds with tilted camera & different X/Y gains
             done = False
             for step in range(116):
                 now = t0 + step * 0.04
                 pct = tracker.get_calibration_progress(now=now)
                 tx, ty = eye_tracking.calibration_target_at_progress(pct)
-                # Forward model: eye_x = 0.015 + 0.075*(tx-0.5) + 0.015*(ty-0.5)
-                #                eye_y = -0.008 - 0.010*(tx-0.5) + 0.055*(ty-0.5)
                 rx = 0.015 + 0.075 * (tx - 0.5) + 0.015 * (ty - 0.5)
                 ry = -0.008 - 0.010 * (tx - 0.5) + 0.055 * (ty - 0.5)
                 gaze_info = {
@@ -187,7 +388,6 @@ class TestTimeBasedAffineGazeCalibration(unittest.TestCase):
         self.assertTrue(done)
         self.assertAlmostEqual(tracker.blink_ear_thr, 0.27 * 0.52, places=3)
 
-        # Verify target recovery at corners (stepping cursor EMA to convergence)
         for goal_x, goal_y in [(0.2, 0.2), (0.8, 0.75), (0.5, 0.5)]:
             rx = 0.015 + 0.075 * (goal_x - 0.5) + 0.015 * (goal_y - 0.5)
             ry = -0.008 - 0.010 * (goal_x - 0.5) + 0.055 * (goal_y - 0.5)
@@ -220,11 +420,18 @@ class TestTimeBasedAffineGazeCalibration(unittest.TestCase):
         self.assertGreaterEqual(float(tracker.weights_y[2]), 6.0)
         self.assertLessEqual(float(tracker.weights_y[2]), 18.0)
 
-    def test_gaze_painter_records_dwell_grid(self):
+    def test_gaze_painter_records_dwell_and_does_not_overwrite_prior_segments(self):
         painter = GazePainter(width=300, height=300)
-        painter.update((0.9, 0.9), 0.1)
-        painter.update((0.9, 0.9), 0.15)
-        self.assertGreater(painter.dwell_grid[2, 2], 0.2)
+        painter.update((0.1, 0.5), 0.03)
+        painter.update((0.5, 0.5), 0.03)
+        # Snapshot pixel thickness near segment 1 midpoint (x=90, y=150) before dwelling at (0.8, 0.5)
+        painter.update((0.8, 0.5), 0.03)
+        col_before = np.sum(painter.canvas[135:165, 90] < 250)
+        for _ in range(15):
+            painter.update((0.8, 0.5), 0.1)
+        col_after = np.sum(painter.canvas[135:165, 90] < 250)
+        self.assertEqual(int(col_before), int(col_after))
+        self.assertGreater(painter.dwell_grid[1, 2], 0.5)
         self.assertEqual(float(painter.dwell_grid[0, 0]), 0.0)
 
 

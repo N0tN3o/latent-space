@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 RUN useradd -m -u 1000 appuser \
-    && mkdir -p /app/shared_output/docs/printed /app/config /app/logs \
+    && mkdir -p /app/shared_output/docs /app/config /app/logs \
     && chown -R appuser:appuser /app
 
 USER appuser

@@ -1,13 +1,13 @@
-import io
 import http.client
+import io
 import json
 import os
+from pathlib import Path
 import shutil
 import sys
 import tempfile
-import time
+import threading
 import unittest
-from pathlib import Path
 from unittest import mock
 
 import cv2
@@ -15,20 +15,35 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ANALYSIS_DIR = PROJECT_ROOT / "analysis_watcher"
-TEST_TMP = Path(tempfile.mkdtemp(prefix="ls_pipeline_test_"))
-os.environ["LATENT_SPACE_CONFIG_DIR"] = str(TEST_TMP / "config")
-os.environ["LATENT_SPACE_SHARED_DIR"] = str(TEST_TMP / "shared_output")
-os.environ["LATENT_SPACE_LOGS_DIR"] = str(TEST_TMP / "logs")
-os.environ["LATENT_SPACE_ADMIN_PASSWORD"] = "TestPipelinePass!42"
-
 for p in (str(PROJECT_ROOT), str(ANALYSIS_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
 import config_manager
 import monitoring_server
+import qr_utils
 import run_analysis_watcher
 from chat import LLMModel
+
+TEST_TMP = None
+
+
+def setUpModule():
+    global TEST_TMP
+    TEST_TMP = Path(tempfile.mkdtemp(prefix="ls_pipeline_test_"))
+    os.environ["LATENT_SPACE_CONFIG_DIR"] = str(TEST_TMP / "config")
+    os.environ["LATENT_SPACE_SHARED_DIR"] = str(TEST_TMP / "shared_output")
+    os.environ["LATENT_SPACE_LOGS_DIR"] = str(TEST_TMP / "logs")
+    os.environ["LATENT_SPACE_ADMIN_PASSWORD"] = "TestPipelinePass!42"
+    config_manager.reload_paths_from_env()
+    config_manager.ensure_directories()
+
+
+def tearDownModule():
+    global TEST_TMP
+    if TEST_TMP is not None:
+        shutil.rmtree(TEST_TMP, ignore_errors=True)
+        TEST_TMP = None
 
 
 class _FakeSocket:
@@ -62,10 +77,6 @@ class _TestableHTTPResponseSocket:
 
 
 class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(TEST_TMP, ignore_errors=True)
-
     def setUp(self):
         config_manager.ensure_directories()
         config_manager.save_settings(config_manager.DEFAULT_SETTINGS)
@@ -100,6 +111,7 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
         def fake_save_pdf(url=None, out_dir=None, website_data=None, run_id=None):
             content_on_disk = json.loads((config_manager.SHARED_DIR / "content.json").read_text(encoding="utf-8"))
             observed_during_pdf_render["printPDF"] = content_on_disk.get("printPDF")
+            observed_during_pdf_render["pdfRendering"] = content_on_disk.get("pdfRendering")
             out_pdf = Path(out_dir) / f"print_{run_id}.pdf"
             out_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
             return str(out_pdf)
@@ -118,13 +130,16 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(observed_during_pdf_render.get("printPDF"), f"docs/print_{rid}.pdf")
+        self.assertTrue(observed_during_pdf_render.get("pdfRendering"))
+        final_content = json.loads((config_manager.SHARED_DIR / "content.json").read_text(encoding="utf-8"))
+        self.assertFalse(final_content.get("pdfRendering"))
 
     def test_fallback_pdf_renderer_wraps_and_renders_valid_pdf(self):
         rid = "20261117_120500_001"
         thumb = config_manager.DOCS_DIR / f"print_{rid}.png"
         hm = config_manager.DOCS_DIR / f"print_{rid}.heatmap.png"
-        img = np.ones((128, 128), dtype=np.uint8) * 255
-        cv2.circle(img, (64, 64), 32, 0, 3)
+        img = np.ones((128, 128, 3), dtype=np.uint8) * 255
+        cv2.circle(img, (64, 64), 32, (20, 40, 200), 3)
         cv2.imwrite(str(thumb), img)
         cv2.imwrite(str(hm), img)
 
@@ -135,11 +150,14 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
             "archetype": "Intertwined Orbits",
             "fractalDimension": 1.37,
             "spatialEntropy": 0.64,
-            "psychoanalysis": ("Your gaze traces continuous loops around an unspoken center of gravity. " * 6).strip(),
-            "poem": "A quiet orbit in pale light,\nSearching edges out of sight,\nTurning inward, round and slow,\nLeaving traces as you go.",
+            "psychoanalysis": ("Your gaze traces continuous loops around an unspoken center of gravity. " * 10).strip(),
+            "poem": "\n".join([f"Line {i} of a long contemplative poem." for i in range(1, 20)]),
+            "timestamp": "2026-10-01T14:30:00",
         }
         settings = config_manager.load_settings()
+        settings["printing"]["paper_format"] = "Letter"
         settings["attributions"]["enabled"] = True
+        settings["attributions"]["custom_footer_note"] = "Exhibition Archive Note"
 
         res_path = run_analysis_watcher._render_pdf_fallback(pdf_out, website_data, settings)
         self.assertEqual(res_path, str(pdf_out))
@@ -148,6 +166,15 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
 
         wrapped = run_analysis_watcher._wrap_preserving_lines(website_data["psychoanalysis"], width=48)
         self.assertTrue(all(len(line) <= 48 for line in wrapped.splitlines()))
+
+    def test_qr_utils_decodes_with_opencv(self):
+        det = cv2.QRCodeDetector()
+        url = "http://192.168.1.42:8000/shared_output/docs/print_20261117_220500_001.pdf"
+        mat = qr_utils.generate_qr_matrix(url, quiet=4)
+        img = np.array([[0 if c else 255 for c in row] for row in mat], dtype=np.uint8).repeat(4, 0).repeat(4, 1)
+        decoded, _, _ = det.detectAndDecode(img)
+        self.assertEqual(decoded, url)
+        self.assertIn("<svg", qr_utils.qr_svg(url))
 
     def test_failover_does_not_leak_fallback_model_across_providers(self):
         config_manager.update_settings_section("ai", {
@@ -205,8 +232,17 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
         self.assertEqual(m._last_used_model, "qwen2.5:latest")
         self.assertEqual(m._llm, "gemini-2.0-flash")
 
+    def test_generate_run_id_stays_fixed_width_past_999(self):
+        with run_analysis_watcher._id_lock:
+            run_analysis_watcher._last_run_id = "20991231_235959_999"
+        next_id = run_analysis_watcher.generate_run_id()
+        self.assertEqual(next_id, "21000101_000000_000")
+        self.assertEqual(len(next_id), 19)
+        self.assertGreater(next_id, "20991231_235959_999")
+        with run_analysis_watcher._id_lock:
+            run_analysis_watcher._last_run_id = ""
+
     def test_per_run_status_isolation_and_mp3_cleanup(self):
-        # Create valid PNG bytes
         img = np.ones((64, 64), dtype=np.uint8) * 255
         ok, buf = cv2.imencode(".png", img)
         self.assertTrue(ok)
@@ -218,28 +254,35 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
             call_log.append(run_id)
             if run_id == "run_one":
                 return True
+            if run_id == "run_false":
+                return False
             raise run_analysis_watcher.PipelineStageError("ERR_POEM_AI_FAILED", "Poet down")
 
         with mock.patch.object(monitoring_server, "run_analysis_pipeline", side_effect=fake_pipeline):
-            e1 = mock.MagicMock()
-            ev1 = __import__("threading").Event()
-            ev2 = __import__("threading").Event()
+            ev1 = threading.Event()
+            ev2 = threading.Event()
+            ev3 = threading.Event()
             r1, _ = monitoring_server.enqueue_pipeline_job(image_bytes=png_bytes, run_id="run_one", done_event=ev1)
             r2, _ = monitoring_server.enqueue_pipeline_job(image_bytes=png_bytes, run_id="run_two", done_event=ev2)
+            r3, _ = monitoring_server.enqueue_pipeline_job(image_bytes=png_bytes, run_id="run_false", done_event=ev3)
             self.assertTrue(ev1.wait(timeout=5))
             self.assertTrue(ev2.wait(timeout=5))
+            self.assertTrue(ev3.wait(timeout=5))
 
         st1, d1 = self._http("GET", f"/api/pipeline/status?run_id={r1}")
         st2, d2 = self._http("GET", f"/api/pipeline/status?run_id={r2}")
+        st3, d3 = self._http("GET", f"/api/pipeline/status?run_id={r3}")
         self.assertEqual(st1, 200)
         self.assertEqual(st2, 200)
-        p1 = json.loads(d1)
-        p2 = json.loads(d2)
-        self.assertEqual(p1["run"]["state"], "COMPLETED")
-        self.assertEqual(p2["run"]["state"], "ERROR")
-        self.assertEqual(p2["run"]["error_code"], "ERR_POEM_AI_FAILED")
+        self.assertEqual(st3, 200)
+        self.assertEqual(json.loads(d1)["run"]["state"], "COMPLETED")
+        self.assertEqual(json.loads(d2)["run"]["state"], "ERROR")
+        self.assertEqual(json.loads(d2)["run"]["error_code"], "ERR_POEM_AI_FAILED")
+        # Returning False without raising must also leave pipeline state in ERROR, not IDLE
+        p3 = json.loads(d3)
+        self.assertEqual(p3["run"]["state"], "ERROR")
+        self.assertEqual(p3["state"], "ERROR")
 
-        # Verify audio file cleanup on delete
         rid = "20250101_090000_001"
         for ext in (".pdf", ".png", ".json", ".heatmap.png"):
             (config_manager.DOCS_DIR / f"print_{rid}{ext}").write_bytes(b"test")
@@ -258,6 +301,35 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
         self.assertFalse(audio_file.exists())
         self.assertFalse((config_manager.DOCS_DIR / f"print_{rid}.pdf").exists())
 
+    def test_sync_timeout_cancel_and_cleanup_orphaned_temp_files(self):
+        img = np.ones((64, 64), dtype=np.uint8) * 255
+        _, buf = cv2.imencode(".png", img)
+        snap = config_manager.SHARED_DIR / "input_cancel_test.png"
+        snap.write_bytes(buf.tobytes())
+
+        cancel_ev = threading.Event()
+        cancel_ev.set()
+        content_file = config_manager.SHARED_DIR / "content.json"
+        if content_file.exists():
+            content_file.unlink()
+        ok = run_analysis_watcher.run_analysis_pipeline(
+            run_id="cancel_test", snapshot_path=str(snap), raise_on_error=False, cancel_event=cancel_ev,
+        )
+        self.assertFalse(ok)
+        self.assertFalse(content_file.exists())
+
+        # Orphaned temp files cleanup
+        orphan_in = config_manager.SHARED_DIR / "input_20250101_000000_001.png"
+        orphan_mp3 = config_manager.SHARED_DIR / "output_20250101_000000_001.mp3"
+        valid_mp3 = config_manager.SHARED_DIR / "output_20250101_000000_002.mp3"
+        valid_pdf = config_manager.DOCS_DIR / "print_20250101_000000_002.pdf"
+        for p in (orphan_in, orphan_mp3, valid_mp3, valid_pdf):
+            p.write_bytes(b"data")
+        run_analysis_watcher.cleanup_orphaned_temp_files()
+        self.assertFalse(orphan_in.exists())
+        self.assertFalse(orphan_mp3.exists())
+        self.assertTrue(valid_mp3.exists())
+
     def test_shared_print_history_mark_and_prune(self):
         fname = "print_20261117_150000_001.pdf"
         config_manager.mark_file_printed(fname, extra_meta={"source": "kiosk"})
@@ -267,7 +339,7 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
         self.assertIn(fname, hist["printed"])
         self.assertEqual(hist["prints"][-1]["source"], "kiosk")
 
-        run_analysis_watcher.remove_from_print_history([fname])
+        config_manager.remove_from_print_history([fname])
         hist_after = json.loads(hist_file.read_text(encoding="utf-8"))
         self.assertNotIn(fname, hist_after["printed"])
 

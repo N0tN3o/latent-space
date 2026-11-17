@@ -1,10 +1,12 @@
 import os
-import threading
 from pathlib import Path
+import threading
 import cv2
 import numpy as np
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from matplotlib.figure import Figure
+
+from preprocess_image import extract_ink_mask
 
 
 def normalize_dwell_grid(dwell_grid):
@@ -40,11 +42,12 @@ def compute_zone_matrix(scribble_filename=None, dwell_grid=None) -> np.ndarray:
         return heatmap
 
     try:
-        img = cv2.imread(str(scribble_filename), cv2.IMREAD_GRAYSCALE)
+        img = cv2.imread(str(scribble_filename), cv2.IMREAD_UNCHANGED)
         if img is None or img.size == 0:
             raise ValueError(f"Could not read scribble image: {scribble_filename}")
 
-        _, binary = cv2.threshold(img, 230, 1, cv2.THRESH_BINARY_INV)
+        ink_mask, _, _ = extract_ink_mask(img)
+        binary = (ink_mask > 0).astype(np.float32)
         h, w = binary.shape
         h_step, w_step = max(1, h // 3), max(1, w // 3)
 

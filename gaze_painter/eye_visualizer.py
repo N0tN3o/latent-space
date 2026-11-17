@@ -4,7 +4,6 @@ Visual display for eye tracking
 """
 
 import cv2
-import numpy as np
 
 
 class EyeVisualizer:

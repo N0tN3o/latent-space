@@ -1,11 +1,12 @@
-import cv2
-import time
-import numpy as np
-import os
 import json
+import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
+
+import cv2
+import numpy as np
 
 CURRENT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CURRENT_DIR.parent
@@ -13,14 +14,16 @@ for p in (str(PROJECT_ROOT), str(CURRENT_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from config_manager import SHARED_DIR, DOCS_DIR, load_settings, ensure_directories
-from eye_tracking import EyeTracker
+import config_manager
+from config_manager import ensure_directories, load_settings
 from drawing import GazePainter
-from utils import save_calibration, load_calibration
+from eye_tracking import EyeTracker
 from eye_visualizer import EyeVisualizer
+from utils import load_calibration
 
 DRAW_DURATION_SEC = 15.0
 GAZE_LOSS_TIMEOUT_SEC = 2.0
+CONSECUTIVE_FACE_FRAMES = 5
 
 # --- Application States ---
 STATE_SEARCHING = 0
@@ -68,6 +71,7 @@ class GazeTrackingPainter:
         self.dt = 0
         self.draw_start_time = None
         self.last_gaze_time = None
+        self.face_streak = 0
         self.frame_count = 0
 
         self.eyes_window = "Eyes"
@@ -76,7 +80,6 @@ class GazeTrackingPainter:
         calibration = load_calibration()
         if calibration:
             self.tracker.load_calibration(calibration)
-        # Always run the interactive calibration step when a new session/visitor starts
         self.has_calibration = False
 
     def get_calibration_percentage(self) -> int:
@@ -116,8 +119,8 @@ class GazeTrackingPainter:
     def save_and_reset(self):
         """Save drawing atomically to shared_output/image.png or upload via HTTP (never both to avoid double runs)."""
         print("Saving drawing...")
-        filepath = SHARED_DIR / "image.png"
-        tmp_path = SHARED_DIR / "image.tmp.png"
+        filepath = config_manager.SHARED_DIR / "image.png"
+        tmp_path = config_manager.SHARED_DIR / "image.tmp.png"
         try:
             if not getattr(self.painter, "has_drawn", False) or np.all(self.painter.canvas == 255):
                 print("Skipping save: canvas is blank")
@@ -156,7 +159,9 @@ class GazeTrackingPainter:
         self.state = new_state
         if new_state == STATE_SEARCHING:
             self.has_calibration = False
+            self.face_streak = 0
             self.tracker.is_calibrating = False
+            self.tracker.reset_visitor_state()
             self.close_canvas()
             self.status_text = "Searching for gaze..."
         elif new_state == STATE_CALIBRATING:
@@ -182,7 +187,7 @@ class GazeTrackingPainter:
     def run(self):
         print("=" * 60)
         print("Gaze Painter for Latent Space Installation")
-        print(f"Output Directory: {SHARED_DIR}")
+        print(f"Output Directory: {config_manager.SHARED_DIR}")
         if self.remote_url:
             print(f"Remote Sync URL:  {self.remote_url}")
         print("=" * 60)
@@ -208,40 +213,39 @@ class GazeTrackingPainter:
 
             if gaze_info is not None:
                 self.last_gaze_time = now
+                self.face_streak += 1
+            else:
+                self.face_streak = 0
 
             norm_gaze = self.tracker.get_calibrated_gaze(gaze_info, dt=self.dt)
 
             if self.state == STATE_SEARCHING:
                 self.status_text = "Searching for gaze..."
-                if gaze_info is not None:
+                if self.face_streak >= CONSECUTIVE_FACE_FRAMES:
                     self.transition_to(STATE_CALIBRATING)
 
             elif self.state == STATE_CALIBRATING:
-                if self.check_gaze_loss(now):
-                    continue
-
-                self.status_text = self.get_calibration_progress_text()
-                calibration_done = self.tracker.add_calibration_sample(gaze_info, now=now)
-
-                if calibration_done:
-                    self.transition_to(STATE_DRAWING)
+                if not self.check_gaze_loss(now):
+                    self.status_text = self.get_calibration_progress_text()
+                    calibration_done = self.tracker.add_calibration_sample(gaze_info, now=now)
+                    if calibration_done:
+                        self.transition_to(STATE_DRAWING)
 
             elif self.state == STATE_DRAWING:
-                if self.check_gaze_loss(now):
-                    continue
+                if not self.check_gaze_loss(now):
+                    elapsed = now - self.draw_start_time
+                    remaining = DRAW_DURATION_SEC - elapsed
+                    mode_tag = self.tracker.control_mode.upper()
+                    self.status_text = f"Drawing ({mode_tag})... {remaining:.1f}s"
 
-                elapsed = now - self.draw_start_time
-                remaining = DRAW_DURATION_SEC - elapsed
-                mode_tag = self.tracker.control_mode.upper()
-                self.status_text = f"Drawing ({mode_tag})... {remaining:.1f}s"
+                    if not (gaze_info and gaze_info.get("is_blinking", False)):
+                        self.painter.update(norm_gaze, self.dt)
 
-                if not (gaze_info and gaze_info.get("is_blinking", False)):
-                    self.painter.update(norm_gaze, self.dt)
+                    if remaining <= 0:
+                        self.transition_to(STATE_SAVING)
 
-                if remaining <= 0:
-                    self.transition_to(STATE_SAVING)
-
-            elif self.state == STATE_SAVING:
+            # Execute STATE_SAVING immediately in the same frame iteration (no delayed save/skip)
+            if self.state == STATE_SAVING:
                 self.status_text = "Saving drawing..."
                 self.save_and_reset()
 
@@ -265,7 +269,7 @@ class GazeTrackingPainter:
                     self.transition_to(STATE_CALIBRATING)
             elif key == ord("m"):
                 self.tracker.toggle_control_mode()
-            elif key == ord(" "):
+            elif key == ord(" ") and self.state == STATE_DRAWING:
                 self.tracker.recenter_now()
                 self.painter.prev_point = None
 

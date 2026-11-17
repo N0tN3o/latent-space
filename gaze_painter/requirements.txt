@@ -1,3 +1,6 @@
+# Install into a dedicated venv for the Desktop OpenCV Gaze Painter.
+# Do NOT install alongside root requirements.txt (opencv-python-headless) in the same venv,
+# or uninstall opencv-python-headless first so cv2 GUI (imshow/namedWindow) works.
 opencv-python>=4.8.0
 mediapipe>=0.10.0
 numpy>=1.24.0

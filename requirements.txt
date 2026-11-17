@@ -1,4 +1,6 @@
 # Core dependencies for Unified Server, Web Gaze Painter, Web Print Kiosk & AI Pipeline
+# Note: Do not mix opencv-python-headless and opencv-python in the same venv;
+# use gaze_painter/requirements.txt in a dedicated venv if running Desktop Gaze Painter.
 psutil>=5.9.0
 requests>=2.31.0
 numpy>=1.24.0
