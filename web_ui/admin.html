@@ -145,6 +145,7 @@
                     <h5 class="mb-0">System &amp; Pipeline Overview</h5>
                     <div class="d-flex gap-2">
                         <button class="btn btn-sm btn-success" onclick="triggerPipelineNow()" id="runPipelineBtn">Run Analysis on Current Drawing</button>
+                        <button class="btn btn-sm btn-outline-warning" onclick="stopOllamaNow()" id="stopOllamaBtn">Stop / Unload Ollama</button>
                         <button class="btn btn-sm btn-outline-secondary" onclick="updateMonitor()">Refresh</button>
                     </div>
                 </div>
@@ -191,15 +192,8 @@
             <!-- 2. AI & VISION CONFIG TAB -->
             <div class="tab-pane fade" id="tab-ai">
                 <div class="row g-3 mb-4 align-items-end">
-                    <div class="col-md-4">
-                        <label class="form-label text-muted">1. Select Assistant Role</label>
-                        <select id="aiModelType" class="form-select" onchange="loadAIConfig()">
-                            <option value="analysis">Analysis (Psychoanalyst / Vision)</option>
-                            <option value="poem">Poet (Lyrical Writer)</option>
-                        </select>
-                    </div>
-                    <div class="col-md-5">
-                        <label class="form-label text-muted">2. Self-Hosted Abstract Art Perception Mode</label>
+                    <div class="col-md-6">
+                        <label class="form-label text-muted">Self-Hosted Abstract Art Perception Mode</label>
                         <select id="aiVisionMode" class="form-select">
                             <option value="auto">Auto (Direct Vision LLM + Self-Hosted Fractal &amp; Rorschach Geometry)</option>
                             <option value="ollama_vision">Self-Hosted Ollama Vision (moondream / llava) + Fractal Geometry</option>
@@ -211,69 +205,149 @@
                         </select>
                     </div>
                     <div class="col-md-3">
-                        <button class="btn btn-outline-light w-100" onclick="loadAIConfig()">Reload Config</button>
+                        <button class="btn btn-outline-light w-100" onclick="loadAIConfig()">Reload Both Models</button>
+                    </div>
+                    <div class="col-md-3">
+                        <button class="btn btn-success w-100" onclick="saveAllAIConfig()">Save Both AI Models</button>
                     </div>
                 </div>
 
-                <div class="mb-3">
-                    <span class="small text-muted me-2">Quick Provider Presets:</span>
-                    <span class="badge bg-secondary me-1 preset-chip" onclick="applyPreset('ollama', 'llama3.2', 'http://localhost:11434/v1')">Ollama (llama3.2)</span>
-                    <span class="badge bg-secondary me-1 preset-chip" onclick="applyPreset('ollama', 'llava', 'http://localhost:11434/v1')">Ollama Vision (llava)</span>
-                    <span class="badge bg-primary me-1 preset-chip" onclick="applyPreset('gemini', 'gemini-2.0-flash', '')">Google Gemini 2.0 Flash (Free Tier)</span>
-                    <span class="badge bg-info text-dark me-1 preset-chip" onclick="applyPreset('openai_compatible', 'llama-3.3-70b-versatile', 'https://api.groq.com/openai/v1')">Groq (llama-3.3-70b)</span>
-                    <span class="badge bg-info text-dark me-1 preset-chip" onclick="applyPreset('openai_compatible', 'meta-llama/llama-3.2-11b-vision-instruct:free', 'https://openrouter.ai/api/v1')">OpenRouter Vision (Free)</span>
-                    <span class="badge bg-warning text-dark me-1 preset-chip" onclick="applyPreset('anthropic', 'claude-3-5-haiku-latest', '')">Anthropic Claude 3.5 Haiku</span>
-                    <span class="badge bg-dark border border-secondary preset-chip" onclick="applyPreset('buas', 'llama3.3:latest', 'https://ai-assistants.buas.nl/aioda-api')">BUas Legacy</span>
-                </div>
+                <div class="row g-4">
+                    <!-- ANALYSIS MODEL CARD -->
+                    <div class="col-lg-6">
+                        <div class="p-3 rounded border border-secondary h-100" style="background: #1a1e29;">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h5 class="mb-0 text-success">1. Analysis Model <span class="text-muted fs-6">(Psychoanalyst)</span></h5>
+                                <span class="badge bg-dark border border-secondary">Role: analysis</span>
+                            </div>
 
-                <div id="aiConfigForm">
-                    <div class="row g-3 mb-3">
-                        <div class="col-md-4">
-                            <label class="form-label">AI Provider</label>
-                            <select id="aiProvider" class="form-select">
-                                <option value="ollama">Ollama (Local / On-Prem)</option>
-                                <option value="gemini">Google Gemini API (Free Tier / Cloud)</option>
-                                <option value="openai_compatible">OpenAI-Compatible (LM Studio, Groq, OpenRouter, OpenAI)</option>
-                                <option value="anthropic">Anthropic (Claude)</option>
-                                <option value="buas">BUas Legacy Server</option>
-                            </select>
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label">Model Name / ID</label>
-                            <input type="text" class="form-control" id="aiModelName" placeholder="e.g. llama3.2, gemini-2.0-flash">
-                        </div>
-                        <div class="col-md-4">
-                            <label class="form-label">Temperature (Creativity: 0.0 - 1.5)</label>
-                            <input type="number" step="0.05" min="0" max="1.5" class="form-control" id="aiTemp" value="0.7">
+                            <div class="mb-3">
+                                <span class="small text-muted d-block mb-1">Quick Presets (Analysis):</span>
+                                <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'llama3.1:8b', 'http://localhost:11434/v1')">Ollama (llama3.1:8b)</span>
+                                <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'llama3.2', 'http://localhost:11434/v1')">Ollama (llama3.2)</span>
+                                <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'llava', 'http://localhost:11434/v1')">Ollama Vision (llava)</span>
+                                <span class="badge bg-primary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'gemini', 'gemini-2.0-flash', '')">Gemini 2.0 Flash</span>
+                                <span class="badge bg-info text-dark me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'openai_compatible', 'llama-3.3-70b-versatile', 'https://api.groq.com/openai/v1')">Groq (llama-3.3-70b)</span>
+                                <span class="badge bg-warning text-dark me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'anthropic', 'claude-3-5-haiku-latest', '')">Claude 3.5 Haiku</span>
+                            </div>
+
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-5">
+                                    <label class="form-label small">AI Provider</label>
+                                    <select id="analysis_provider" class="form-select form-select-sm">
+                                        <option value="ollama">Ollama (Local / On-Prem)</option>
+                                        <option value="gemini">Google Gemini API</option>
+                                        <option value="openai_compatible">OpenAI-Compatible</option>
+                                        <option value="anthropic">Anthropic (Claude)</option>
+                                        <option value="buas">BUas Legacy Server</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label small">Model Name / ID</label>
+                                    <input type="text" class="form-control form-control-sm" id="analysis_model" placeholder="e.g. llama3.1:8b">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small">Temp (0-1.5)</label>
+                                    <input type="number" step="0.05" min="0" max="1.5" class="form-control form-control-sm" id="analysis_temp" value="0.7">
+                                </div>
+                            </div>
+
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-6">
+                                    <label class="form-label small">Base URL <span class="text-muted">(Ollama / OpenAI)</span></label>
+                                    <input type="text" class="form-control form-control-sm" id="analysis_base_url" placeholder="http://localhost:11434/v1">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small">API Key <span class="text-muted" id="analysis_api_key_status">(Optional for Ollama)</span></label>
+                                    <input type="password" class="form-control form-control-sm" id="analysis_api_key" placeholder="Leave blank to keep existing">
+                                </div>
+                            </div>
+
+                            <div class="mb-2">
+                                <label class="form-label small">Assistant Display Name</label>
+                                <input type="text" class="form-control form-control-sm" id="analysis_name">
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label small">System Prompt / Instructions (Analysis)</label>
+                                <textarea class="form-control form-control-sm" id="analysis_desc" rows="5"></textarea>
+                            </div>
+
+                            <div class="d-flex flex-wrap gap-2 align-items-center">
+                                <button class="btn btn-sm btn-success" onclick="saveRoleConfig('analysis')">Save Analysis Model</button>
+                                <button class="btn btn-sm btn-outline-info" onclick="testRoleConnection('analysis')">Test Analysis Model</button>
+                                <span id="analysis_test_result" class="ms-1 small"></span>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="row g-3 mb-3">
-                        <div class="col-md-6">
-                            <label class="form-label">Base URL <span class="text-muted small">(for Ollama / OpenAI-compatible)</span></label>
-                            <input type="text" class="form-control" id="aiBaseUrl" placeholder="http://localhost:11434/v1">
+                    <!-- POEM MODEL CARD -->
+                    <div class="col-lg-6">
+                        <div class="p-3 rounded border border-secondary h-100" style="background: #1a1e29;">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h5 class="mb-0 text-info">2. Poem Model <span class="text-muted fs-6">(Lyrical Poet)</span></h5>
+                                <button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="copyAnalysisToPoem()" title="Copy Provider, Model Name, Base URL, and API Key from Analysis Model">
+                                    Copy Provider &amp; Model from Analysis
+                                </button>
+                            </div>
+
+                            <div class="mb-3">
+                                <span class="small text-muted d-block mb-1">Quick Presets (Poem):</span>
+                                <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('poem', 'ollama', 'llama3.1:8b', 'http://localhost:11434/v1')">Ollama (llama3.1:8b)</span>
+                                <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('poem', 'ollama', 'llama3.2', 'http://localhost:11434/v1')">Ollama (llama3.2)</span>
+                                <span class="badge bg-primary me-1 mb-1 preset-chip" onclick="applyRolePreset('poem', 'gemini', 'gemini-2.0-flash', '')">Gemini 2.0 Flash</span>
+                                <span class="badge bg-info text-dark me-1 mb-1 preset-chip" onclick="applyRolePreset('poem', 'openai_compatible', 'llama-3.3-70b-versatile', 'https://api.groq.com/openai/v1')">Groq (llama-3.3-70b)</span>
+                                <span class="badge bg-warning text-dark me-1 mb-1 preset-chip" onclick="applyRolePreset('poem', 'anthropic', 'claude-3-5-haiku-latest', '')">Claude 3.5 Haiku</span>
+                            </div>
+
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-5">
+                                    <label class="form-label small">AI Provider</label>
+                                    <select id="poem_provider" class="form-select form-select-sm">
+                                        <option value="ollama">Ollama (Local / On-Prem)</option>
+                                        <option value="gemini">Google Gemini API</option>
+                                        <option value="openai_compatible">OpenAI-Compatible</option>
+                                        <option value="anthropic">Anthropic (Claude)</option>
+                                        <option value="buas">BUas Legacy Server</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label small">Model Name / ID</label>
+                                    <input type="text" class="form-control form-control-sm" id="poem_model" placeholder="e.g. llama3.1:8b">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small">Temp (0-1.5)</label>
+                                    <input type="number" step="0.05" min="0" max="1.5" class="form-control form-control-sm" id="poem_temp" value="0.8">
+                                </div>
+                            </div>
+
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-6">
+                                    <label class="form-label small">Base URL <span class="text-muted">(Ollama / OpenAI)</span></label>
+                                    <input type="text" class="form-control form-control-sm" id="poem_base_url" placeholder="http://localhost:11434/v1">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small">API Key <span class="text-muted" id="poem_api_key_status">(Optional for Ollama)</span></label>
+                                    <input type="password" class="form-control form-control-sm" id="poem_api_key" placeholder="Leave blank to keep existing">
+                                </div>
+                            </div>
+
+                            <div class="mb-2">
+                                <label class="form-label small">Assistant Display Name</label>
+                                <input type="text" class="form-control form-control-sm" id="poem_name">
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label small">System Prompt / Instructions (Poem)</label>
+                                <textarea class="form-control form-control-sm" id="poem_desc" rows="5"></textarea>
+                            </div>
+
+                            <div class="d-flex flex-wrap gap-2 align-items-center">
+                                <button class="btn btn-sm btn-success" onclick="saveRoleConfig('poem')">Save Poem Model</button>
+                                <button class="btn btn-sm btn-outline-info" onclick="testRoleConnection('poem')">Test Poem Model</button>
+                                <span id="poem_test_result" class="ms-1 small"></span>
+                            </div>
                         </div>
-                        <div class="col-md-6">
-                            <label class="form-label">API Key <span class="text-muted small" id="apiKeyStatus">(Leave blank for local Ollama or if set in .env)</span></label>
-                            <input type="password" class="form-control" id="aiApiKey" placeholder="Enter new API key or leave blank to keep existing">
-                        </div>
-                    </div>
-
-                    <div class="mb-3">
-                        <label class="form-label">Assistant Display Name</label>
-                        <input type="text" class="form-control" id="aiName">
-                    </div>
-
-                    <div class="mb-3">
-                        <label class="form-label">System Prompt / Instructions</label>
-                        <textarea class="form-control" id="aiDesc" rows="5"></textarea>
-                        <div class="form-text text-muted">Defines the psychological/artistic voice and output format for this model.</div>
-                    </div>
-
-                    <div class="d-flex flex-wrap gap-2 align-items-center">
-                        <button class="btn btn-success" onclick="saveAIConfig()">Save AI Configuration</button>
-                        <button class="btn btn-outline-info" onclick="testAIConnection()">Test Model Connection</button>
-                        <span id="aiTestResult" class="ms-2 small"></span>
                     </div>
                 </div>
             </div>
@@ -462,7 +536,9 @@
                 : `Status: ${pipeState.last_status || 'idle'}`;
 
             const ai = data.ai_summary || {};
-            document.getElementById('kpiAI').textContent = `${ai.analysis_provider || 'ollama'}: ${ai.analysis_model || ''}`;
+            document.getElementById('kpiAI').innerHTML =
+                `<div><span class="text-muted small">Analysis:</span> ${ai.analysis_provider || 'ollama'} (${ai.analysis_model || ''})</div>` +
+                `<div><span class="text-muted small">Poem:</span> ${ai.poem_provider || 'ollama'} (${ai.poem_model || ''})</div>`;
             document.getElementById('kpiVisionMode').textContent = `Perception: ${ai.vision_mode || 'auto'}`;
 
             const stats = data.statistics || {};
@@ -539,83 +615,141 @@
         }
     }
 
-    // --- 2. AI CONFIG ---
-    function applyPreset(provider, model, baseUrl) {
-        document.getElementById('aiProvider').value = provider;
-        document.getElementById('aiModelName').value = model;
-        document.getElementById('aiBaseUrl').value = baseUrl;
-    }
-
-    async function loadAIConfig() {
-        const type = document.getElementById('aiModelType').value;
-        document.getElementById('aiTestResult').textContent = '';
+    async function stopOllamaNow() {
+        const btn = document.getElementById('stopOllamaBtn');
+        btn.disabled = true;
+        btn.textContent = 'Stopping Ollama...';
         try {
-            const res = await fetch(`/api/ai/config?type=${type}&t=${Date.now()}`);
+            const res = await fetch('/api/ollama/stop', { method: 'POST' });
             const data = await res.json();
-            if (data.config) {
-                const c = data.config;
-                document.getElementById('aiProvider').value = c.provider || 'ollama';
-                document.getElementById('aiModelName').value = c.model || c.llm || '';
-                document.getElementById('aiBaseUrl').value = c.base_url || '';
-                document.getElementById('aiName').value = c.name || '';
-                document.getElementById('aiDesc').value = c.description || '';
-                document.getElementById('aiTemp').value = c.temperature ?? 0.7;
-                document.getElementById('aiVisionMode').value = c.vision_mode || 'auto';
-                document.getElementById('aiApiKey').value = '';
-                document.getElementById('apiKeyStatus').textContent = c.has_api_key
-                    ? '(API key saved — leave blank to keep current key)'
-                    : '(Leave blank for local Ollama or if set in .env)';
+            if (!res.ok) {
+                alert('Error: ' + (data.error || 'Could not stop Ollama'));
             }
+            setTimeout(updateMonitor, 800);
         } catch (e) {
-            console.error('Failed to load AI config:', e);
+            alert('Error stopping Ollama: ' + e);
+        } finally {
+            setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = 'Stop / Unload Ollama';
+            }, 1500);
         }
     }
 
-    async function saveAIConfig() {
-        const type = document.getElementById('aiModelType').value;
-        const apiKeyVal = document.getElementById('aiApiKey').value.trim();
+    // --- 2. AI CONFIG (BOTH ANALYSIS & POEM MODELS) ---
+    function applyRolePreset(role, provider, model, baseUrl) {
+        document.getElementById(`${role}_provider`).value = provider;
+        document.getElementById(`${role}_model`).value = model;
+        document.getElementById(`${role}_base_url`).value = baseUrl;
+    }
+
+    function copyAnalysisToPoem() {
+        document.getElementById('poem_provider').value = document.getElementById('analysis_provider').value;
+        document.getElementById('poem_model').value = document.getElementById('analysis_model').value;
+        document.getElementById('poem_base_url').value = document.getElementById('analysis_base_url').value;
+        const analysisKey = document.getElementById('analysis_api_key').value;
+        if (analysisKey) {
+            document.getElementById('poem_api_key').value = analysisKey;
+        }
+        document.getElementById('poem_test_result').innerHTML = '<span class="text-info">Copied provider &amp; model from Analysis — click Save Poem Model to apply.</span>';
+    }
+
+    async function loadSingleRoleConfig(role) {
+        document.getElementById(`${role}_test_result`).textContent = '';
+        try {
+            const res = await fetch(`/api/ai/config?type=${role}&t=${Date.now()}`);
+            const data = await res.json();
+            if (data.config) {
+                const c = data.config;
+                document.getElementById(`${role}_provider`).value = c.provider || 'ollama';
+                document.getElementById(`${role}_model`).value = c.model || c.llm || '';
+                document.getElementById(`${role}_base_url`).value = c.base_url || '';
+                document.getElementById(`${role}_name`).value = c.name || '';
+                document.getElementById(`${role}_desc`).value = c.description || '';
+                document.getElementById(`${role}_temp`).value = c.temperature ?? (role === 'poem' ? 0.8 : 0.7);
+                if (role === 'analysis') {
+                    document.getElementById('aiVisionMode').value = c.vision_mode || 'auto';
+                }
+                document.getElementById(`${role}_api_key`).value = '';
+                document.getElementById(`${role}_api_key_status`).textContent = c.has_api_key
+                    ? '(Saved — leave blank to keep)'
+                    : '(Optional for Ollama)';
+            }
+        } catch (e) {
+            console.error(`Failed to load ${role} config:`, e);
+        }
+    }
+
+    async function loadAIConfig() {
+        await Promise.all([
+            loadSingleRoleConfig('analysis'),
+            loadSingleRoleConfig('poem')
+        ]);
+    }
+
+    function buildRolePayload(role) {
+        const apiKeyVal = document.getElementById(`${role}_api_key`).value.trim();
         const config = {
-            provider: document.getElementById('aiProvider').value,
-            llm: document.getElementById('aiModelName').value.trim(),
-            base_url: document.getElementById('aiBaseUrl').value.trim(),
-            name: document.getElementById('aiName').value.trim(),
-            description: document.getElementById('aiDesc').value,
-            temperature: parseFloat(document.getElementById('aiTemp').value) || 0.7,
+            provider: document.getElementById(`${role}_provider`).value,
+            llm: document.getElementById(`${role}_model`).value.trim(),
+            base_url: document.getElementById(`${role}_base_url`).value.trim(),
+            name: document.getElementById(`${role}_name`).value.trim(),
+            description: document.getElementById(`${role}_desc`).value,
+            temperature: parseFloat(document.getElementById(`${role}_temp`).value) || 0.7,
             vision_mode: document.getElementById('aiVisionMode').value
         };
         if (apiKeyVal) {
             config.api_key = apiKeyVal;
         }
+        return config;
+    }
 
+    async function saveRoleConfig(role, reloadAfter = true) {
+        const config = buildRolePayload(role);
         try {
             const res = await fetch('/api/ai/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model_type: type, config: config })
+                body: JSON.stringify({ model_type: role, config: config })
             });
             const data = await res.json();
             if (data.status === 'Success') {
-                document.getElementById('aiTestResult').innerHTML = '<span class="text-success">Configuration saved.</span>';
-                loadAIConfig();
-                updateMonitor();
+                document.getElementById(`${role}_test_result`).innerHTML = '<span class="text-success">Saved!</span>';
+                if (reloadAfter) {
+                    await loadSingleRoleConfig(role);
+                    updateMonitor();
+                }
+                return true;
             } else {
-                alert('Save failed: ' + JSON.stringify(data));
+                alert(`Save (${role}) failed: ` + JSON.stringify(data));
+                return false;
             }
         } catch (e) {
-            alert('Save Error: ' + e);
+            alert(`Save (${role}) error: ` + e);
+            return false;
         }
     }
 
-    async function testAIConnection() {
-        await saveAIConfig();
-        const type = document.getElementById('aiModelType').value;
-        const out = document.getElementById('aiTestResult');
+    async function saveAllAIConfig() {
+        const okA = await saveRoleConfig('analysis', false);
+        const okP = await saveRoleConfig('poem', false);
+        await loadAIConfig();
+        updateMonitor();
+        if (okA && okP) {
+            document.getElementById('analysis_test_result').innerHTML = '<span class="text-success">Both models saved!</span>';
+            document.getElementById('poem_test_result').innerHTML = '<span class="text-success">Both models saved!</span>';
+        }
+    }
+
+    async function testRoleConnection(role) {
+        await saveRoleConfig(role, false);
+        const out = document.getElementById(`${role}_test_result`);
         out.innerHTML = '<span class="text-info">Testing connection...</span>';
         try {
             const res = await fetch('/api/ai/test', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model_type: type })
+                body: JSON.stringify({ model_type: role })
             });
             const data = await res.json();
             if (res.ok && data.status === 'success') {

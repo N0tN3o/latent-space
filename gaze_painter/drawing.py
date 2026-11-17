@@ -174,3 +174,60 @@ class GazePainter:
             cv2.circle(display, (gx, gy), 8, cursor_color, 1)
         
         return display
+
+    def get_calibration_canvas(self, progress_pct: int):
+        """
+        Render an interactive guided calibration screen on a clean white canvas.
+        0-35%: Look at the center bullseye target to anchor resting gaze.
+        35-100%: Follow the orbiting target bullseye around the canvas.
+        """
+        display = np.ones((self.h, self.w, 3), dtype=np.uint8) * 255
+        pct = int(np.clip(progress_pct, 0, 100))
+
+        if pct <= 35:
+            tx = int(self.w * 0.5)
+            ty = int(self.h * 0.5)
+            instruction = "Step 1/2: Look steadily at the center target"
+        else:
+            angle = ((pct - 35) / 65.0) * (2.0 * np.pi)
+            tx = int(self.w * (0.5 + 0.36 * np.cos(angle)))
+            ty = int(self.h * (0.5 + 0.34 * np.sin(angle)))
+            instruction = "Step 2/2: Follow the moving target with your eyes"
+
+        # Draw subtle guide ring when orbiting
+        if pct > 35:
+            axes = (int(self.w * 0.36), int(self.h * 0.34))
+            cv2.ellipse(display, (self.w // 2, self.h // 2), axes, 0, 0, 360, (230, 230, 230), 1, cv2.LINE_AA)
+
+        # Target bullseye (emerald green in BGR: 129, 185, 16)
+        target_color = (129, 185, 16)
+        cv2.circle(display, (tx, ty), 28, target_color, 3, cv2.LINE_AA)
+        cv2.circle(display, (tx, ty), 8, target_color, -1, cv2.LINE_AA)
+        cv2.line(display, (tx - 38, ty), (tx + 38, ty), target_color, 1, cv2.LINE_AA)
+        cv2.line(display, (tx, ty - 38), (tx, ty + 38), target_color, 1, cv2.LINE_AA)
+
+        # Progress bar at bottom
+        bar_w = int(self.w * 0.5)
+        bar_h = 10
+        bar_x = (self.w - bar_w) // 2
+        bar_y = self.h - 55
+        cv2.rectangle(display, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h), (220, 220, 220), -1)
+        fill_w = int(bar_w * (pct / 100.0))
+        if fill_w > 0:
+            cv2.rectangle(display, (bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h), target_color, -1)
+
+        # Instruction text
+        label = f"Calibrating Gaze ({pct}%) - {instruction}"
+        (tw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.75, 2)
+        cv2.putText(
+            display,
+            label,
+            ((self.w - tw) // 2, bar_y - 16),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.75,
+            (40, 40, 40),
+            2,
+            cv2.LINE_AA,
+        )
+
+        return display

@@ -1,19 +1,24 @@
 {
   "ai": {
-    "vision_mode": "auto",
+    "vision_mode": "resnet50",
     "analysis": {
       "provider": "ollama",
-      "model": "llama3.2",
+      "model": "llama3.1:8b",
       "base_url": "http://localhost:11434/v1",
       "api_key": "",
       "name": "Latent Space Psychoanalyst",
       "description": "You are an insightful psychoanalyst and art critic for the interactive installation 'Latent Space: Through the Eyes of the Algorithm'. Visitors create abstract drawings purely through their eye movements (gaze tracking). Given the visual perception profile of their gaze drawing (including stroke dynamics, spatial focus, pareidolia/Rorschach archetypes, and emotional resonance) or the image itself, write a compelling, poetic, second-person psychoanalytical interpretation (around 70-110 words) about what their subconscious gaze reveals—their inner tensions, focus, curiosity, and emotional state. Do not mention technical metrics or numbers directly; translate them into psychological insight.",
-      "temperature": 0.7,
-      "assistant_key": "8a79f5ec-c5dd-448c-9611-99610792a04b"
+      "temperature": 0.9,
+      "assistant_key": "8a79f5ec-c5dd-448c-9611-99610792a04b",
+      "purpose": "",
+      "expertise": "",
+      "capabilities": "",
+      "restrictions": "",
+      "additional": ""
     },
     "poem": {
       "provider": "ollama",
-      "model": "llama3.2",
+      "model": "llama3.1:8b",
       "base_url": "http://localhost:11434/v1",
       "api_key": "",
       "name": "Latent Space Poet",

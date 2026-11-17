@@ -236,6 +236,25 @@ class LLMModel:
             payload["messages"] = messages
             resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
 
+        # If Ollama returns 404 because the configured model tag is not pulled locally,
+        # automatically discover an installed Ollama model and retry
+        if resp.status_code == 404 and self._provider == "ollama":
+            try:
+                host_root = base_url.replace("/v1", "").rstrip("/")
+                tags_resp = requests.get(f"{host_root}/api/tags", timeout=3)
+                if tags_resp.ok:
+                    installed = [m.get("name") for m in tags_resp.json().get("models", []) if m.get("name")]
+                    if installed:
+                        fallback_model = installed[0]
+                        print(f"[chat] Ollama model '{self._llm}' not found locally; using installed model '{fallback_model}'")
+                        self._llm = fallback_model
+                        payload["model"] = fallback_model
+                        messages[-1]["content"] = message
+                        payload["messages"] = messages
+                        resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+            except Exception:
+                pass
+
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"].strip()

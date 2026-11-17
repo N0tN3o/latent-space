@@ -5,19 +5,118 @@ Works on Windows, macOS, Linux, On-Prem, or Cloud — no Google Drive or rclone 
 """
 
 import argparse
+import json
 import os
 import platform
+import shutil
 import signal
 import socket
 import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_DIR))
 
 from config_manager import SHARED_DIR, DOCS_DIR, LOGS_DIR, ensure_directories, load_settings
+
+
+def _is_ollama_running(host_url: str = "http://localhost:11434") -> bool:
+    try:
+        req = urllib.request.Request(f"{host_url.rstrip('/')}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def stop_ollama_serving():
+    """Unload any loaded Ollama models from VRAM/RAM and stop the Ollama server process."""
+    settings = load_settings()
+    ai_cfg = settings.get("ai", {})
+    base_url = (
+        ai_cfg.get("analysis", {}).get("base_url")
+        or ai_cfg.get("poem", {}).get("base_url")
+        or "http://localhost:11434"
+    )
+    host = base_url.replace("/v1", "").rstrip("/")
+    if not host.startswith("http"):
+        host = "http://localhost:11434"
+
+    # 1. Unload any active models via Ollama HTTP API (keep_alive: 0)
+    models_to_unload = set()
+    for role in ("analysis", "poem"):
+        role_cfg = ai_cfg.get(role, {})
+        if role_cfg.get("provider", "ollama") == "ollama" and role_cfg.get("model"):
+            models_to_unload.add(role_cfg["model"])
+
+    if _is_ollama_running(host):
+        try:
+            req = urllib.request.Request(f"{host}/api/ps", method="GET")
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                ps_data = json.loads(resp.read().decode("utf-8"))
+                for m in ps_data.get("models", []):
+                    if m.get("name"):
+                        models_to_unload.add(m["name"])
+        except Exception:
+            pass
+
+        for model_name in models_to_unload:
+            try:
+                payload = json.dumps({"model": model_name, "keep_alive": 0}).encode("utf-8")
+                req = urllib.request.Request(
+                    f"{host}/api/generate",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=3.0):
+                    pass
+                print(f"  ✓ Unloaded Ollama model: {model_name}")
+            except Exception:
+                pass
+
+    # 2. Terminate local Ollama serving processes
+    stopped_any = False
+    try:
+        import psutil
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                pname = (proc.info.get("name") or "").lower()
+                cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+                if "ollama" in pname or "ollama serve" in cmdline or "ollama.exe" in pname:
+                    proc.terminate()
+                    stopped_any = True
+            except Exception:
+                pass
+    except ImportError:
+        pass
+
+    if platform.system() == "Windows":
+        for exe_name in ("ollama.exe", "ollama app.exe"):
+            try:
+                res = subprocess.run(
+                    ["taskkill", "/F", "/IM", exe_name, "/T"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if res.returncode == 0:
+                    stopped_any = True
+            except Exception:
+                pass
+    else:
+        try:
+            res = subprocess.run(["pkill", "-f", "ollama"], capture_output=True, text=True, timeout=5)
+            if res.returncode == 0:
+                stopped_any = True
+        except Exception:
+            pass
+
+    if stopped_any:
+        print("  ✓ Stopped Ollama server")
 
 
 def find_python_executable(subproject: str = None) -> str:
@@ -48,6 +147,7 @@ class LatentSpaceStarter:
         self.port = port
         self.processes = []
         self.running = True
+        self._stopped = False
 
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
@@ -83,7 +183,27 @@ class LatentSpaceStarter:
             print(f"  ✗ Failed to start {name}: {e}")
             return None
 
+    def ensure_ollama_if_configured(self):
+        settings = load_settings()
+        ai_cfg = settings.get("ai", {})
+        uses_ollama = any(
+            ai_cfg.get(role, {}).get("provider", "ollama") == "ollama"
+            for role in ("analysis", "poem")
+        ) or ai_cfg.get("vision_mode") == "ollama_vision"
+
+        if not uses_ollama:
+            return
+
+        if _is_ollama_running():
+            print("  ✓ Local Ollama server is online")
+            return
+
+        ollama_bin = shutil.which("ollama")
+        if ollama_bin:
+            self.run_command([ollama_bin, "serve"], "Ollama Local AI Server")
+
     def start_server_and_pipeline(self):
+        self.ensure_ollama_if_configured()
         py = find_python_executable("analysis_watcher")
         server_script = PROJECT_DIR / "monitoring_server.py"
         self.run_command(
@@ -110,6 +230,9 @@ class LatentSpaceStarter:
             print(f"  ⚠ Print Kiosk script not found: {kiosk_script}")
 
     def stop_all(self):
+        if self._stopped:
+            return
+        self._stopped = True
         print("\nStopping all services...")
         for name, proc in reversed(self.processes):
             if proc.poll() is None:
@@ -119,15 +242,20 @@ class LatentSpaceStarter:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
+        stop_ollama_serving()
         print("✓ All services stopped")
 
     def monitor_processes(self):
         while self.running:
-            time.sleep(3)
+            time.sleep(2)
             for name, proc in list(self.processes):
                 if proc.poll() is not None:
                     print(f"\n⚠️  {name} exited with code {proc.poll()}")
                     self.processes.remove((name, proc))
+                    if self.mode == "full" and "Gaze Painter" in name:
+                        print("Desktop Gaze Painter closed — shutting down remaining services...")
+                        self.running = False
+                        break
             if not self.processes:
                 print("All child processes have exited.")
                 break

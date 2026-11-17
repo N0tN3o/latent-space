@@ -282,33 +282,57 @@
             cursorCtx.clearRect(0, 0, W, H);
             let tx = W * 0.5;
             let ty = H * 0.5;
-            let instruction = 'Look at the center dot';
+            let instruction = 'Step 1/2: Look steadily at the center target';
 
             if (pct > 35) {
                 const angle = ((pct - 35) / 65.0) * Math.PI * 2.0;
                 tx = W * (0.5 + 0.36 * Math.cos(angle));
                 ty = H * (0.5 + 0.34 * Math.sin(angle));
-                instruction = 'Follow the moving target with your eyes';
+                instruction = 'Step 2/2: Follow the moving target with your eyes';
+
+                cursorCtx.strokeStyle = '#e5e7eb';
+                cursorCtx.lineWidth = 1.5;
+                cursorCtx.beginPath();
+                cursorCtx.ellipse(W * 0.5, H * 0.5, W * 0.36, H * 0.34, 0, 0, Math.PI * 2);
+                cursorCtx.stroke();
             }
 
-            // Outer ring
+            // Outer ring & crosshairs
             cursorCtx.strokeStyle = '#10b981';
             cursorCtx.lineWidth = 3;
             cursorCtx.beginPath();
-            cursorCtx.arc(tx, ty, 24, 0, Math.PI * 2);
+            cursorCtx.arc(tx, ty, 28, 0, Math.PI * 2);
+            cursorCtx.stroke();
+
+            cursorCtx.lineWidth = 1.2;
+            cursorCtx.beginPath();
+            cursorCtx.moveTo(tx - 38, ty);
+            cursorCtx.lineTo(tx + 38, ty);
+            cursorCtx.moveTo(tx, ty - 38);
+            cursorCtx.lineTo(tx, ty + 38);
             cursorCtx.stroke();
 
             // Center bullseye
             cursorCtx.fillStyle = '#10b981';
             cursorCtx.beginPath();
-            cursorCtx.arc(tx, ty, 7, 0, Math.PI * 2);
+            cursorCtx.arc(tx, ty, 8, 0, Math.PI * 2);
             cursorCtx.fill();
+
+            // Progress bar
+            const barW = W * 0.5;
+            const barH = 10;
+            const barX = (W - barW) * 0.5;
+            const barY = H - 46;
+            cursorCtx.fillStyle = '#e5e7eb';
+            cursorCtx.fillRect(barX, barY, barW, barH);
+            cursorCtx.fillStyle = '#10b981';
+            cursorCtx.fillRect(barX, barY, barW * (Math.max(0, Math.min(100, pct)) / 100.0), barH);
 
             // Label
             cursorCtx.fillStyle = '#111827';
             cursorCtx.font = '600 18px Segoe UI, sans-serif';
             cursorCtx.textAlign = 'center';
-            cursorCtx.fillText(`${instruction} (${pct}%)`, W * 0.5, H - 30);
+            cursorCtx.fillText(`Calibrating Gaze (${pct}%) — ${instruction}`, W * 0.5, barY - 14);
         }
 
         function updateStroke(normX, normY) {
@@ -512,6 +536,9 @@
         let faceLandmarker = null;
         let webcamRunning = false;
         let isCalibrating = false;
+        let hasCalibration = false;
+        let lastGazeTs = 0;
+        const GAZE_LOSS_TIMEOUT_MS = 2000;
         let calibSamples = [];
         let centerSamples = [];
         const CALIB_NEEDED = 85;
@@ -537,19 +564,32 @@
         };
 
         window.addEventListener('keydown', (e) => {
+            if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) {
+                return;
+            }
             if (e.code === 'Space' && webcamRunning) {
                 e.preventDefault();
                 window.recenterCursorNow();
+            } else if ((e.key === 'c' || e.key === 'C') && webcamRunning) {
+                e.preventDefault();
+                window.startCalibration();
+            } else if (e.key === 'm' || e.key === 'M') {
+                e.preventDefault();
+                window.toggleGazeMode();
             }
         });
 
         window.startCalibration = function() {
+            timedSessionActive = false;
+            resetArtCanvas();
             calibSamples = [];
             centerSamples = [];
             isCalibrating = true;
+            hasCalibration = false;
             cursorPos = [0.5, 0.5];
             prevPoint = null;
-            statusBadge.textContent = 'Calibrating 0% — Look at the center dot first';
+            drawCalibrationTarget(0);
+            statusBadge.textContent = 'Calibrating 0% — Look at the center target first';
         };
 
         window.startWebcamGaze = async function() {
@@ -701,6 +741,14 @@
                 eyeCtx.clearRect(0, 0, eyeCanvas.width, eyeCanvas.height);
 
                 if (res.faceLandmarks && res.faceLandmarks.length > 0) {
+                    const gazeWasLost = lastGazeTs > 0 && (now - lastGazeTs) > GAZE_LOSS_TIMEOUT_MS;
+                    lastGazeTs = now;
+
+                    // If gaze was lost and a new visitor steps up, start fresh calibration
+                    if (gazeWasLost && !hasCalibration && !isCalibrating) {
+                        window.startCalibration();
+                    }
+
                     const lm = res.faceLandmarks[0];
                     const { norm, isBlinking } = computeCanthusGazeAndBlink(lm);
 
@@ -734,8 +782,8 @@
                         }
                         drawCalibrationTarget(pct);
                         statusBadge.textContent = pct <= 35
-                            ? `Calibrating ${pct}% — Look at the center dot`
-                            : `Calibrating ${pct}% — Follow the target dot`;
+                            ? `Calibrating ${pct}% — Look at the center target`
+                            : `Calibrating ${pct}% — Follow the moving target`;
 
                         if (calibSamples.length >= CALIB_NEEDED) {
                             const xs = calibSamples.map(s => s[0]).sort((a, b) => a - b);
@@ -759,6 +807,7 @@
                                 Math.max(0.075, ys[p90] - ys[p10])
                             ];
                             isCalibrating = false;
+                            hasCalibration = true;
                             cursorPos = [0.5, 0.5];
                             prevPoint = null;
                             window.startTimedSession();
@@ -789,6 +838,17 @@
                             }
                         }
                         updateStroke(cursorPos[0], cursorPos[1]);
+                    }
+                } else if (lastGazeTs > 0 && (now - lastGazeTs) > GAZE_LOSS_TIMEOUT_MS) {
+                    if (isCalibrating) {
+                        calibSamples = [];
+                        centerSamples = [];
+                        drawCalibrationTarget(0);
+                        statusBadge.textContent = 'Searching for gaze — Look at the screen to calibrate';
+                    } else if (hasCalibration) {
+                        hasCalibration = false;
+                        prevPoint = null;
+                        statusBadge.textContent = 'Gaze lost — Step in front of the camera to recalibrate';
                     }
                 }
             }

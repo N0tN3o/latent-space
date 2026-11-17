@@ -109,7 +109,11 @@ def start_background_watcher():
         return
     if AI_AVAILABLE:
         _watcher_stop.clear()
-        _watcher_thread = threading.Thread(target=watch_loop, args=(_watcher_stop,), daemon=True)
+        _watcher_thread = threading.Thread(
+            target=watch_loop,
+            args=(_watcher_stop, trigger_pipeline_async),
+            daemon=True,
+        )
         _watcher_thread.start()
 
 
@@ -192,12 +196,26 @@ def _get_lan_ip() -> str:
         return "localhost"
 
 
+def _check_ollama_status() -> str:
+    try:
+        from start_everything import _is_ollama_running
+        if _is_ollama_running():
+            return "running"
+    except Exception:
+        pass
+    return get_service_status("ollama")
+
+
 def api_get_status() -> dict:
     settings = load_settings()
+    ollama_state = _check_ollama_status()
+    gaze_state = get_service_status("run_gaze_painter")
+    watcher_state = get_service_status("run_analysis_watcher")
     services = {
         "web_server": "running",
-        "analysis_watcher": get_service_status("run_analysis_watcher"),
-        "desktop_gaze_painter": get_service_status("run_gaze_painter"),
+        "analysis_watcher": watcher_state,
+        "ollama_server": ollama_state,
+        "desktop_gaze_painter": gaze_state,
         "browser_gaze_painter": "ready (/draw)",
         "web_print_kiosk": "ready (/kiosk)",
     }
@@ -215,12 +233,13 @@ def api_get_status() -> dict:
     host_name = os.environ.get("COMPUTERNAME") or (os.uname().nodename if hasattr(os, "uname") else "Local Host")
     port = int(os.environ.get("PORT", settings.get("server", {}).get("port", 8000)))
     lan_ip = _get_lan_ip()
+    sys_stats = get_system_stats()
     return {
         "device": host_name,
         "lan_url": f"http://{lan_ip}:{port}",
         "services": services,
         "pipeline": _pipeline_state,
-        "system": get_system_stats(),
+        "system": sys_stats,
         "ai_summary": {
             "vision_mode": settings.get("ai", {}).get("vision_mode", "auto"),
             "analysis_provider": settings.get("ai", {}).get("analysis", {}).get("provider", "ollama"),
@@ -237,6 +256,42 @@ def api_get_status() -> dict:
             "prints_today": today_files,
             "total_prints": len(all_pdfs),
             "printed_count": printed_count,
+            "drawings": today_files,
+            "prints": printed_count,
+            "cycleTime": _pipeline_state.get("last_status", "idle"),
+            "apiSuccess": "100%",
+        },
+        "jetson_a": {
+            "status": "online" if "running" in gaze_state else "warning",
+            "metrics": {
+                "service": gaze_state,
+                "network": lan_ip,
+                "camera": "Ready",
+                "display": "Ready (/draw)",
+                "CPU": f"{sys_stats.get('cpu_percent', 0)}%",
+            },
+            "memory": int(sys_stats.get("memory_percent", 0)),
+        },
+        "jetson_b": {
+            "status": "online",
+            "metrics": {
+                "analysis": f"{settings.get('ai', {}).get('analysis', {}).get('model', '')} / {settings.get('ai', {}).get('poem', {}).get('model', '')}",
+                "web": f"Port {port}",
+                "NFS": f"Ollama: {ollama_state}",
+                "network": lan_ip,
+                "CPU": f"{sys_stats.get('cpu_percent', 0)}%",
+            },
+            "disk": int(sys_stats.get("disk_usage", 0)),
+        },
+        "rpi4": {
+            "status": "online",
+            "metrics": {
+                "service": "Ready (/kiosk)",
+                "printer": settings.get("printing", {}).get("printer_name", "default"),
+                "queue": f"{len(all_pdfs)} PDFs",
+                "network": lan_ip,
+                "CPU": f"{sys_stats.get('cpu_percent', 0)}%",
+            },
         },
         "timestamp": datetime.now().isoformat(),
     }
@@ -546,6 +601,14 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send_json({"status": "error", "error": str(e)}, 500)
 
+        if path == "/api/ollama/stop":
+            try:
+                from start_everything import stop_ollama_serving
+                stop_ollama_serving()
+                return self._send_json({"status": "success", "message": "Ollama models unloaded and server stopped"})
+            except Exception as e:
+                return self._send_json({"status": "error", "error": str(e)}, 500)
+
         if path == "/api/files/print":
             data = self._read_json_body()
             filename = data.get("filename", "")
@@ -613,7 +676,13 @@ def run_server(host="0.0.0.0", port=8000):
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down server...")
+        _watcher_stop.set()
         server.server_close()
+        try:
+            from start_everything import stop_ollama_serving
+            stop_ollama_serving()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

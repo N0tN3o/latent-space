@@ -74,21 +74,23 @@ class GazeTrackingPainter:
         self.canvas_window = "Gaze Painter"
 
         calibration = load_calibration()
-        self.has_calibration = False
         if calibration:
             self.tracker.load_calibration(calibration)
-            self.has_calibration = True
-            print("Existing calibration loaded (press [c] at any time to recalibrate).")
+        # Always run the interactive calibration step when a new session/visitor starts
+        self.has_calibration = False
+
+    def get_calibration_percentage(self) -> int:
+        progress = len(self.tracker.calibration_samples)
+        total = max(1, self.tracker.calibration_needed)
+        return int(min(100, (progress / total) * 100))
 
     def get_calibration_progress_text(self):
-        progress = len(self.tracker.calibration_samples)
-        total = self.tracker.calibration_needed
-        percentage = int((progress / total) * 100)
+        percentage = self.get_calibration_percentage()
 
-        if percentage < 33:
-            instruction = "Move your eyes around the screen"
-        elif percentage < 66:
-            instruction = "Look at all corners"
+        if percentage <= 35:
+            instruction = "Look at the center target"
+        elif percentage < 75:
+            instruction = "Follow the moving target"
         else:
             instruction = "Almost done..."
 
@@ -149,6 +151,7 @@ class GazeTrackingPainter:
             self.open_canvas()
         else:
             print("Gaze lost. Returning to search state.")
+            self.has_calibration = False
             self.state = STATE_SEARCHING
             self.status_text = "Searching for gaze..."
 
@@ -199,6 +202,7 @@ class GazeTrackingPainter:
                         self.state = STATE_CALIBRATING
                         self.tracker.start_auto_calibration()
                         self.status_text = self.get_calibration_progress_text()
+                        self.open_canvas()
 
             elif self.state == STATE_CALIBRATING:
                 if self.check_gaze_loss(now):
@@ -238,7 +242,10 @@ class GazeTrackingPainter:
             eye_display_with_ui = self.visualizer.add_status_overlay(eye_display, self.status_text)
             cv2.imshow(self.eyes_window, eye_display_with_ui)
 
-            if self.state == STATE_DRAWING:
+            if self.state == STATE_CALIBRATING:
+                calib_display = self.painter.get_calibration_canvas(self.get_calibration_percentage())
+                cv2.imshow(self.canvas_window, calib_display)
+            elif self.state == STATE_DRAWING:
                 canvas_display = self.painter.get_canvas_with_cursor(norm_gaze)
                 cv2.imshow(self.canvas_window, canvas_display)
 
@@ -250,7 +257,8 @@ class GazeTrackingPainter:
                 self.has_calibration = False
                 self.state = STATE_CALIBRATING
                 self.tracker.start_auto_calibration()
-                self.close_canvas()
+                self.painter.clear()
+                self.open_canvas()
             elif key == ord("m"):
                 self.tracker.toggle_control_mode()
             elif key == ord(" "):
@@ -265,11 +273,13 @@ class GazeTrackingPainter:
             if self.state == STATE_CALIBRATING:
                 print("Gaze lost during calibration. Returning to search state.")
                 self.tracker.is_calibrating = False
+                self.has_calibration = False
                 self.state = STATE_SEARCHING
                 self.status_text = "Searching for gaze..."
                 return True
             elif self.state == STATE_DRAWING:
                 print("Gaze lost during drawing. Saving and resetting.")
+                self.has_calibration = False
                 self.state = STATE_SAVING
                 self.status_text = "Saving..."
                 return True

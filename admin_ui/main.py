@@ -189,109 +189,125 @@ class ArtInstallationApp:
         self.dashboard_canvas_frame.pack(padx=20, pady=10, fill=tk.BOTH, expand=True)
 
     def setup_config_page(self):
+        top_bar = ttk.Frame(self.config_frame)
+        top_bar.pack(fill=tk.X, padx=10, pady=10)
+        back_button = ttk.Button(top_bar, text="← Back", command=self.show_main_page)
+        back_button.pack(side=tk.LEFT)
+        title = ttk.Label(top_bar, text="Configure AI Models (Analysis & Poem)", font=('Arial', 14, 'bold'))
+        title.pack(side=tk.LEFT, padx=16)
 
-        back_button = ttk.Button(self.config_frame, text="← Back", command=self.show_main_page)
-        back_button.pack(anchor='nw', padx=10, pady=10)
-        title = ttk.Label(self.config_frame, text="Configure Models", font=('Arial', 14, 'bold'))
-        title.pack(pady=10)
-        model_frame = ttk.Frame(self.config_frame)
-        model_frame.pack(pady=10, padx=20, fill=tk.X)
-        ttk.Label(model_frame, text="Select Model:", font=('Arial', 11, 'bold')).pack(side=tk.LEFT, padx=5)
-        self.model_var = tk.StringVar(value="Analysis Model")
-        model_dropdown = ttk.Combobox(model_frame, textvariable=self.model_var, values=["Analysis Model", "Poem Model"], state='readonly', width=20)
-        model_dropdown.pack(side=tk.LEFT, padx=5)
-        model_dropdown.bind('<<ComboboxSelected>>', lambda e: self.load_model_config())
-        load_button = ttk.Button(model_frame, text="Load Config", command=self.load_model_config)
-        load_button.pack(side=tk.LEFT, padx=5)
-        
-        # Scrollable form
-        canvas = tk.Canvas(self.config_frame)
-        scrollbar = ttk.Scrollbar(self.config_frame, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        self.config_entries = {}
-        fields = [('name', 'Name'), ('description', 'Description'), ('purpose', 'Purpose'), ('expertise', 'Expertise'), ('capabilities', 'Capabilities'), ('restrictions', 'Restrictions'), ('additional', 'Additional'), ('llm', 'LLM Model'), ('temperature', 'Temperature (0-1)')]
-        for field, label in fields:
-            field_frame = ttk.Frame(scrollable_frame)
-            field_frame.pack(fill=tk.X, padx=20, pady=5)
-            ttk.Label(field_frame, text=f"{label}:", font=('Arial', 10, 'bold')).pack(anchor='w')
-            if field in ['description', 'purpose', 'expertise', 'capabilities', 'restrictions', 'additional']:
-                entry = scrolledtext.ScrolledText(field_frame, height=4, wrap=tk.WORD, width=70)
-                entry.configure(font=('Arial', 10))
-            else:
-                entry = ttk.Entry(field_frame, width=70)
-            entry.pack(fill=tk.X, pady=2)
-            self.config_entries[field] = entry
-            
-        canvas.pack(side="left", fill="both", expand=True, padx=20, pady=10)
-        scrollbar.pack(side="right", fill="y")
-        save_button = ttk.Button(self.config_frame, text="Save Configuration", command=self.save_model_config)
-        save_button.pack(pady=20)
+        ttk.Button(top_bar, text="Save Both Models", command=self.save_model_config).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(top_bar, text="Copy Provider & Model to Poem", command=self.copy_analysis_to_poem).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(top_bar, text="Reload Both", command=self.load_model_config).pack(side=tk.RIGHT, padx=5)
+
+        columns_frame = ttk.Frame(self.config_frame)
+        columns_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=6)
+        columns_frame.columnconfigure(0, weight=1)
+        columns_frame.columnconfigure(1, weight=1)
+
+        self.config_entries = {"analysis": {}, "poem": {}}
+        fields = [
+            ('provider', 'Provider (ollama, gemini, openai_compatible, anthropic, buas)'),
+            ('llm', 'LLM Model Name (e.g. llama3.1:8b, llama3.2, gemini-2.0-flash)'),
+            ('base_url', 'Base URL (e.g. http://localhost:11434/v1)'),
+            ('temperature', 'Temperature (0.0 - 1.5)'),
+            ('name', 'Assistant Display Name'),
+            ('description', 'System Prompt / Instructions'),
+        ]
+
+        for col_idx, (role, role_title) in enumerate([
+            ("analysis", "1. Analysis Model (Psychoanalyst)"),
+            ("poem", "2. Poem Model (Lyrical Poet)"),
+        ]):
+            role_box = ttk.LabelFrame(columns_frame, text=role_title, padding=10)
+            role_box.grid(row=0, column=col_idx, sticky="nsew", padx=8, pady=4)
+
+            for field, label in fields:
+                field_frame = ttk.Frame(role_box)
+                field_frame.pack(fill=tk.X, pady=4)
+                ttk.Label(field_frame, text=f"{label}:", font=('Arial', 9, 'bold')).pack(anchor='w')
+                if field == 'description':
+                    entry = scrolledtext.ScrolledText(field_frame, height=6, wrap=tk.WORD, width=42)
+                    entry.configure(font=('Arial', 9))
+                elif field == 'provider':
+                    entry = ttk.Combobox(
+                        field_frame,
+                        values=["ollama", "gemini", "openai_compatible", "anthropic", "buas"],
+                        width=40,
+                    )
+                else:
+                    entry = ttk.Entry(field_frame, width=42)
+                entry.pack(fill=tk.X, pady=2)
+                self.config_entries[role][field] = entry
+
         self.config_status = ttk.Label(self.config_frame, text="", font=('Arial', 10))
-        self.config_status.pack()
+        self.config_status.pack(pady=6)
+
+    def copy_analysis_to_poem(self):
+        for field in ('provider', 'llm', 'base_url'):
+            src = self.config_entries['analysis'].get(field)
+            dst = self.config_entries['poem'].get(field)
+            if src and dst:
+                val = src.get().strip()
+                dst.delete(0, tk.END)
+                dst.insert(0, val)
+        self.config_status.config(text="Copied Provider, Model & Base URL to Poem Model. Click 'Save Both Models' to save.", foreground="blue")
 
     def load_model_config(self):
-        # If chat isn't available, skip loading config and show a warning
         if not HAVE_CHAT:
             msg = "LLM features unavailable: 'chat' module not installed. Model configuration is disabled."
             self.config_status.config(text=msg, foreground="red")
-            print(f"[Warning] {msg}")
             return
 
-        # Ensure we are in the right directory for .env if chat.py needs it
-        # chat.py usually expects .env in its own dir or current dir
-        os.chdir(PROJECT_ROOT / "analysis_watcher") 
         try:
-            model_key = '8a79f5ec-c5dd-448c-9611-99610792a04b' if self.model_var.get() == "Analysis Model" else '959058ad-4417-49e3-9e71-252ee2fb033d'
-            model = LLMModel(model_key)
-            model.initialize()
+            for role in ("analysis", "poem"):
+                model = LLMModel(role)
+                try:
+                    model.initialize()
+                except Exception:
+                    pass
+                cfg = model.get_config_dict()
+                for field, entry in self.config_entries[role].items():
+                    value = cfg.get(field, getattr(model, f'_{field}', ''))
+                    if isinstance(entry, scrolledtext.ScrolledText):
+                        entry.delete('1.0', tk.END)
+                        if value is not None:
+                            entry.insert('1.0', str(value))
+                    else:
+                        entry.delete(0, tk.END)
+                        if value is not None:
+                            entry.insert(0, str(value))
 
-            for field, entry in self.config_entries.items():
-                if isinstance(entry, scrolledtext.ScrolledText):
-                    entry.delete('1.0', tk.END)
-                    value = getattr(model, f'_{field}', '')
-                    if value: entry.insert('1.0', value)
-                else:
-                    entry.delete(0, tk.END)
-                    value = getattr(model, f'_{field}', '')
-                    if value: entry.insert(0, str(value))
-
-            self.config_status.config(text="Configuration loaded successfully", foreground="green")
+            self.config_status.config(text="Both Analysis and Poem model configurations loaded.", foreground="green")
         except Exception as e:
             self.config_status.config(text=f"Error loading config: {e}", foreground="red")
-            print(f"Error: {e}")
 
     def save_model_config(self):
         if not HAVE_CHAT:
             msg = "LLM features unavailable: 'chat' module not installed. Cannot save configuration."
             self.config_status.config(text=msg, foreground="red")
-            print(f"[Warning] {msg}")
             return
 
-        os.chdir(PROJECT_ROOT / "analysis_watcher")
         try:
-            model_key = '8a79f5ec-c5dd-448c-9611-99610792a04b' if self.model_var.get() == "Analysis Model" else '959058ad-4417-49e3-9e71-252ee2fb033d'
-            model = LLMModel(model_key)
-            model.initialize()
-            config = {}
-            for field, entry in self.config_entries.items():
-                if isinstance(entry, scrolledtext.ScrolledText): value = entry.get('1.0', tk.END).strip()
-                else: value = entry.get().strip()
-                if value:
-                    if field == 'temperature': config[field] = float(value)
-                    else: config[field] = value
-            response = model.update_assistant(**config)
-            if response.get('status') == 'Success':
-                self.config_status.config(text="Configuration saved successfully!", foreground="green")
-                messagebox.showinfo("Success", "Model configuration updated successfully!")
-            else:
-                self.config_status.config(text="Failed to save configuration", foreground="red")
+            for role in ("analysis", "poem"):
+                model = LLMModel(role)
+                config = {}
+                for field, entry in self.config_entries[role].items():
+                    if isinstance(entry, scrolledtext.ScrolledText):
+                        value = entry.get('1.0', tk.END).strip()
+                    else:
+                        value = entry.get().strip()
+                    if value != "":
+                        if field == 'temperature':
+                            config[field] = float(value)
+                        else:
+                            config[field] = value
+                model.update_assistant(**config)
+
+            self.config_status.config(text="Both Analysis and Poem configurations saved successfully!", foreground="green")
+            messagebox.showinfo("Success", "Both Analysis and Poem model configurations updated successfully!")
         except Exception as e:
             self.config_status.config(text=f"Error: {e}", foreground="red")
-            print(f"Error: {e}")
 
     def get_credits_statistics(self):
         """Read from centralized logs"""

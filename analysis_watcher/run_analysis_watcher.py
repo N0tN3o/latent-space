@@ -437,8 +437,10 @@ def run_analysis_pipeline():
         return False
 
 
-def watch_loop(stop_event=None):
+def watch_loop(stop_event=None, runner_fn=None):
     """Continuously watch shared_output/image.png for changes and trigger the pipeline."""
+    if runner_fn is None:
+        runner_fn = run_analysis_pipeline
     image_path = SHARED_DIR / "image.png"
     last_modified_time = image_path.stat().st_mtime if image_path.exists() else None
 
@@ -452,7 +454,7 @@ def watch_loop(stop_event=None):
                 elif current_mtime != last_modified_time:
                     print("\n[analysis_watcher] Detected new drawing in image.png, running analysis pipeline...")
                     last_modified_time = current_mtime
-                    run_analysis_pipeline()
+                    runner_fn()
         except Exception as e:
             print(f"[analysis_watcher] Watch error: {e}")
         time.sleep(1.0)
@@ -463,3 +465,8 @@ if __name__ == "__main__":
         watch_loop()
     except KeyboardInterrupt:
         print("\nStopping file watch...")
+        try:
+            from start_everything import stop_ollama_serving
+            stop_ollama_serving()
+        except Exception:
+            pass
