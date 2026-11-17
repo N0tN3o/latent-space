@@ -177,6 +177,20 @@
             font-size: 0.88rem;
             text-align: center;
         }
+
+        .draw-error-banner {
+            display: none;
+            width: 100%;
+            max-width: 1120px;
+            margin-bottom: 12px;
+            padding: 12px 18px;
+            border-radius: 10px;
+            background: rgba(239, 68, 68, 0.14);
+            border: 1px solid #ef4444;
+            color: #fecaca;
+            font-size: 0.9rem;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
@@ -205,6 +219,7 @@
     </header>
 
     <div class="workspace">
+        <div class="draw-error-banner" id="drawErrorBanner"></div>
         <div class="canvas-shell">
             <canvas id="artCanvas" width="1280" height="720"></canvas>
             <canvas id="cursorCanvas" width="1280" height="720"></canvas>
@@ -248,12 +263,77 @@
         let hasDrawn = false;
         const dwellRadius = 0.03;
 
-        let timedSessionActive = false;
+        // Explicit State Machine
+        const STATES = {
+            IDLE: 'IDLE',
+            SEARCHING: 'SEARCHING',
+            CALIBRATING: 'CALIBRATING',
+            DRAWING: 'DRAWING',
+            SUBMITTING: 'SUBMITTING',
+        };
+        let gazeState = STATES.IDLE;
+        let sessionTimerId = null;
         let timedEndTimestamp = 0;
 
         // Gaze control mode: 'hybrid' (Stabilized Direct + Anti-Snap) or 'flow' (Gaze Glider Steering)
         let gazeControlMode = 'hybrid';
         let cursorPos = [0.5, 0.5];
+
+        function clearSessionTimer() {
+            if (sessionTimerId !== null) {
+                clearInterval(sessionTimerId);
+                sessionTimerId = null;
+            }
+        }
+
+        function showDrawError(errorCode, message) {
+            const banner = document.getElementById('drawErrorBanner');
+            const codeText = errorCode ? `[${errorCode}] ` : '';
+            banner.textContent = `${codeText}${message || 'Pipeline error occurred. Please try again.'}`;
+            banner.style.display = 'block';
+        }
+
+        function hideDrawError() {
+            const banner = document.getElementById('drawErrorBanner');
+            banner.style.display = 'none';
+            banner.textContent = '';
+        }
+
+        function setState(nextState) {
+            if (nextState !== STATES.DRAWING) {
+                clearSessionTimer();
+            }
+            gazeState = nextState;
+
+            if (nextState === STATES.IDLE) {
+                cursorCtx.clearRect(0, 0, W, H);
+                prevPoint = null;
+            } else if (nextState === STATES.SEARCHING) {
+                calibSamples = [];
+                centerSamples = [];
+                cursorCtx.clearRect(0, 0, W, H);
+                prevPoint = null;
+                statusBadge.textContent = 'Searching for gaze — Step in front of camera to begin';
+            } else if (nextState === STATES.CALIBRATING) {
+                hideDrawError();
+                resetArtCanvas();
+                hasDrawn = false;
+                calibSamples = [];
+                centerSamples = [];
+                cursorPos = [0.5, 0.5];
+                prevPoint = null;
+                drawCalibrationTarget(0);
+                statusBadge.textContent = 'Calibrating 0% — Look at the center target first';
+            } else if (nextState === STATES.DRAWING) {
+                hideDrawError();
+                cursorPos = [0.5, 0.5];
+                prevPoint = null;
+                cursorCtx.clearRect(0, 0, W, H);
+            } else if (nextState === STATES.SUBMITTING) {
+                cursorCtx.clearRect(0, 0, W, H);
+                prevPoint = null;
+            }
+        }
 
         window.toggleGazeMode = function() {
             gazeControlMode = (gazeControlMode === 'hybrid') ? 'flow' : 'hybrid';
@@ -450,28 +530,47 @@
         });
 
         window.clearCanvas = function() {
+            clearSessionTimer();
+            hideDrawError();
             resetArtCanvas();
             cursorCtx.clearRect(0, 0, W, H);
             prevPoint = null;
             hasDrawn = false;
             cursorPos = [0.5, 0.5];
+            if (webcamRunning && gazeState !== STATES.CALIBRATING) {
+                setState(STATES.DRAWING);
+            }
             statusBadge.textContent = 'Canvas cleared';
         };
 
         window.startTimedSession = function() {
-            window.clearCanvas();
-            timedSessionActive = true;
+            clearSessionTimer();
+            hideDrawError();
+            resetArtCanvas();
+            cursorCtx.clearRect(0, 0, W, H);
+            prevPoint = null;
+            hasDrawn = false;
+            cursorPos = [0.5, 0.5];
+            setState(STATES.DRAWING);
+
             timedEndTimestamp = performance.now() + 15000;
-            const timerInterval = setInterval(() => {
-                if (!timedSessionActive) {
-                    clearInterval(timerInterval);
+            statusBadge.textContent = `Drawing (${gazeControlMode.toUpperCase()})... 15.0s remaining`;
+            sessionTimerId = setInterval(() => {
+                if (gazeState !== STATES.DRAWING) {
+                    clearSessionTimer();
                     return;
                 }
                 const rem = (timedEndTimestamp - performance.now()) / 1000;
                 if (rem <= 0) {
-                    timedSessionActive = false;
-                    clearInterval(timerInterval);
-                    window.submitDrawing();
+                    clearSessionTimer();
+                    if (hasDrawn) {
+                        window.submitDrawing();
+                    } else if (webcamRunning) {
+                        setState(STATES.SEARCHING);
+                    } else {
+                        setState(STATES.IDLE);
+                        statusBadge.textContent = 'Session ended (blank canvas)';
+                    }
                 } else {
                     statusBadge.textContent = `Drawing (${gazeControlMode.toUpperCase()})... ${rem.toFixed(1)}s remaining`;
                 }
@@ -479,10 +578,14 @@
         };
 
         window.submitDrawing = async function() {
+            if (gazeState === STATES.SUBMITTING) {
+                return;
+            }
             if (!hasDrawn) {
                 alert('Please draw something on the canvas first (using your eyes or mouse/touch).');
                 return;
             }
+            setState(STATES.SUBMITTING);
             const btn = document.getElementById('submitBtn');
             btn.disabled = true;
             btn.textContent = 'Uploading & Analyzing...';
@@ -497,46 +600,75 @@
                 });
                 const result = await res.json();
                 if (res.ok && result.status === 'success') {
-                    statusBadge.textContent = 'Analysis Pipeline Running — Updating Gallery...';
-                    pollPipelineUntilDone();
+                    statusBadge.textContent = result.queue_length > 1
+                        ? `Queued (#${result.queue_length}) — Generating reading...`
+                        : 'Analysis Pipeline Running — Generating reading...';
+                    pollPipelineUntilDone(result.run_id);
                 } else {
-                    alert('Upload failed: ' + (result.error || 'Unknown error'));
+                    showDrawError(result.error_code, result.error || 'Upload failed');
                     btn.disabled = false;
                     btn.textContent = 'Submit & Analyze';
+                    setState(webcamRunning ? STATES.SEARCHING : STATES.IDLE);
                 }
             } catch (e) {
-                alert('Error submitting drawing: ' + e);
+                showDrawError('ERR_UPLOAD', 'Error submitting drawing: ' + e);
                 btn.disabled = false;
                 btn.textContent = 'Submit & Analyze';
+                setState(webcamRunning ? STATES.SEARCHING : STATES.IDLE);
             }
         };
 
-        async function pollPipelineUntilDone() {
+        async function pollPipelineUntilDone(submittedRunId) {
             const btn = document.getElementById('submitBtn');
-            for (let i = 0; i < 45; i++) {
-                await new Promise(r => setTimeout(r, 1500));
+            for (let i = 0; i < 60; i++) {
+                await new Promise(r => setTimeout(r, 1200));
                 try {
-                    const res = await fetch('/api/pipeline/status');
+                    const res = await fetch('/api/pipeline/status?t=' + Date.now());
                     const state = await res.json();
-                    if (!state.running) {
-                        statusBadge.textContent = 'Artwork & Poem Ready — Redirecting to Gallery...';
+                    const stillWaiting = state.running
+                        && (state.active_run_id === submittedRunId || state.queue_length > 0);
+                    if (!stillWaiting && state.state !== 'QUEUED') {
                         btn.disabled = false;
                         btn.textContent = 'Submit & Analyze';
-                        setTimeout(() => { window.location.href = '/'; }, 1200);
+                        if (state.last_status === 'error') {
+                            const code = state.last_error_code || 'ERR_PIPELINE_FAILED';
+                            showDrawError(code, `We could not complete your reading (${state.last_error || 'AI error'}). Please try again.`);
+                            statusBadge.textContent = `Failed (${code}) — Ready to retry`;
+                        } else {
+                            hideDrawError();
+                            statusBadge.textContent = webcamRunning
+                                ? 'Artwork & Poem Ready on Gallery — Next visitor may begin'
+                                : 'Artwork & Poem Ready — Redirecting to Gallery...';
+                        }
+                        if (!webcamRunning) {
+                            if (state.last_status !== 'error') {
+                                setTimeout(() => { window.location.href = '/'; }, 1200);
+                            } else {
+                                setState(STATES.IDLE);
+                            }
+                        } else {
+                            setTimeout(() => {
+                                if (gazeState === STATES.SUBMITTING) {
+                                    setState(STATES.SEARCHING);
+                                }
+                            }, 2500);
+                        }
                         return;
                     }
                 } catch (_) {}
             }
             btn.disabled = false;
             btn.textContent = 'Submit & Analyze';
-            window.location.href = '/';
+            if (webcamRunning) {
+                setState(STATES.SEARCHING);
+            } else {
+                window.location.href = '/';
+            }
         }
 
         // --- MediaPipe FaceLandmarker Webcam Gaze Tracking ---
         let faceLandmarker = null;
         let webcamRunning = false;
-        let isCalibrating = false;
-        let hasCalibration = false;
         let lastGazeTs = 0;
         const GAZE_LOSS_TIMEOUT_MS = 2000;
         let calibSamples = [];
@@ -570,7 +702,7 @@
             if (e.code === 'Space' && webcamRunning) {
                 e.preventDefault();
                 window.recenterCursorNow();
-            } else if ((e.key === 'c' || e.key === 'C') && webcamRunning) {
+            } else if ((e.key === 'c' || e.key === 'C') && webcamRunning && gazeState !== STATES.SUBMITTING) {
                 e.preventDefault();
                 window.startCalibration();
             } else if (e.key === 'm' || e.key === 'M') {
@@ -580,16 +712,7 @@
         });
 
         window.startCalibration = function() {
-            timedSessionActive = false;
-            resetArtCanvas();
-            calibSamples = [];
-            centerSamples = [];
-            isCalibrating = true;
-            hasCalibration = false;
-            cursorPos = [0.5, 0.5];
-            prevPoint = null;
-            drawCalibrationTarget(0);
-            statusBadge.textContent = 'Calibrating 0% — Look at the center target first';
+            setState(STATES.CALIBRATING);
         };
 
         window.startWebcamGaze = async function() {
@@ -741,12 +864,11 @@
                 eyeCtx.clearRect(0, 0, eyeCanvas.width, eyeCanvas.height);
 
                 if (res.faceLandmarks && res.faceLandmarks.length > 0) {
-                    const gazeWasLost = lastGazeTs > 0 && (now - lastGazeTs) > GAZE_LOSS_TIMEOUT_MS;
                     lastGazeTs = now;
 
-                    // If gaze was lost and a new visitor steps up, start fresh calibration
-                    if (gazeWasLost && !hasCalibration && !isCalibrating) {
-                        window.startCalibration();
+                    // Transition SEARCHING -> CALIBRATING when a visitor's face appears
+                    if (gazeState === STATES.SEARCHING) {
+                        setState(STATES.CALIBRATING);
                     }
 
                     const lm = res.faceLandmarks[0];
@@ -774,7 +896,7 @@
                         }
                     }
 
-                    if (isCalibrating && smoothedNorm && !isBlinking) {
+                    if (gazeState === STATES.CALIBRATING && smoothedNorm && !isBlinking) {
                         calibSamples.push([...smoothedNorm]);
                         const pct = Math.min(100, Math.round((calibSamples.length / CALIB_NEEDED) * 100));
                         if (pct <= 35) {
@@ -801,18 +923,13 @@
 
                             const p10 = Math.floor(xs.length * 0.10);
                             const p90 = Math.floor(xs.length * 0.90);
-                            // Physiological minimum span prevents corner-jumping when user stares mostly near center
                             spanNorm = [
                                 Math.max(0.11, xs[p90] - xs[p10]),
                                 Math.max(0.075, ys[p90] - ys[p10])
                             ];
-                            isCalibrating = false;
-                            hasCalibration = true;
-                            cursorPos = [0.5, 0.5];
-                            prevPoint = null;
                             window.startTimedSession();
                         }
-                    } else if (!isCalibrating && smoothedNorm) {
+                    } else if (gazeState === STATES.DRAWING && smoothedNorm) {
                         if (!isBlinking) {
                             const linX = Math.max(0, Math.min(1, 0.5 + (smoothedNorm[0] - centerNorm[0]) / spanNorm[0]));
                             const linY = Math.max(0, Math.min(1, 0.5 + (smoothedNorm[1] - centerNorm[1]) / spanNorm[1]));
@@ -840,15 +957,14 @@
                         updateStroke(cursorPos[0], cursorPos[1]);
                     }
                 } else if (lastGazeTs > 0 && (now - lastGazeTs) > GAZE_LOSS_TIMEOUT_MS) {
-                    if (isCalibrating) {
-                        calibSamples = [];
-                        centerSamples = [];
-                        drawCalibrationTarget(0);
-                        statusBadge.textContent = 'Searching for gaze — Look at the screen to calibrate';
-                    } else if (hasCalibration) {
-                        hasCalibration = false;
-                        prevPoint = null;
-                        statusBadge.textContent = 'Gaze lost — Step in front of the camera to recalibrate';
+                    if (gazeState === STATES.CALIBRATING) {
+                        setState(STATES.SEARCHING);
+                    } else if (gazeState === STATES.DRAWING) {
+                        if (hasDrawn) {
+                            window.submitDrawing();
+                        } else {
+                            setState(STATES.SEARCHING);
+                        }
                     }
                 }
             }

@@ -313,7 +313,8 @@ def _run_zero_shot_hf_model(filename: str, model_id: str, cache_dict: dict, is_s
 
         def top_match(prompt_pairs):
             texts = [p[0] for p in prompt_pairs]
-            inputs = processor(text=texts, images=pil_img, return_tensors="pt", padding=True)
+            pad_mode = "max_length" if is_siglip else True
+            inputs = processor(text=texts, images=pil_img, return_tensors="pt", padding=pad_mode)
             with torch.no_grad():
                 outputs = model(**inputs)
                 logits = outputs.logits_per_image[0]

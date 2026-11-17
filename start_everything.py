@@ -32,8 +32,12 @@ def _is_ollama_running(host_url: str = "http://localhost:11434") -> bool:
         return False
 
 
-def stop_ollama_serving():
-    """Unload any loaded Ollama models from VRAM/RAM and stop the Ollama server process."""
+def stop_ollama_serving(kill_external: bool = False, owned_proc: subprocess.Popen = None):
+    """
+    Unload loaded Ollama models from VRAM/RAM (keep_alive: 0).
+    Only terminates an Ollama server process if we spawned it (`owned_proc`)
+    or if explicitly requested by an operator (`kill_external=True`).
+    """
     settings = load_settings()
     ai_cfg = settings.get("ai", {})
     base_url = (
@@ -78,42 +82,53 @@ def stop_ollama_serving():
             except Exception:
                 pass
 
-    # 2. Terminate local Ollama serving processes
+    # 2. Terminate owned Ollama process first, if any
     stopped_any = False
-    try:
-        import psutil
-        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-            try:
-                pname = (proc.info.get("name") or "").lower()
-                cmdline = " ".join(proc.info.get("cmdline") or []).lower()
-                if "ollama" in pname or "ollama serve" in cmdline or "ollama.exe" in pname:
-                    proc.terminate()
-                    stopped_any = True
-            except Exception:
-                pass
-    except ImportError:
-        pass
-
-    if platform.system() == "Windows":
-        for exe_name in ("ollama.exe", "ollama app.exe"):
-            try:
-                res = subprocess.run(
-                    ["taskkill", "/F", "/IM", exe_name, "/T"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if res.returncode == 0:
-                    stopped_any = True
-            except Exception:
-                pass
-    else:
+    if owned_proc is not None and owned_proc.poll() is None:
         try:
-            res = subprocess.run(["pkill", "-f", "ollama"], capture_output=True, text=True, timeout=5)
-            if res.returncode == 0:
-                stopped_any = True
+            owned_proc.terminate()
+            owned_proc.wait(timeout=5)
+            stopped_any = True
         except Exception:
-            pass
+            try:
+                owned_proc.kill()
+                stopped_any = True
+            except Exception:
+                pass
+
+    # 3. Only terminate external Ollama processes if explicitly requested (e.g. Admin button)
+    if kill_external:
+        exact_names = {"ollama", "ollama.exe"}
+        try:
+            import psutil
+            for proc in psutil.process_iter(["pid", "name"]):
+                try:
+                    pname = (proc.info.get("name") or "").lower()
+                    if pname in exact_names:
+                        proc.terminate()
+                        stopped_any = True
+                except Exception:
+                    pass
+        except ImportError:
+            if platform.system() == "Windows":
+                try:
+                    res = subprocess.run(
+                        ["taskkill", "/F", "/IM", "ollama.exe", "/T"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if res.returncode == 0:
+                        stopped_any = True
+                except Exception:
+                    pass
+            else:
+                try:
+                    res = subprocess.run(["pkill", "-x", "ollama"], capture_output=True, text=True, timeout=5)
+                    if res.returncode == 0:
+                        stopped_any = True
+                except Exception:
+                    pass
 
     if stopped_any:
         print("  ✓ Stopped Ollama server")
@@ -146,6 +161,7 @@ class LatentSpaceStarter:
         self.mode = mode
         self.port = port
         self.processes = []
+        self.ollama_proc = None
         self.running = True
         self._stopped = False
 
@@ -200,7 +216,7 @@ class LatentSpaceStarter:
 
         ollama_bin = shutil.which("ollama")
         if ollama_bin:
-            self.run_command([ollama_bin, "serve"], "Ollama Local AI Server")
+            self.ollama_proc = self.run_command([ollama_bin, "serve"], "Ollama Local AI Server")
 
     def start_server_and_pipeline(self):
         self.ensure_ollama_if_configured()
@@ -210,7 +226,7 @@ class LatentSpaceStarter:
             [py, str(server_script)],
             f"Unified Server & Analysis Pipeline (Port {self.port})",
             cwd=PROJECT_DIR,
-            env={"PORT": str(self.port)},
+            env={"PORT": str(self.port), "LATENT_SPACE_MANAGED": "1"},
         )
 
     def start_desktop_gaze_painter(self):
@@ -235,6 +251,8 @@ class LatentSpaceStarter:
         self._stopped = True
         print("\nStopping all services...")
         for name, proc in reversed(self.processes):
+            if proc is self.ollama_proc:
+                continue
             if proc.poll() is None:
                 print(f"  Stopping {name}...")
                 proc.terminate()
@@ -242,7 +260,8 @@ class LatentSpaceStarter:
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-        stop_ollama_serving()
+        if self.mode in ("server", "full"):
+            stop_ollama_serving(kill_external=False, owned_proc=self.ollama_proc)
         print("✓ All services stopped")
 
     def monitor_processes(self):

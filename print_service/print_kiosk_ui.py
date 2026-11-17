@@ -19,13 +19,12 @@ from PyQt6.QtGui import QFont, QPixmap, QIcon
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-from config_manager import SHARED_DIR, DOCS_DIR, PRINTED_DIR
+from config_manager import SHARED_DIR, DOCS_DIR, PRINTED_DIR, atomic_write_text, load_settings
 
 # Configuration
 INACTIVITY_TIMEOUT_SEC = 60  # Reset search after 60s of no activity
 
 PRINT_LOG = DOCS_DIR / "print_history.json"
-PRINTER_NAME = "default"
 
 class PrintRecord:
     """Represents a single print/drawing"""
@@ -61,7 +60,7 @@ class PrintRecord:
             'timestamp': datetime.now().isoformat(),
             'user_timestamp': self.timestamp.isoformat()
         })
-        with open(PRINT_LOG, 'w') as f: json.dump(history, f, indent=2)
+        atomic_write_text(PRINT_LOG, json.dumps(history, indent=2), encoding="utf-8")
         self.printed = True
     
     def get_thumbnail(self, size=(200, 280)):
@@ -114,9 +113,7 @@ class PrintRecord:
 class PDFWatcher(FileSystemEventHandler):
     def __init__(self, callback): self.callback = callback
     def on_created(self, event):
-        # FIX 1: Listen for PDF OR PNG. 
-        is_valid_file = event.src_path.endswith('.pdf') or event.src_path.endswith('.png')
-        if is_valid_file and 'print_' in event.src_path:
+        if event.src_path.endswith('.pdf') and 'print_' in event.src_path:
             self.callback(event.src_path)
 
 class PrintQueueItem(QWidget):
@@ -139,14 +136,14 @@ class PrintQueueItem(QWidget):
         time_label = QLabel(record.timestamp.strftime("%I:%M %p"))
         time_label.setFont(QFont("Arial", 14))
         info_layout.addWidget(time_label)
-        status_label = QLabel("✓ Already Printed" if record.printed else "○ Available")
+        status_label = QLabel("Already Printed" if record.printed else "Available")
         status_label.setFont(QFont("Arial", 12))
         status_label.setStyleSheet("color: #888;" if record.printed else "color: #4CAF50;")
         info_layout.addWidget(status_label)
         info_layout.addStretch()
         layout.addLayout(info_layout, stretch=1)
         
-        print_btn = QPushButton("🖨️ PRINT")
+        print_btn = QPushButton("PRINT")
         print_btn.setFont(QFont("Arial", 18, QFont.Weight.Bold))
         print_btn.setFixedSize(150, 80)
         print_btn.clicked.connect(lambda: self.print_clicked.emit(self.record))
@@ -228,14 +225,14 @@ class EnhancedPrintKioskUI(QMainWindow):
         layout.addLayout(header)
         
         search_layout = QHBoxLayout()
-        search_label = QLabel("🔍 Search by date:")
+        search_label = QLabel("Search by date:")
         search_label.setFont(QFont("Arial", 16))
         search_layout.addWidget(search_label)
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("e.g., 'today', 'yesterday', 'January 15'")
         self.search_input.textChanged.connect(self.on_search_changed)
         search_layout.addWidget(self.search_input, stretch=1)
-        refresh_btn = QPushButton("🔄 Refresh")
+        refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.refresh_queue)
         search_layout.addWidget(refresh_btn)
         layout.addLayout(search_layout)
@@ -312,9 +309,11 @@ class EnhancedPrintKioskUI(QMainWindow):
         self.update_queue_display()
 
     def update_queue_display(self):
-        for i in reversed(range(self.queue_layout.count())): 
-            w = self.queue_layout.itemAt(i).widget()
-            if w: w.setParent(None)
+        while self.queue_layout.count():
+            item = self.queue_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
         
         total = len(self.records)
         filtered = len(self.filtered_records)
@@ -329,18 +328,30 @@ class EnhancedPrintKioskUI(QMainWindow):
 
     def on_new_pdf(self, pdf_path):
         print(f"File Event Detected: {pdf_path}")
-        self.refresh_queue()
+        QTimer.singleShot(300, self.refresh_queue)
 
     def print_pdf(self, record):
         reply = QMessageBox.question(self, "Confirm Print", f"Print drawing from {record.timestamp.strftime('%H:%M')}?", 
                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes: return
-        
+
+        printer_name = (load_settings().get("printing", {}).get("printer_name", "default") or "").strip()
+        is_custom_printer = bool(printer_name and printer_name.lower() != "default")
+
         try:
             if sys.platform == "win32":
-                os.startfile(str(record.path), "print")
+                if is_custom_printer:
+                    safe_printer = printer_name.replace('"', '`"')
+                    ps_cmd = f'Start-Process -FilePath "{record.path}" -Verb PrintTo -ArgumentList \'"{safe_printer}"\''
+                    subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], check=True)
+                else:
+                    os.startfile(str(record.path), "print")
             else:
-                subprocess.run(["lp", "-d", PRINTER_NAME, str(record.path)], check=True)
+                cmd = ["lp"]
+                if is_custom_printer:
+                    cmd.extend(["-d", printer_name])
+                cmd.append(str(record.path))
+                subprocess.run(cmd, check=True)
             record.mark_as_printed()
             QMessageBox.information(self, "Success", "Print job sent!")
             self.update_queue_display()

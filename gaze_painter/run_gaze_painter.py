@@ -140,20 +140,38 @@ class GazeTrackingPainter:
 
         self._reset_after_save()
 
+    def transition_to(self, new_state: int):
+        """Explicit state machine transition handling all side effects in one place."""
+        self.state = new_state
+        if new_state == STATE_SEARCHING:
+            self.has_calibration = False
+            self.tracker.is_calibrating = False
+            self.close_canvas()
+            self.status_text = "Searching for gaze..."
+        elif new_state == STATE_CALIBRATING:
+            self.has_calibration = False
+            self.painter.clear()
+            self.tracker.start_auto_calibration()
+            self.open_canvas()
+            self.status_text = self.get_calibration_progress_text()
+        elif new_state == STATE_DRAWING:
+            self.has_calibration = True
+            self.painter.clear()
+            self.draw_start_time = time.time()
+            self.open_canvas()
+        elif new_state == STATE_SAVING:
+            self.status_text = "Saving drawing..."
+
     def _reset_after_save(self):
         self.close_canvas()
         self.painter.clear()
         now = time.time()
         if self.last_gaze_time is not None and (now - self.last_gaze_time) < GAZE_LOSS_TIMEOUT_SEC:
             print("Gaze present. Starting new drawing session.")
-            self.state = STATE_DRAWING
-            self.draw_start_time = now
-            self.open_canvas()
+            self.transition_to(STATE_DRAWING)
         else:
             print("Gaze lost. Returning to search state.")
-            self.has_calibration = False
-            self.state = STATE_SEARCHING
-            self.status_text = "Searching for gaze..."
+            self.transition_to(STATE_SEARCHING)
 
     def run(self):
         print("=" * 60)
@@ -189,20 +207,8 @@ class GazeTrackingPainter:
 
             if self.state == STATE_SEARCHING:
                 self.status_text = "Searching for gaze..."
-                self.close_canvas()
-
                 if gaze_info is not None:
-                    if self.has_calibration:
-                        self.tracker.recenter_now()
-                        self.state = STATE_DRAWING
-                        self.draw_start_time = now
-                        self.painter.clear()
-                        self.open_canvas()
-                    else:
-                        self.state = STATE_CALIBRATING
-                        self.tracker.start_auto_calibration()
-                        self.status_text = self.get_calibration_progress_text()
-                        self.open_canvas()
+                    self.transition_to(STATE_CALIBRATING)
 
             elif self.state == STATE_CALIBRATING:
                 if self.check_gaze_loss(now):
@@ -212,11 +218,7 @@ class GazeTrackingPainter:
                 calibration_done = self.tracker.add_calibration_sample(gaze_info)
 
                 if calibration_done:
-                    self.has_calibration = True
-                    self.state = STATE_DRAWING
-                    self.draw_start_time = now
-                    self.painter.clear()
-                    self.open_canvas()
+                    self.transition_to(STATE_DRAWING)
 
             elif self.state == STATE_DRAWING:
                 if self.check_gaze_loss(now):
@@ -231,8 +233,7 @@ class GazeTrackingPainter:
                     self.painter.update(norm_gaze, self.dt)
 
                 if remaining <= 0:
-                    self.state = STATE_SAVING
-                    self.status_text = "Saving..."
+                    self.transition_to(STATE_SAVING)
 
             elif self.state == STATE_SAVING:
                 self.status_text = "Saving drawing..."
@@ -253,12 +254,9 @@ class GazeTrackingPainter:
             if key == ord("q"):
                 self.running = False
             elif key == ord("c"):
-                print("Manual recalibration triggered.")
-                self.has_calibration = False
-                self.state = STATE_CALIBRATING
-                self.tracker.start_auto_calibration()
-                self.painter.clear()
-                self.open_canvas()
+                if self.state != STATE_SAVING:
+                    print("Manual recalibration triggered.")
+                    self.transition_to(STATE_CALIBRATING)
             elif key == ord("m"):
                 self.tracker.toggle_control_mode()
             elif key == ord(" "):
@@ -272,16 +270,11 @@ class GazeTrackingPainter:
         if gaze_lost:
             if self.state == STATE_CALIBRATING:
                 print("Gaze lost during calibration. Returning to search state.")
-                self.tracker.is_calibrating = False
-                self.has_calibration = False
-                self.state = STATE_SEARCHING
-                self.status_text = "Searching for gaze..."
+                self.transition_to(STATE_SEARCHING)
                 return True
             elif self.state == STATE_DRAWING:
                 print("Gaze lost during drawing. Saving and resetting.")
-                self.has_calibration = False
-                self.state = STATE_SAVING
-                self.status_text = "Saving..."
+                self.transition_to(STATE_SAVING)
                 return True
         return False
 

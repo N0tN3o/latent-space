@@ -1,6 +1,4 @@
 opencv-python
-tensorflow
-keras
 google-cloud-texttospeech
 requests
 matplotlib

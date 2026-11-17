@@ -252,6 +252,30 @@
                 width: 100% !important;
             }
         }
+
+        .error-banner {
+            max-width: 780px;
+            margin: 0 auto 18px;
+            padding: 14px 20px;
+            border-radius: 10px;
+            border: 1px solid #dc2626;
+            background: #fef2f2;
+            color: #991b1b;
+            text-align: center;
+            font-size: 0.92rem;
+            line-height: 1.5;
+        }
+        .error-banner .error-code-pill {
+            display: inline-block;
+            margin-top: 6px;
+            padding: 2px 10px;
+            border-radius: 6px;
+            background: #fee2e2;
+            border: 1px solid #fca5a5;
+            font-family: Consolas, monospace;
+            font-size: 0.82rem;
+            font-weight: 700;
+        }
         
         @media print {
             audio, .floating-nav { display: none !important; }
@@ -284,6 +308,7 @@
     </nav>
 
     <div class="container">
+        <div id="errorBanner" class="error-banner" style="display: none;"></div>
         <!-- Main scribble centerpiece -->
         <div class="scribble-section">
             <div class="scribble-container">
@@ -511,6 +536,21 @@ No two the same, yet all the same.</div>
         }
 
         function applyViewData(data, isHistorical = false) {
+            const errorBanner = document.getElementById('errorBanner');
+            if (!isHistorical && data.status === 'error') {
+                const code = escapeHtml(data.errorCode || 'ERR_PIPELINE_FAILED');
+                const msg = escapeHtml(
+                    data.userMessage || 'We could not complete your reading. Please try drawing again.'
+                );
+                errorBanner.innerHTML =
+                    `<div><strong>Reading Failed</strong> — ${msg}</div>` +
+                    `<div class="error-code-pill">${code}</div>`;
+                errorBanner.style.display = 'block';
+            } else {
+                errorBanner.style.display = 'none';
+                errorBanner.innerHTML = '';
+            }
+
             if (data.scribblePath) {
                 document.getElementById('mainScribble').src = buildPath(data.scribblePath) + '?t=' + (data.timestamp || Date.now());
             }
@@ -532,6 +572,8 @@ No two the same, yet all the same.</div>
                 poemAudio.load();
                 poemAudio.play().catch(() => {});
             } else {
+                poemAudio.pause();
+                poemAudio.removeAttribute('src');
                 poemAudio.style.display = 'none';
             }
 
@@ -573,7 +615,7 @@ No two the same, yet all the same.</div>
             const item = historyList[historyIdx];
             applyViewData({
                 scribblePath: item.thumb_url,
-                heatmapPath: '/shared_output/heatmap.png',
+                heatmapPath: item.heatmap_url || '/shared_output/heatmap.png',
                 archetype: item.archetype,
                 fractalDimension: item.fractalDimension,
                 spatialEntropy: item.spatialEntropy,
@@ -609,10 +651,13 @@ No two the same, yet all the same.</div>
                 if (response.ok) {
                     const data = await response.json();
                     const sig = JSON.stringify({
+                        st: data.status,
+                        ec: data.errorCode,
                         s: data.scribblePath,
                         h: data.heatmapPath,
                         p: data.psychoanalysis,
                         m: data.poem,
+                        pa: data.poemAudio,
                         pdf: data.printPDF,
                         t: data.timestamp
                     });

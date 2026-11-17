@@ -323,6 +323,21 @@
     <script>
         let allPrints = [];
 
+        function escapeHtml(str) {
+            return String(str ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function safeUrl(url) {
+            const u = String(url ?? '').trim();
+            if (/^(https?:\/\/|\/)/i.test(u)) return escapeHtml(u);
+            return '#';
+        }
+
         async function loadPrints() {
             try {
                 const res = await fetch('/api/files/prints?t=' + Date.now());
@@ -362,19 +377,21 @@
             }
             el.style.display = 'block';
             let parts = [];
-            parts.push(`<strong>${attr.intro_text || 'Made possible by Kasboek.'}</strong>`);
+            parts.push(`<strong>${escapeHtml(attr.intro_text || 'Made possible by Kasboek.')}</strong>`);
             if (attr.website_url) {
-                parts.push(`<a href="${attr.website_url}" target="_blank">${attr.website_label || 'Website'}</a>`);
+                parts.push(`<a href="${safeUrl(attr.website_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(attr.website_label || 'Website')}</a>`);
             }
             if (attr.company_linkedin_url) {
-                parts.push(`<a href="${attr.company_linkedin_url}" target="_blank">${attr.company_linkedin_label || 'LinkedIn'}</a>`);
+                parts.push(`<a href="${safeUrl(attr.company_linkedin_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(attr.company_linkedin_label || 'LinkedIn')}</a>`);
             }
             if (Array.isArray(attr.founders)) {
                 const fLinks = attr.founders
                     .filter(f => f && f.name)
-                    .map(f => f.url ? `<a href="${f.url}" target="_blank">${f.name}</a>` : f.name);
+                    .map(f => f.url
+                        ? `<a href="${safeUrl(f.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(f.name)}</a>`
+                        : escapeHtml(f.name));
                 if (fLinks.length) {
-                    parts.push(`<span>${attr.thanks_text || 'Thank you:'} ${fLinks.join(' · ')}</span>`);
+                    parts.push(`<span>${escapeHtml(attr.thanks_text || 'Thank you:')} ${fLinks.join(' · ')}</span>`);
                 }
             }
             el.innerHTML = parts.join(' &middot; ');
@@ -415,32 +432,48 @@
                 return;
             }
 
-            grid.innerHTML = filtered.map(item => `
+            grid.innerHTML = filtered.map((item, idx) => `
                 <div class="print-card">
-                    <div class="thumb-wrapper" onclick="window.open('${item.pdf_url}', '_blank')">
-                        <img src="${item.thumb_url}?t=${item.timestamp}" alt="${item.name}">
+                    <div class="thumb-wrapper" onclick="openPrintPdf(${idx})">
+                        <img src="${safeUrl(item.thumb_url)}?t=${encodeURIComponent(item.timestamp)}" alt="${escapeHtml(item.name)}">
                         <span class="status-pill ${item.printed ? 'status-printed' : 'status-available'}">
                             ${item.printed ? 'Printed' : 'Available'}
                         </span>
                     </div>
                     <div class="card-body">
                         <div class="meta-row">
-                            <span class="time-title">${item.display_time}</span>
-                            <span class="date-sub">${item.display_date}</span>
+                            <span class="time-title">${escapeHtml(item.display_time)}</span>
+                            <span class="date-sub">${escapeHtml(item.display_date)}</span>
                         </div>
-                        ${item.archetype ? `<div style="font-size: 0.78rem; color: #10b981; text-transform: uppercase; letter-spacing: 1px;">${item.archetype}</div>` : ''}
-                        ${item.poem ? `<div class="poem-preview">${item.poem}</div>` : ''}
+                        ${item.archetype ? `<div style="font-size: 0.78rem; color: #10b981; text-transform: uppercase; letter-spacing: 1px;">${escapeHtml(item.archetype)}</div>` : ''}
+                        ${item.poem ? `<div class="poem-preview">${escapeHtml(item.poem)}</div>` : ''}
                         <div class="card-actions">
-                            <button class="btn btn-primary" onclick="browserPrint('${item.name}', '${item.pdf_url}')">
+                            <button class="btn btn-primary" onclick="browserPrintByIdx(${idx})">
                                 Print Sheet
                             </button>
-                            <button class="btn" onclick="hostPrint('${item.name}')" title="Print directly on the server's connected printer">
+                            <button class="btn" onclick="hostPrintByIdx(${idx})" title="Print directly on the server's connected printer">
                                 Host Print
                             </button>
                         </div>
                     </div>
                 </div>
             `).join('');
+            window._kioskFiltered = filtered;
+        }
+
+        function openPrintPdf(idx) {
+            const item = (window._kioskFiltered || [])[idx];
+            if (item && item.pdf_url) window.open(item.pdf_url, '_blank');
+        }
+
+        function browserPrintByIdx(idx) {
+            const item = (window._kioskFiltered || [])[idx];
+            if (item) browserPrint(item.name, item.pdf_url);
+        }
+
+        function hostPrintByIdx(idx) {
+            const item = (window._kioskFiltered || [])[idx];
+            if (item) hostPrint(item.name);
         }
 
         async function browserPrint(filename, pdfUrl) {

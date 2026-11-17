@@ -9,6 +9,7 @@ logs/
 *.log
 *.flag
 *.db
+analysis_watcher/*.csv
 
 # NFS Share - Do not commit runtime data
 shared_output/

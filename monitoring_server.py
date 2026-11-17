@@ -14,11 +14,12 @@ Serves:
 """
 
 import base64
-import cgi
-import io
+from email.parser import BytesParser
+from email.policy import default as email_default_policy
 import json
 import mimetypes
 import os
+import queue
 import sys
 import threading
 import time
@@ -29,6 +30,8 @@ from urllib.parse import urlparse, parse_qs, unquote
 
 try:
     import psutil
+    # Prime non-blocking CPU percent measurement
+    psutil.cpu_percent(interval=None)
 except ImportError:
     psutil = None
 
@@ -43,6 +46,8 @@ from config_manager import (
     DOCS_DIR,
     LOGS_DIR,
     WEB_UI_DIR,
+    atomic_write_bytes,
+    atomic_write_text,
     load_settings,
     save_settings,
     update_settings_section,
@@ -52,12 +57,17 @@ from config_manager import (
 ensure_directories()
 
 try:
-    from chat import LLMModel
+    from chat import LLMModel, AIGenerationError
     from run_analysis_watcher import (
+        PipelineStageError,
+        generate_run_id,
+        mark_file_printed,
+        remove_from_print_history,
         run_analysis_pipeline,
         send_pdf_to_printer,
-        mark_file_printed,
+        snapshot_drawing_input,
         watch_loop,
+        write_live_image_and_mark_handled,
     )
     AI_AVAILABLE = True
 except Exception as e:
@@ -65,44 +75,137 @@ except Exception as e:
     AI_AVAILABLE = False
 
 _pipeline_lock = threading.Lock()
+_pipeline_queue = queue.Queue()
+_worker_thread = None
 _pipeline_state = {
+    "state": "IDLE",  # "IDLE" | "QUEUED" | "RUNNING" | "ERROR"
     "running": False,
+    "active_run_id": None,
+    "queue_length": 0,
     "last_run": None,
     "last_status": "idle",
+    "last_error_code": None,
     "last_error": None,
 }
 _watcher_thread = None
 _watcher_stop = threading.Event()
+_ollama_cache = {"status": "unknown", "ts": 0.0}
+_ollama_cache_lock = threading.Lock()
 
 
-def trigger_pipeline_async():
-    """Run the analysis pipeline in a background thread if not already running."""
-    if _pipeline_state["running"]:
-        return False
+def _pipeline_worker_loop():
+    """Single dedicated FIFO worker thread processing every queued drawing sequentially."""
+    while True:
+        rid, snap_path, done_event, result_holder = _pipeline_queue.get()
+        try:
+            with _pipeline_lock:
+                _pipeline_state["state"] = "RUNNING"
+                _pipeline_state["running"] = True
+                _pipeline_state["active_run_id"] = rid
+                _pipeline_state["queue_length"] = _pipeline_queue.qsize()
+                _pipeline_state["last_status"] = "running"
+                _pipeline_state["last_error_code"] = None
+                _pipeline_state["last_error"] = None
 
-    def _worker():
-        with _pipeline_lock:
-            _pipeline_state["running"] = True
-            _pipeline_state["last_status"] = "running"
-            _pipeline_state["last_error"] = None
-            try:
-                ok = run_analysis_pipeline()
+            ok = run_analysis_pipeline(run_id=rid, snapshot_path=snap_path, raise_on_error=True)
+            with _pipeline_lock:
                 _pipeline_state["last_status"] = "success" if ok else "failed"
                 _pipeline_state["last_run"] = datetime.now().isoformat()
-            except Exception as exc:
-                _pipeline_state["last_status"] = "error"
-                _pipeline_state["last_error"] = str(exc)
-            finally:
-                _pipeline_state["running"] = False
+                if not ok:
+                    _pipeline_state["last_error_code"] = "ERR_PIPELINE_FAILED"
+                    _pipeline_state["last_error"] = "Pipeline returned failure"
+            if result_holder is not None:
+                result_holder["ok"] = bool(ok)
+                result_holder["run_id"] = rid
 
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
+        except (PipelineStageError, AIGenerationError) as err:
+            with _pipeline_lock:
+                _pipeline_state["last_status"] = "error"
+                _pipeline_state["last_error_code"] = err.code
+                _pipeline_state["last_error"] = str(err)
+                _pipeline_state["last_run"] = datetime.now().isoformat()
+            if result_holder is not None:
+                result_holder["ok"] = False
+                result_holder["run_id"] = rid
+                result_holder["error_code"] = err.code
+                result_holder["error"] = str(err)
+
+        except Exception as exc:
+            with _pipeline_lock:
+                _pipeline_state["last_status"] = "error"
+                _pipeline_state["last_error_code"] = "ERR_PIPELINE_FAILED"
+                _pipeline_state["last_error"] = str(exc)
+                _pipeline_state["last_run"] = datetime.now().isoformat()
+            if result_holder is not None:
+                result_holder["ok"] = False
+                result_holder["run_id"] = rid
+                result_holder["error_code"] = "ERR_PIPELINE_FAILED"
+                result_holder["error"] = str(exc)
+
+        finally:
+            _pipeline_queue.task_done()
+            with _pipeline_lock:
+                _pipeline_state["running"] = False
+                _pipeline_state["active_run_id"] = None
+                qlen = _pipeline_queue.qsize()
+                _pipeline_state["queue_length"] = qlen
+                if qlen > 0:
+                    _pipeline_state["state"] = "QUEUED"
+                elif _pipeline_state["last_status"] == "error":
+                    _pipeline_state["state"] = "ERROR"
+                else:
+                    _pipeline_state["state"] = "IDLE"
+            if done_event is not None:
+                done_event.set()
+
+
+def _ensure_pipeline_worker():
+    global _worker_thread
+    with _pipeline_lock:
+        if _worker_thread is None or not _worker_thread.is_alive():
+            _worker_thread = threading.Thread(target=_pipeline_worker_loop, daemon=True)
+            _worker_thread.start()
+
+
+def enqueue_pipeline_job(
+    source_path: Path = None,
+    image_bytes: bytes = None,
+    run_id: str = None,
+    done_event: threading.Event = None,
+    result_holder: dict = None,
+) -> tuple:
+    """Snapshot drawing input to input_{run_id}.png and enqueue into FIFO worker queue."""
+    if not AI_AVAILABLE:
+        raise RuntimeError("Analysis pipeline is unavailable")
+    _ensure_pipeline_worker()
+    rid = run_id or generate_run_id()
+    if image_bytes is not None:
+        snap = SHARED_DIR / f"input_{rid}.png"
+        atomic_write_bytes(snap, image_bytes)
+    else:
+        _, snap = snapshot_drawing_input(source_path or (SHARED_DIR / "image.png"), run_id=rid)
+
+    _pipeline_queue.put((rid, str(snap), done_event, result_holder))
+    with _pipeline_lock:
+        qlen = _pipeline_queue.qsize()
+        _pipeline_state["queue_length"] = qlen
+        if not _pipeline_state["running"]:
+            _pipeline_state["state"] = "QUEUED"
+    return rid, qlen
+
+
+def trigger_pipeline_async(source_path: Path = None):
+    """Snapshot current drawing and enqueue it on the unbounded FIFO pipeline queue."""
+    if not AI_AVAILABLE:
+        return False
+    enqueue_pipeline_job(source_path=source_path)
     return True
 
 
 def start_background_watcher():
     """Start the file watcher in a daemon thread if not already running externally."""
     global _watcher_thread
+    _ensure_pipeline_worker()
     if _watcher_thread is not None and _watcher_thread.is_alive():
         return
     if get_service_status("run_analysis_watcher") == "running":
@@ -111,25 +214,39 @@ def start_background_watcher():
         _watcher_stop.clear()
         _watcher_thread = threading.Thread(
             target=watch_loop,
-            args=(_watcher_stop, trigger_pipeline_async),
+            args=(_watcher_stop, lambda img_p: enqueue_pipeline_job(source_path=img_p)),
             daemon=True,
         )
         _watcher_thread.start()
 
 
-def get_service_status(service_name: str) -> str:
+def _snapshot_process_cmdlines() -> list:
+    if psutil is None:
+        return []
+    cmdlines = []
+    try:
+        for proc in psutil.process_iter(["name", "cmdline"]):
+            try:
+                pname = (proc.info.get("name") or "").lower()
+                cmd = " ".join(proc.info.get("cmdline") or [])
+                cmdlines.append((pname, cmd))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return cmdlines
+
+
+def get_service_status(service_name: str, cmdlines: list = None) -> str:
     if service_name == "run_analysis_watcher" and _watcher_thread and _watcher_thread.is_alive():
         return "running (in-process)"
     if psutil is None:
         return "ready"
     try:
-        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-            try:
-                cmdline = " ".join(proc.info.get("cmdline") or [])
-                if service_name in cmdline:
-                    return "running"
-            except Exception:
-                pass
+        entries = cmdlines if cmdlines is not None else _snapshot_process_cmdlines()
+        for pname, cmdline in entries:
+            if service_name in cmdline or (service_name == "ollama" and pname in ("ollama", "ollama.exe")):
+                return "running"
         return "stopped"
     except Exception:
         return "unknown"
@@ -140,7 +257,7 @@ def get_system_stats() -> dict:
         return {"cpu_percent": 0, "memory_percent": 0, "disk_usage": 0, "temperature": get_device_temp()}
     try:
         return {
-            "cpu_percent": psutil.cpu_percent(interval=0.1),
+            "cpu_percent": psutil.cpu_percent(interval=None),
             "memory_percent": psutil.virtual_memory().percent,
             "disk_usage": psutil.disk_usage(str(SHARED_DIR)).percent if SHARED_DIR.exists() else 0,
             "temperature": get_device_temp(),
@@ -177,7 +294,7 @@ def _sync_attributions_to_content_json(attr_data: dict):
         try:
             content = json.loads(content_file.read_text(encoding="utf-8"))
             content["attributions"] = attr_data
-            content_file.write_text(json.dumps(content, indent=2, ensure_ascii=False), encoding="utf-8")
+            atomic_write_text(content_file, json.dumps(content, indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception:
             pass
 
@@ -196,21 +313,36 @@ def _get_lan_ip() -> str:
         return "localhost"
 
 
-def _check_ollama_status() -> str:
+def _check_ollama_status(cmdlines: list = None, force: bool = False) -> str:
+    now = time.monotonic()
+    with _ollama_cache_lock:
+        if not force and (now - _ollama_cache["ts"]) < 3.0 and _ollama_cache["status"] != "unknown":
+            return _ollama_cache["status"]
+
+    status = "stopped"
     try:
         from start_everything import _is_ollama_running
         if _is_ollama_running():
-            return "running"
+            status = "running"
     except Exception:
         pass
-    return get_service_status("ollama")
+    if status == "stopped":
+        proc_status = get_service_status("ollama", cmdlines=cmdlines)
+        if proc_status == "running":
+            status = "running"
+
+    with _ollama_cache_lock:
+        _ollama_cache["status"] = status
+        _ollama_cache["ts"] = now
+    return status
 
 
 def api_get_status() -> dict:
     settings = load_settings()
-    ollama_state = _check_ollama_status()
-    gaze_state = get_service_status("run_gaze_painter")
-    watcher_state = get_service_status("run_analysis_watcher")
+    cmdlines = _snapshot_process_cmdlines()
+    ollama_state = _check_ollama_status(cmdlines=cmdlines)
+    gaze_state = get_service_status("run_gaze_painter", cmdlines=cmdlines)
+    watcher_state = get_service_status("run_analysis_watcher", cmdlines=cmdlines)
     services = {
         "web_server": "running",
         "analysis_watcher": watcher_state,
@@ -234,11 +366,15 @@ def api_get_status() -> dict:
     port = int(os.environ.get("PORT", settings.get("server", {}).get("port", 8000)))
     lan_ip = _get_lan_ip()
     sys_stats = get_system_stats()
+    with _pipeline_lock:
+        pipe_snapshot = dict(_pipeline_state)
+        pipe_snapshot["queue_length"] = _pipeline_queue.qsize()
+
     return {
         "device": host_name,
         "lan_url": f"http://{lan_ip}:{port}",
         "services": services,
-        "pipeline": _pipeline_state,
+        "pipeline": pipe_snapshot,
         "system": sys_stats,
         "ai_summary": {
             "vision_mode": settings.get("ai", {}).get("vision_mode", "auto"),
@@ -247,6 +383,7 @@ def api_get_status() -> dict:
             "poem_provider": settings.get("ai", {}).get("poem", {}).get("provider", "ollama"),
             "poem_model": settings.get("ai", {}).get("poem", {}).get("model", ""),
         },
+        "tts": settings.get("tts", {}),
         "printing": settings.get("printing", {}),
         "attributions": {
             "enabled": settings.get("attributions", {}).get("enabled", False),
@@ -256,42 +393,6 @@ def api_get_status() -> dict:
             "prints_today": today_files,
             "total_prints": len(all_pdfs),
             "printed_count": printed_count,
-            "drawings": today_files,
-            "prints": printed_count,
-            "cycleTime": _pipeline_state.get("last_status", "idle"),
-            "apiSuccess": "100%",
-        },
-        "jetson_a": {
-            "status": "online" if "running" in gaze_state else "warning",
-            "metrics": {
-                "service": gaze_state,
-                "network": lan_ip,
-                "camera": "Ready",
-                "display": "Ready (/draw)",
-                "CPU": f"{sys_stats.get('cpu_percent', 0)}%",
-            },
-            "memory": int(sys_stats.get("memory_percent", 0)),
-        },
-        "jetson_b": {
-            "status": "online",
-            "metrics": {
-                "analysis": f"{settings.get('ai', {}).get('analysis', {}).get('model', '')} / {settings.get('ai', {}).get('poem', {}).get('model', '')}",
-                "web": f"Port {port}",
-                "NFS": f"Ollama: {ollama_state}",
-                "network": lan_ip,
-                "CPU": f"{sys_stats.get('cpu_percent', 0)}%",
-            },
-            "disk": int(sys_stats.get("disk_usage", 0)),
-        },
-        "rpi4": {
-            "status": "online",
-            "metrics": {
-                "service": "Ready (/kiosk)",
-                "printer": settings.get("printing", {}).get("printer_name", "default"),
-                "queue": f"{len(all_pdfs)} PDFs",
-                "network": lan_ip,
-                "CPU": f"{sys_stats.get('cpu_percent', 0)}%",
-            },
         },
         "timestamp": datetime.now().isoformat(),
     }
@@ -304,6 +405,7 @@ def api_list_prints() -> list:
     files = []
     for f in sorted(DOCS_DIR.glob("print_*.pdf"), key=lambda x: x.stat().st_mtime, reverse=True):
         thumb_file = f.with_suffix(".png")
+        heatmap_file = f.with_name(f"{f.stem}.heatmap.png")
         meta_file = f.with_suffix(".json")
         meta = {}
         if meta_file.exists():
@@ -315,8 +417,10 @@ def api_list_prints() -> list:
         dt = datetime.fromtimestamp(mtime)
         files.append({
             "name": f.name,
+            "run_id": meta.get("runId", f.stem.replace("print_", "")),
             "pdf_url": f"/shared_output/docs/{f.name}",
             "thumb_url": f"/shared_output/docs/{thumb_file.name}" if thumb_file.exists() else "/shared_output/image.png",
+            "heatmap_url": f"/shared_output/docs/{heatmap_file.name}" if heatmap_file.exists() else "/shared_output/heatmap.png",
             "size": f"{f.stat().st_size / 1024:.1f} KB",
             "timestamp": mtime,
             "date": dt.strftime("%Y-%m-%d %H:%M"),
@@ -355,6 +459,10 @@ def api_get_logs(log_type: str) -> str:
     return f"No entries yet for '{log_type}'."
 
 
+class InvalidJSONError(ValueError):
+    """Raised when an HTTP request body is not valid JSON."""
+
+
 class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         # Quiet routine polling logs; print errors or mutations
@@ -362,9 +470,8 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             super().log_message(fmt, *args)
 
     def _send_cors_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type,Authorization")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,HEAD,OPTIONS")
+        # Omit wildcard Access-Control-Allow-Origin so arbitrary third-party websites cannot invoke local APIs
+        pass
 
     def _send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -372,7 +479,6 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self._send_cors_headers()
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -382,7 +488,6 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self._send_cors_headers()
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -404,21 +509,39 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
-        self._send_cors_headers()
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)
 
     def _read_json_body(self) -> dict:
-        length = int(self.headers.get("Content-Length", 0))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError as e:
+            raise InvalidJSONError("Invalid Content-Length header") from e
         if length <= 0:
             return {}
         raw = self.rfile.read(length)
-        return json.loads(raw.decode("utf-8"))
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            raise InvalidJSONError(f"Malformed JSON body: {e}") from e
+        if not isinstance(data, dict):
+            raise InvalidJSONError("JSON request body must be an object")
+        return data
+
+    def _extract_multipart_file(self, ctype: str, raw_body: bytes, field_name: str = "file") -> bytes:
+        header_bytes = f"Content-Type: {ctype}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8")
+        msg = BytesParser(policy=email_default_policy).parsebytes(header_bytes + raw_body)
+        if msg.is_multipart():
+            for part in msg.iter_parts():
+                if part.get_param("name", header="content-disposition") == field_name:
+                    payload = part.get_payload(decode=True)
+                    if payload is not None:
+                        return payload
+        return b""
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self._send_cors_headers()
         self.end_headers()
 
     def do_HEAD(self):
@@ -438,8 +561,6 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             return self._send_file(WEB_UI_DIR / "draw.html")
         if path in ("/kiosk", "/kiosk.html"):
             return self._send_file(WEB_UI_DIR / "kiosk.html")
-        if path in ("/remote", "/remote_ui.html"):
-            return self._send_file(WEB_UI_DIR / "remote_ui.html")
         if path == "/kasboek-logo.jpg":
             is_preview = (query.get("preview") or [""])[0] == "1"
             attr_cfg = load_settings().get("attributions", {})
@@ -455,7 +576,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/shared_output/"):
             rel = path[len("/shared_output/"):]
             target = (SHARED_DIR / rel).resolve()
-            if not str(target).startswith(str(SHARED_DIR.resolve())):
+            if not target.is_relative_to(SHARED_DIR.resolve()):
                 return self._send_text("Forbidden", status=403)
             return self._send_file(target)
 
@@ -464,7 +585,10 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             return self._send_json(api_get_status())
 
         if path == "/api/pipeline/status":
-            return self._send_json(_pipeline_state)
+            with _pipeline_lock:
+                snap = dict(_pipeline_state)
+                snap["queue_length"] = _pipeline_queue.qsize()
+            return self._send_json(snap)
 
         if path == "/api/settings":
             settings = load_settings()
@@ -503,25 +627,26 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         return self._send_text("Not Found", status=404)
 
     def do_POST(self):
+        try:
+            self._handle_post()
+        except InvalidJSONError as e:
+            self._send_json({"status": "error", "error": str(e)}, status=400)
+
+    def _handle_post(self):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         query = parse_qs(parsed.query)
 
         if path == "/api/drawings":
             target_path = SHARED_DIR / "image.png"
-            tmp_path = SHARED_DIR / "image.tmp.png"
             ctype = self.headers.get("Content-Type", "")
             try:
                 if "multipart/form-data" in ctype:
-                    form = cgi.FieldStorage(
-                        fp=self.rfile,
-                        headers=self.headers,
-                        environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": ctype},
-                    )
-                    if "file" not in form:
+                    length = int(self.headers.get("Content-Length", 0))
+                    raw_body = self.rfile.read(length) if length > 0 else b""
+                    img_bytes = self._extract_multipart_file(ctype, raw_body, "file")
+                    if not img_bytes:
                         return self._send_json({"status": "error", "error": "Missing file field"}, 400)
-                    file_item = form["file"]
-                    tmp_path.write_bytes(file_item.file.read())
                 else:
                     data = self._read_json_body()
                     img_data = data.get("image", "")
@@ -529,28 +654,65 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                         return self._send_json({"status": "error", "error": "No image provided"}, 400)
                     if "," in img_data:
                         img_data = img_data.split(",", 1)[1]
-                    tmp_path.write_bytes(base64.b64decode(img_data))
+                    try:
+                        img_bytes = base64.b64decode(img_data)
+                    except Exception as dec_err:
+                        return self._send_json({"status": "error", "error": f"Invalid base64 image: {dec_err}"}, 400)
 
-                os.replace(str(tmp_path), str(target_path))
+                if not AI_AVAILABLE:
+                    atomic_write_bytes(target_path, img_bytes)
+                    return self._send_json({"status": "error", "error": "Analysis pipeline unavailable"}, 503)
 
-                if (query.get("sync") or [""])[0] == "1" and AI_AVAILABLE:
-                    ok = run_analysis_pipeline()
-                    return self._send_json({"status": "success" if ok else "error", "pipeline": "completed"})
+                write_live_image_and_mark_handled(target_path, img_bytes)
+
+                if (query.get("sync") or [""])[0] == "1":
+                    done_event = threading.Event()
+                    result_holder = {}
+                    rid, qlen = enqueue_pipeline_job(
+                        image_bytes=img_bytes,
+                        done_event=done_event,
+                        result_holder=result_holder,
+                    )
+                    done_event.wait()
+                    ok = result_holder.get("ok", False)
+                    return self._send_json(
+                        {
+                            "status": "success" if ok else "error",
+                            "run_id": rid,
+                            "pipeline": "completed",
+                            "error_code": result_holder.get("error_code"),
+                            "error": result_holder.get("error"),
+                        },
+                        status=200 if ok else 500,
+                    )
                 else:
-                    started = trigger_pipeline_async()
+                    rid, qlen = enqueue_pipeline_job(image_bytes=img_bytes)
                     return self._send_json({
                         "status": "success",
-                        "message": "Drawing saved and analysis pipeline triggered",
-                        "pipeline_started": started,
+                        "run_id": rid,
+                        "queue_length": qlen,
+                        "message": "Drawing saved and queued for analysis",
+                        "pipeline_started": True,
                     })
+            except InvalidJSONError:
+                raise
             except Exception as e:
                 return self._send_json({"status": "error", "error": str(e)}, 500)
 
         if path == "/api/pipeline/run":
-            if not (SHARED_DIR / "image.png").exists():
+            live_img = SHARED_DIR / "image.png"
+            if not live_img.exists():
                 return self._send_json({"status": "error", "error": "No shared_output/image.png found"}, 404)
-            started = trigger_pipeline_async()
-            return self._send_json({"status": "success", "started": started, "pipeline": _pipeline_state})
+            rid, qlen = enqueue_pipeline_job(source_path=live_img)
+            with _pipeline_lock:
+                pipe_snap = dict(_pipeline_state)
+            return self._send_json({
+                "status": "success",
+                "started": True,
+                "run_id": rid,
+                "queue_length": qlen,
+                "pipeline": pipe_snap,
+            })
 
         if path == "/api/settings":
             data = self._read_json_body()
@@ -591,20 +753,28 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             model_type = data.get("model_type", "analysis")
             try:
                 model = LLMModel(model_type)
-                reply = model.chat("Respond with a single short sentence confirming you are online and ready for Latent Space.")
+                reply = model.chat(
+                    "Respond with a single short sentence confirming you are online and ready for Latent Space.",
+                    allow_failover=False,
+                )
                 return self._send_json({
                     "status": "success",
                     "provider": model._provider,
                     "model": model._llm,
                     "reply": reply,
                 })
+            except AIGenerationError as e:
+                return self._send_json({"status": "error", "error_code": e.code, "error": str(e)}, 500)
             except Exception as e:
                 return self._send_json({"status": "error", "error": str(e)}, 500)
 
         if path == "/api/ollama/stop":
             try:
                 from start_everything import stop_ollama_serving
-                stop_ollama_serving()
+                stop_ollama_serving(kill_external=True)
+                with _ollama_cache_lock:
+                    _ollama_cache["status"] = "stopped"
+                    _ollama_cache["ts"] = time.monotonic()
                 return self._send_json({"status": "success", "message": "Ollama models unloaded and server stopped"})
             except Exception as e:
                 return self._send_json({"status": "error", "error": str(e)}, 500)
@@ -613,7 +783,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             data = self._read_json_body()
             filename = data.get("filename", "")
             mark_only = bool(data.get("mark_only", False))
-            if not filename or "/" in filename or "\\" in filename:
+            if not filename or "/" in filename or "\\" in filename or ".." in filename:
                 return self._send_json({"status": "error", "error": "Invalid filename"}, 400)
             pdf_path = DOCS_DIR / filename
             if not pdf_path.exists():
@@ -630,29 +800,31 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             data = self._read_json_body()
             action = data.get("action")
             filename = data.get("filename")
-            count = 0
+            deleted_names = []
             try:
-                if action == "specific" and filename and "/" not in filename and "\\" not in filename:
+                if action == "specific" and filename and "/" not in filename and "\\" not in filename and ".." not in filename:
                     file_path = DOCS_DIR / filename
-                    for suffix in (".pdf", ".png", ".json"):
-                        p = file_path.with_suffix(suffix)
+                    for suffix in (".pdf", ".png", ".json", ".heatmap.png"):
+                        p = file_path.with_name(f"{file_path.stem}{suffix}")
                         if p.exists():
                             p.unlink()
-                    count = 1
+                    deleted_names.append(filename)
                 elif action == "all":
                     today_int = int(datetime.now().strftime("%Y%m%d"))
                     for f in DOCS_DIR.glob("print_*.pdf"):
                         try:
                             f_date = int(f.name.split("_")[1])
                             if f_date < today_int:
-                                for suffix in (".pdf", ".png", ".json"):
-                                    p = f.with_suffix(suffix)
+                                for suffix in (".pdf", ".png", ".json", ".heatmap.png"):
+                                    p = f.with_name(f"{f.stem}{suffix}")
                                     if p.exists():
                                         p.unlink()
-                                count += 1
+                                deleted_names.append(f.name)
                         except Exception:
                             pass
-                return self._send_json({"status": "success", "deleted": count})
+                if deleted_names and AI_AVAILABLE:
+                    remove_from_print_history(deleted_names)
+                return self._send_json({"status": "success", "deleted": len(deleted_names)})
             except Exception as e:
                 return self._send_json({"error": str(e)}, 500)
 
@@ -678,11 +850,12 @@ def run_server(host="0.0.0.0", port=8000):
         print("\nShutting down server...")
         _watcher_stop.set()
         server.server_close()
-        try:
-            from start_everything import stop_ollama_serving
-            stop_ollama_serving()
-        except Exception:
-            pass
+        if os.environ.get("LATENT_SPACE_MANAGED") != "1":
+            try:
+                from start_everything import stop_ollama_serving
+                stop_ollama_serving(kill_external=False)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

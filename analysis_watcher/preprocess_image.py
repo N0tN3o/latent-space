@@ -1,35 +1,39 @@
+import os
+from pathlib import Path
 import cv2
 import numpy as np
 
 
+class DrawingValidationError(ValueError):
+    """Raised when the input drawing is missing, unreadable, or blank."""
+
+
 def preprocess_image(input_filename='image.png', output_filename='image_processed.png'):
     """
-    Crop the scribble to its bounding square (with safe padding) and resize to 512x512
-    (or 224x224 compatible) while preserving crisp strokes.
+    Validate that the input scribble is readable and non-blank, crop the scribble
+    to its bounding square (with safe padding), and resize atomically to 512x512.
     """
     img = cv2.imread(str(input_filename), cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        raise FileNotFoundError(f"Could not read input image: {input_filename}")
+    if img is None or img.size == 0:
+        raise DrawingValidationError(f"Drawing image is missing or unreadable: {input_filename}")
 
     h, w = img.shape[:2]
     unique_vals = np.unique(img)
     if len(unique_vals) < 2:
-        # Blank or uniform image - save resized copy directly
-        img_resized = cv2.resize(img, (512, 512))
-        cv2.imwrite(str(output_filename), img_resized)
-        return str(output_filename)
+        raise DrawingValidationError("Drawing canvas is blank (no strokes detected).")
 
     # Filter image -> binary image (strokes = 255, background = 0)
     thresh_val = min(240, int(unique_vals[-1]) - 5) if unique_vals[-1] > 127 else int(unique_vals[0])
     _, img_filtered = cv2.threshold(img, thresh_val, 255, cv2.THRESH_BINARY_INV)
 
+    if int(np.count_nonzero(img_filtered)) == 0:
+        raise DrawingValidationError("Drawing canvas contains no visible ink strokes.")
+
     vertical_boundaries = np.where(img_filtered.max(axis=1) > 0)[0]
     horizontal_boundaries = np.where(img_filtered.max(axis=0) > 0)[0]
 
     if len(vertical_boundaries) == 0 or len(horizontal_boundaries) == 0:
-        img_resized = cv2.resize(img, (512, 512))
-        cv2.imwrite(str(output_filename), img_resized)
-        return str(output_filename)
+        raise DrawingValidationError("Drawing canvas bounds are empty (no strokes detected).")
 
     upper_y = int(vertical_boundaries.min())
     lower_y = int(vertical_boundaries.max())
@@ -61,6 +65,10 @@ def preprocess_image(input_filename='image.png', output_filename='image_processe
     square[dst_y1:dst_y1 + cropped.shape[0], dst_x1:dst_x1 + cropped.shape[1]] = cropped
 
     img_resized = cv2.resize(square, (512, 512), interpolation=cv2.INTER_AREA)
-    cv2.imwrite(str(output_filename), img_resized)
+    out_path = Path(output_filename)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_name(f".tmp_{os.getpid()}_{out_path.name}")
+    cv2.imwrite(str(tmp_path), img_resized)
+    os.replace(str(tmp_path), str(out_path))
 
     return str(output_filename)

@@ -1,7 +1,7 @@
 import numpy as np
 import cv2
 import time
-import os
+
 
 class GazePainter:
     def __init__(self, width=1280, height=720, dwell_radius=0.03):
@@ -18,7 +18,7 @@ class GazePainter:
         self.stroke_color = (0, 0, 0)  # Black in BGR
         self.stroke_history = []  # Store stroke points for smoother lines
         self.has_drawn = False
-        
+
     def clear(self):
         """Clear the canvas"""
         self.canvas[:] = 255
@@ -27,33 +27,7 @@ class GazePainter:
         self.dwell_time = 0.0
         self.stroke_history = []
         self.has_drawn = False
-    
-    def save(self, filename='gaze_art.png'):
-        """Save the canvas to a file in saved_images folder"""
-        save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'saved_images')
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir, exist_ok=True)
-        # Don't save if nothing was drawn
-        try:
-            # Check explicit flag first (fast)
-            if not getattr(self, 'has_drawn', False):
-                print('Save skipped: no strokes recorded on canvas')
-                return None
 
-            # As a safety-net, check whether the canvas is all white (blank)
-            if np.all(self.canvas == 255):
-                print('Save skipped: canvas is blank (all white)')
-                return None
-        except Exception:
-            # If checks fail for any reason, avoid overwriting by skipping save
-            print('Save skipped: validation check failed')
-            return None
-
-        filepath = os.path.join(save_dir, filename)
-        cv2.imwrite(filepath, self.canvas)
-        print(f'Saved drawing to {filepath}')
-        return filepath
-    
     def update(self, gaze_norm, dt):
         """
         Update the drawing based on normalized gaze position.
@@ -126,30 +100,9 @@ class GazePainter:
         
         self.prev_point = cur_point
     
-    def get_display(self, frame=None, overlay=False):
-        """
-        Get display image - either canvas alone or overlaid on frame
-        """
-        if overlay and frame is not None:
-            # Resize canvas to match frame dimensions
-            ch, cw = frame.shape[:2]
-            resized = cv2.resize(self.canvas, (cw, ch))
-            
-            # Create overlay with transparency
-            # Make white areas transparent
-            gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-            _, mask = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
-            
-            # Apply the drawing only where there are strokes
-            result = frame.copy()
-            result[mask > 0] = cv2.addWeighted(
-                frame[mask > 0], 0.3,
-                resized[mask > 0], 0.7, 0
-            ).astype(np.uint8)
-            
-            return result
-        else:
-            return self.canvas
+    def get_display(self):
+        """Return the drawing canvas image."""
+        return self.canvas
     
     def set_color(self, color):
         """Set stroke color (BGR tuple)"""

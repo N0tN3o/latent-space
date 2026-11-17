@@ -44,12 +44,15 @@ DEFAULT_POEM_PROMPT = (
 
 DEFAULT_SETTINGS = {
     "ai": {
-        "vision_mode": "auto",  # "auto", "vision", "clip", "stroke_metrics", "resnet50"
+        "vision_mode": "auto",  # "auto", "vision", "ollama_vision", "siglip", "clip", "stroke_metrics", "resnet50"
+        "ollama_vision_model": "moondream",
         "analysis": {
             "provider": "ollama",  # "ollama", "gemini", "anthropic", "openai_compatible", "buas"
             "model": "llama3.2",
             "base_url": "http://localhost:11434/v1",
             "api_key": "",
+            "fallback_provider": "auto",  # "auto", "none", "ollama", "gemini", "anthropic", "openai_compatible", "buas"
+            "fallback_model": "",
             "name": "Latent Space Psychoanalyst",
             "description": DEFAULT_ANALYSIS_PROMPT,
             "temperature": 0.7,
@@ -60,6 +63,8 @@ DEFAULT_SETTINGS = {
             "model": "llama3.2",
             "base_url": "http://localhost:11434/v1",
             "api_key": "",
+            "fallback_provider": "auto",  # "auto", "none", "ollama", "gemini", "anthropic", "openai_compatible", "buas"
+            "fallback_model": "",
             "name": "Latent Space Poet",
             "description": DEFAULT_POEM_PROMPT,
             "temperature": 0.8,
@@ -106,21 +111,50 @@ DEFAULT_SETTINGS = {
 
 def ensure_directories():
     """Ensure all required runtime directories exist."""
-    global LOGS_DIR, CONFIG_DIR, SETTINGS_FILE
-    for d in [SHARED_DIR, DOCS_DIR, PRINTED_DIR, WEB_UI_DIR]:
+    for d in [SHARED_DIR, DOCS_DIR, PRINTED_DIR, WEB_UI_DIR, LOGS_DIR, CONFIG_DIR]:
         try:
             d.mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
+
+
+def atomic_write_bytes(target: Path, data: bytes):
+    """Write bytes atomically via a unique sibling temp file and os.replace."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
-        LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        LOGS_DIR = PROJECT_DIR / "analysis_watcher"
-    try:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        CONFIG_DIR = SHARED_DIR
-        SETTINGS_FILE = CONFIG_DIR / "settings.json"
+        tmp_path.write_bytes(data)
+        os.replace(str(tmp_path), str(target))
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+
+
+def atomic_write_text(target: Path, content: str, encoding: str = "utf-8"):
+    """Write text atomically via a unique sibling temp file and os.replace."""
+    atomic_write_bytes(target, content.encode(encoding))
+
+
+def _sanitize_incoming_settings(data: dict, existing: dict = None) -> dict:
+    """Strip masked/transient API key fields before persisting settings."""
+    cleaned = deepcopy(data) if isinstance(data, dict) else {}
+    ai = cleaned.get("ai")
+    if isinstance(ai, dict):
+        existing_ai = (existing or {}).get("ai", {})
+        for role in ("analysis", "poem"):
+            role_cfg = ai.get(role)
+            if isinstance(role_cfg, dict):
+                role_cfg.pop("has_api_key", None)
+                if role_cfg.get("api_key") == "***":
+                    prev_key = existing_ai.get(role, {}).get("api_key", "")
+                    if prev_key:
+                        role_cfg["api_key"] = prev_key
+                    else:
+                        role_cfg.pop("api_key", None)
+    return cleaned
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -150,6 +184,17 @@ def load_env_vars() -> dict:
     return env
 
 
+def _read_existing_settings_raw() -> dict:
+    """Read existing settings.json cleanly without silently wiping corrupt JSON."""
+    if not SETTINGS_FILE.exists():
+        return deepcopy(DEFAULT_SETTINGS)
+    raw = SETTINGS_FILE.read_text(encoding="utf-8")
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("settings.json root is not a JSON object")
+    return _deep_merge(DEFAULT_SETTINGS, data)
+
+
 def load_settings() -> dict:
     """Load settings from config/settings.json merged with defaults."""
     global _memory_settings
@@ -161,29 +206,35 @@ def load_settings() -> dict:
             save_settings_unlocked(DEFAULT_SETTINGS)
             return deepcopy(DEFAULT_SETTINGS)
         try:
-            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            merged = _deep_merge(DEFAULT_SETTINGS, data)
+            merged = _read_existing_settings_raw()
             _memory_settings = deepcopy(merged)
             return merged
         except Exception as e:
-            print(f"[config_manager] Warning: failed to parse {SETTINGS_FILE}: {e}. Using defaults.")
+            print(f"[config_manager] Warning: failed to parse {SETTINGS_FILE}: {e}. Using cached/defaults without overwriting.")
             return deepcopy(_memory_settings or DEFAULT_SETTINGS)
 
 
 def save_settings_unlocked(settings: dict) -> dict:
     global _memory_settings
     ensure_directories()
-    merged = _deep_merge(DEFAULT_SETTINGS, settings)
+    existing = _memory_settings
+    if existing is None and SETTINGS_FILE.exists():
+        try:
+            existing = _read_existing_settings_raw()
+        except Exception:
+            existing = None
+    sanitized = _sanitize_incoming_settings(settings, existing=existing)
+    merged = _deep_merge(DEFAULT_SETTINGS, sanitized)
     _memory_settings = deepcopy(merged)
     try:
-        SETTINGS_FILE.write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
+        atomic_write_text(SETTINGS_FILE, json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
     except Exception as e:
         print(f"[config_manager] Note: kept settings in memory ({e})")
     return merged
 
 
 def save_settings(settings: dict) -> dict:
-    """Thread-safe save of settings to config/settings.json."""
+    """Thread-safe atomic save of settings to config/settings.json."""
     with _lock:
         return save_settings_unlocked(settings)
 
@@ -191,14 +242,20 @@ def save_settings(settings: dict) -> dict:
 def update_settings_section(section: str, data: dict) -> dict:
     """Update a top-level section (e.g. 'ai', 'attributions', 'printing', 'tts') in settings.json."""
     with _lock:
-        current = deepcopy(DEFAULT_SETTINGS)
         if SETTINGS_FILE.exists():
             try:
-                current = _deep_merge(current, json.loads(SETTINGS_FILE.read_text(encoding="utf-8")))
-            except Exception:
-                pass
-        if isinstance(current.get(section), dict) and isinstance(data, dict):
-            current[section] = _deep_merge(current[section], data)
+                current = _read_existing_settings_raw()
+            except Exception as e:
+                raise RuntimeError(f"Refusing to overwrite unreadable settings.json: {e}") from e
         else:
-            current[section] = data
+            current = deepcopy(_memory_settings or DEFAULT_SETTINGS)
+
+        clean_data = data
+        if section == "ai" and isinstance(data, dict):
+            clean_data = _sanitize_incoming_settings({"ai": data}, existing=current).get("ai", data)
+
+        if isinstance(current.get(section), dict) and isinstance(clean_data, dict):
+            current[section] = _deep_merge(current[section], clean_data)
+        else:
+            current[section] = clean_data
         return save_settings_unlocked(current)

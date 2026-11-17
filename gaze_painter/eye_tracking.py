@@ -92,25 +92,6 @@ def soft_scurve(x: float, gain: float = 1.2) -> float:
     return float(np.clip(0.5 + 0.5 * curved, 0.0, 1.0))
 
 
-def classify_gaze(norm_offset, horiz_thr, vert_thr, deadzone):
-    x, y = norm_offset
-    if abs(x) < deadzone and abs(y) < deadzone:
-        return "center"
-    horiz = ""
-    vert = ""
-    if x < -horiz_thr:
-        horiz = "left"
-    elif x > horiz_thr:
-        horiz = "right"
-    if y < -vert_thr:
-        vert = "up"
-    elif y > vert_thr:
-        vert = "down"
-    if horiz and vert:
-        return f"{horiz}-{vert}"
-    return horiz or vert or "center"
-
-
 class EyeTracker:
     def __init__(self, flip=True):
         self.mp_face_mesh = mp.solutions.face_mesh
@@ -132,8 +113,6 @@ class EyeTracker:
         self.horiz_thr = DEFAULT_HORIZ_THRESHOLD
         self.vert_thr = DEFAULT_VERT_THRESHOLD
         self.deadzone = DEADZONE
-        self.logging = False
-        self.logfile = None
         self.is_blinking = False
 
         # Calibration data
@@ -150,9 +129,6 @@ class EyeTracker:
         # Anti-snap-back & Flow steering state
         self.control_mode = "hybrid"
         self.cursor_pos = np.array([0.5, 0.5], dtype=np.float32)
-
-    def toggle_flip(self):
-        self.flip = not self.flip
 
     def toggle_control_mode(self) -> str:
         self.control_mode = "flow" if self.control_mode == "hybrid" else "hybrid"
@@ -374,8 +350,6 @@ class EyeTracker:
                 sacc_speed = 0.0
             self.prev = self.smoothed.copy()
 
-            direction = classify_gaze(self.smoothed, self.horiz_thr, self.vert_thr, self.deadzone)
-
             gaze_info = {
                 "left_center": left_center,
                 "right_center": right_center,
@@ -383,7 +357,6 @@ class EyeTracker:
                 "right_bbox": right_eye_bbox,
                 "eye_norm": raw_norm,
                 "smoothed_norm": self.smoothed.copy(),
-                "direction": direction,
                 "saccade": is_saccade,
                 "saccade_speed": float(sacc_speed),
                 "saccade_count": int(self.saccade_count),
@@ -406,5 +379,3 @@ class EyeTracker:
 
     def release(self):
         self.face_mesh.close()
-        if self.logfile:
-            self.logfile.close()

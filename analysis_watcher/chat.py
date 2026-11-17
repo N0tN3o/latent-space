@@ -1,7 +1,9 @@
 import base64
 import json
+import logging
 import os
 import sys
+import time
 from pathlib import Path
 import requests
 
@@ -12,12 +14,25 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from config_manager import load_settings, update_settings_section, load_env_vars
 
+logger = logging.getLogger("image_analysis_pipeline")
+
 ASSISTANT_KEY_TO_ROLE = {
     "8a79f5ec-c5dd-448c-9611-99610792a04b": "analysis",
     "959058ad-4417-49e3-9e71-252ee2fb033d": "poem",
     "analysis": "analysis",
     "poem": "poem",
 }
+
+
+class AIGenerationError(RuntimeError):
+    """Raised when primary and failover AI providers all fail for a role."""
+
+    def __init__(self, code: str, message: str, provider: str = "", model: str = ""):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.provider = provider
+        self.model = model
 
 
 class LLMModel:
@@ -53,7 +68,11 @@ class LLMModel:
         self._provider = "ollama"
         self._base_url = "http://localhost:11434/v1"
         self._api_key = ""
+        self._fallback_provider = "auto"
+        self._fallback_model = ""
         self._vision_mode = "auto"
+        self._last_used_provider = ""
+        self._last_used_model = ""
         self.__chat_key = None
 
         # Legacy BUas endpoints
@@ -77,6 +96,8 @@ class LLMModel:
         self._llm = role_cfg.get("model", "llama3.2")
         self._base_url = role_cfg.get("base_url", "http://localhost:11434/v1")
         self._api_key = role_cfg.get("api_key", "")
+        self._fallback_provider = (role_cfg.get("fallback_provider") or "auto").lower()
+        self._fallback_model = role_cfg.get("fallback_model", "") or ""
         self._name = role_cfg.get("name", f"Latent Space {self.role.capitalize()}")
         self._description = role_cfg.get("description", "")
         self._purpose = role_cfg.get("purpose", "")
@@ -170,9 +191,130 @@ class LLMModel:
         except Exception:
             return None
 
-    def chat(self, message: str, image_path: str = None) -> str:
+    def _resolve_key_for_provider(self, provider: str, settings: dict, env: dict) -> str:
+        """Find an API key for a given provider from settings (either role) or environment."""
+        ai_cfg = settings.get("ai", {})
+        other_role = "poem" if self.role == "analysis" else "analysis"
+        for role_name in (self.role, other_role):
+            rc = ai_cfg.get(role_name, {})
+            if (rc.get("provider") or "").lower() == provider and rc.get("api_key"):
+                return rc["api_key"]
+        if provider == "gemini":
+            return env.get("GEMINI_API_KEY", "")
+        if provider == "anthropic":
+            return env.get("ANTHROPIC_API_KEY", "")
+        if provider == "openai_compatible":
+            return env.get("GROQ_API_KEY") or env.get("OPENROUTER_API_KEY") or env.get("OPENAI_API_KEY") or ""
+        return ""
+
+    def _build_failover_candidates(self) -> list:
+        """Build ordered list of alternate (provider, model, base_url, api_key) failover candidates."""
+        if self._fallback_provider == "none":
+            return []
+
+        settings = load_settings()
+        env = load_env_vars()
+        ai_cfg = settings.get("ai", {})
+        other_role = "poem" if self.role == "analysis" else "analysis"
+        other_cfg = ai_cfg.get(other_role, {})
+
+        candidates = []
+        seen = {(self._provider, self._llm, (self._base_url or "").rstrip("/"))}
+
+        def add_candidate(prov: str, model: str, base_url: str, api_key: str):
+            key = (prov, model, (base_url or "").rstrip("/"))
+            if key not in seen:
+                seen.add(key)
+                candidates.append((prov, model, base_url, api_key))
+
+        # 1. Explicit fallback provider configured for this role
+        if self._fallback_provider not in ("", "auto"):
+            fb_prov = self._fallback_provider
+            fb_model = self._fallback_model
+            if fb_prov == "ollama":
+                fb_model = fb_model or (other_cfg.get("model") if other_cfg.get("provider") == "ollama" else "") or "llama3.2"
+                add_candidate("ollama", fb_model, "http://localhost:11434/v1", "")
+            elif fb_prov == "gemini":
+                key = self._resolve_key_for_provider("gemini", settings, env)
+                if key:
+                    add_candidate("gemini", fb_model or "gemini-2.0-flash", "", key)
+            elif fb_prov == "anthropic":
+                key = self._resolve_key_for_provider("anthropic", settings, env)
+                if key:
+                    add_candidate("anthropic", fb_model or "claude-3-5-haiku-latest", "", key)
+            elif fb_prov == "openai_compatible":
+                key = self._resolve_key_for_provider("openai_compatible", settings, env)
+                base_url = other_cfg.get("base_url") if other_cfg.get("provider") == "openai_compatible" else ""
+                if key:
+                    add_candidate("openai_compatible", fb_model or "llama-3.3-70b-versatile", base_url or "https://api.groq.com/openai/v1", key)
+            elif fb_prov == "buas" and env.get("ACCESS_TOKEN") and env.get("USER_KEY"):
+                add_candidate("buas", fb_model or "llama3.3:latest", self.__url_api, "")
+
+        # 2. Other role's configured provider if different from current failed primary
+        other_prov = (other_cfg.get("provider") or "").lower()
+        if other_prov and other_prov != self._provider:
+            other_key = other_cfg.get("api_key") or self._resolve_key_for_provider(other_prov, settings, env)
+            if other_prov == "ollama" or other_key:
+                add_candidate(
+                    other_prov,
+                    other_cfg.get("model", ""),
+                    other_cfg.get("base_url", ""),
+                    other_key,
+                )
+
+        # 3. Cloud API failovers (from .env or settings)
+        gemini_key = self._resolve_key_for_provider("gemini", settings, env)
+        if gemini_key:
+            add_candidate("gemini", self._fallback_model or "gemini-2.0-flash", "", gemini_key)
+
+        if env.get("GROQ_API_KEY"):
+            add_candidate("openai_compatible", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1", env["GROQ_API_KEY"])
+        if env.get("OPENROUTER_API_KEY"):
+            add_candidate("openai_compatible", "meta-llama/llama-3.2-11b-vision-instruct:free", "https://openrouter.ai/api/v1", env["OPENROUTER_API_KEY"])
+        if env.get("OPENAI_API_KEY"):
+            add_candidate("openai_compatible", "gpt-4o-mini", "https://api.openai.com/v1", env["OPENAI_API_KEY"])
+
+        anth_key = self._resolve_key_for_provider("anthropic", settings, env)
+        if anth_key:
+            add_candidate("anthropic", "claude-3-5-haiku-latest", "", anth_key)
+
+        if env.get("ACCESS_TOKEN") and env.get("USER_KEY"):
+            add_candidate("buas", "llama3.3:latest", self.__url_api, "")
+
+        # 4. Self-hosted Ollama failover when a Cloud provider failed
+        if self._provider != "ollama":
+            ollama_model = (
+                (other_cfg.get("model") if other_prov == "ollama" else "")
+                or self._fallback_model
+                or "llama3.2"
+            )
+            add_candidate("ollama", ollama_model, "http://localhost:11434/v1", "")
+
+        return candidates
+
+    def _call_provider(self, provider: str, model: str, base_url: str, api_key: str, message: str, img_b64: str = None) -> str:
+        if provider == "gemini":
+            reply = self._chat_gemini(message, img_b64, model_name=model, api_key=api_key)
+        elif provider == "anthropic":
+            reply = self._chat_anthropic(message, img_b64, model_name=model, api_key=api_key)
+        elif provider == "buas":
+            reply = self._chat_buas(message)
+        elif provider in ("ollama", "openai_compatible"):
+            reply = self._chat_openai_or_ollama(
+                message, img_b64, provider=provider, model_name=model, base_url=base_url, api_key=api_key
+            )
+        else:
+            raise ValueError(f"Unknown AI provider: {provider}")
+
+        if not reply or not reply.strip():
+            raise RuntimeError(f"Empty response from {provider} ({model})")
+        return reply.strip()
+
+    def chat(self, message: str, image_path: str = None, allow_failover: bool = True) -> str:
         """
         Send a prompt (and optional drawing image for Vision LLMs) to the configured provider.
+        Retries transient primary failures and fails over across providers if enabled.
+        Raises AIGenerationError if all attempts fail.
         """
         self._load_local_config()
         use_vision = (
@@ -182,31 +324,92 @@ class LLMModel:
         )
         img_b64 = self._encode_image_base64(image_path) if use_vision else None
 
-        try:
-            if self._provider == "gemini":
-                return self._chat_gemini(message, img_b64)
-            elif self._provider == "anthropic":
-                return self._chat_anthropic(message, img_b64)
-            elif self._provider == "buas":
-                return self._chat_buas(message)
-            elif self._provider in ("ollama", "openai_compatible"):
-                return self._chat_openai_or_ollama(message, img_b64)
-            else:
-                raise ValueError(f"Unknown AI provider: {self._provider}")
-        except Exception as e:
-            print(f"[chat] Error calling {self._provider} ({self._llm}): {e}")
-            return self._fallback_response(message, str(e))
+        # Step A: Primary provider (with 1 quick retry on transient errors)
+        primary_err = None
+        for attempt in range(2):
+            try:
+                reply = self._call_provider(self._provider, self._llm, self._base_url, self._api_key, message, img_b64)
+                self._last_used_provider = self._provider
+                self._last_used_model = self._llm
+                return reply
+            except Exception as e:
+                primary_err = e
+                logger.warning(f"[chat] {self.role} primary attempt {attempt + 1} ({self._provider}/{self._llm}) failed: {e}")
+                # Skip futile retry if missing API key or unknown provider
+                if "not configured" in str(e) or "Unknown AI provider" in str(e):
+                    break
+                if attempt == 0:
+                    time.sleep(0.5)
 
-    def _chat_openai_or_ollama(self, message: str, img_b64: str = None) -> str:
+        # Step B: Cross-provider failover
+        failover_errs = []
+        if allow_failover:
+            for fb_prov, fb_model, fb_url, fb_key in self._build_failover_candidates():
+                try:
+                    logger.warning(f"[chat] {self.role} failing over to {fb_prov} ({fb_model})...")
+                    reply = self._call_provider(fb_prov, fb_model, fb_url, fb_key, message, img_b64)
+                    self._last_used_provider = fb_prov
+                    self._last_used_model = fb_model
+                    logger.info(f"[chat] {self.role} failover succeeded via {fb_prov} ({fb_model})")
+                    return reply
+                except Exception as fb_e:
+                    logger.warning(f"[chat] {self.role} failover {fb_prov} ({fb_model}) failed: {fb_e}")
+                    failover_errs.append(f"{fb_prov}/{fb_model}: {fb_e}")
+
+        # Step C: Definitive failure — surface explicit error code (no silent canned fallback)
+        code = f"ERR_{self.role.upper()}_AI_FAILED"
+        detail = f"Primary {self._provider} ({self._llm}) failed: {primary_err}"
+        if failover_errs:
+            detail += f" | Failovers failed: {'; '.join(failover_errs)}"
+        logger.error(f"[chat] {code}: {detail}")
+        raise AIGenerationError(code=code, message=detail, provider=self._provider, model=self._llm)
+
+    def _discover_ollama_text_model(self, base_url: str, failed_model: str) -> str:
+        """Pick an installed non-embedding Ollama model, preferring the other role's model."""
+        host_root = base_url.replace("/v1", "").rstrip("/")
+        tags_resp = requests.get(f"{host_root}/api/tags", timeout=3)
+        if not tags_resp.ok:
+            return ""
+        installed = [
+            m.get("name")
+            for m in tags_resp.json().get("models", [])
+            if m.get("name") and "embed" not in m.get("name", "").lower()
+        ]
+        if not installed:
+            return ""
+        settings = load_settings()
+        other_role = "poem" if self.role == "analysis" else "analysis"
+        other_cfg = settings.get("ai", {}).get(other_role, {})
+        if other_cfg.get("provider") == "ollama" and other_cfg.get("model") in installed:
+            return other_cfg["model"]
+        for m in installed:
+            if m != failed_model:
+                return m
+        return installed[0]
+
+    def _chat_openai_or_ollama(
+        self,
+        message: str,
+        img_b64: str = None,
+        provider: str = None,
+        model_name: str = None,
+        base_url: str = None,
+        api_key: str = None,
+    ) -> str:
+        prov = (provider or self._provider).lower()
+        mod = model_name if model_name is not None else self._llm
+        b_url = (base_url if base_url is not None else self._base_url) or "http://localhost:11434/v1"
+        key = api_key if api_key is not None else self._api_key
+
         system_prompt = self._build_system_prompt()
-        base_url = (self._base_url or "http://localhost:11434/v1").rstrip("/")
-        if not base_url.endswith("/v1") and "11434" in base_url and "/api" not in base_url:
-            base_url = base_url + "/v1"
-        endpoint = f"{base_url}/chat/completions"
+        clean_base = b_url.rstrip("/")
+        if not clean_base.endswith("/v1") and "11434" in clean_base and "/api" not in clean_base:
+            clean_base = clean_base + "/v1"
+        endpoint = f"{clean_base}/chat/completions"
 
         headers = {"Content-Type": "application/json"}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
 
         messages = []
         if system_prompt:
@@ -223,7 +426,7 @@ class LLMModel:
         messages.append({"role": "user", "content": user_content})
 
         payload = {
-            "model": self._llm,
+            "model": mod,
             "messages": messages,
             "temperature": float(self._temperature),
         }
@@ -237,21 +440,18 @@ class LLMModel:
             resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
 
         # If Ollama returns 404 because the configured model tag is not pulled locally,
-        # automatically discover an installed Ollama model and retry
-        if resp.status_code == 404 and self._provider == "ollama":
+        # automatically discover an installed non-embedding Ollama model and retry
+        if resp.status_code == 404 and prov == "ollama":
             try:
-                host_root = base_url.replace("/v1", "").rstrip("/")
-                tags_resp = requests.get(f"{host_root}/api/tags", timeout=3)
-                if tags_resp.ok:
-                    installed = [m.get("name") for m in tags_resp.json().get("models", []) if m.get("name")]
-                    if installed:
-                        fallback_model = installed[0]
-                        print(f"[chat] Ollama model '{self._llm}' not found locally; using installed model '{fallback_model}'")
+                fallback_model = self._discover_ollama_text_model(clean_base, mod)
+                if fallback_model:
+                    logger.warning(f"[chat] Ollama model '{mod}' not found locally; retrying with '{fallback_model}'")
+                    payload["model"] = fallback_model
+                    messages[-1]["content"] = message
+                    payload["messages"] = messages
+                    resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+                    if resp.ok:
                         self._llm = fallback_model
-                        payload["model"] = fallback_model
-                        messages[-1]["content"] = message
-                        payload["messages"] = messages
-                        resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
             except Exception:
                 pass
 
@@ -259,17 +459,15 @@ class LLMModel:
         data = resp.json()
         return data["choices"][0]["message"]["content"].strip()
 
-    def _chat_gemini(self, message: str, img_b64: str = None) -> str:
-        if not self._api_key:
+    def _chat_gemini(self, message: str, img_b64: str = None, model_name: str = None, api_key: str = None) -> str:
+        key = api_key if api_key is not None else self._api_key
+        if not key:
             raise RuntimeError("GEMINI_API_KEY is not configured. Add it in Admin -> AI Config or .env")
 
-        model_name = self._llm or "gemini-2.0-flash"
-        if not model_name.startswith("models/"):
-            model_path = f"models/{model_name}"
-        else:
-            model_path = model_name
+        mod = model_name or self._llm or "gemini-2.0-flash"
+        model_path = mod if mod.startswith("models/") else f"models/{mod}"
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/{model_path}:generateContent?key={self._api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/{model_path}:generateContent?key={key}"
         system_prompt = self._build_system_prompt()
 
         parts = [{"text": message}]
@@ -299,14 +497,15 @@ class LLMModel:
         text_parts = [p.get("text", "") for p in candidates[0].get("content", {}).get("parts", [])]
         return "".join(text_parts).strip()
 
-    def _chat_anthropic(self, message: str, img_b64: str = None) -> str:
-        if not self._api_key:
+    def _chat_anthropic(self, message: str, img_b64: str = None, model_name: str = None, api_key: str = None) -> str:
+        key = api_key if api_key is not None else self._api_key
+        if not key:
             raise RuntimeError("ANTHROPIC_API_KEY is not configured. Add it in Admin -> AI Config or .env")
 
         url = "https://api.anthropic.com/v1/messages"
         headers = {
             "Content-Type": "application/json",
-            "x-api-key": self._api_key,
+            "x-api-key": key,
             "anthropic-version": "2023-06-01"
         }
         system_prompt = self._build_system_prompt()
@@ -324,7 +523,7 @@ class LLMModel:
         content.append({"type": "text", "text": message})
 
         payload = {
-            "model": self._llm or "claude-3-5-haiku-latest",
+            "model": model_name or self._llm or "claude-3-5-haiku-latest",
             "max_tokens": 600,
             "temperature": float(self._temperature),
             "messages": [{"role": "user", "content": content}]
@@ -339,8 +538,16 @@ class LLMModel:
         return "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
 
     def _chat_buas(self, message: str) -> str:
+        if not self._user_key or not self._access_token:
+            raise RuntimeError("BUas credentials (ACCESS_TOKEN / USER_KEY) are not configured")
         if not self.__chat_key:
-            self.initialize()
+            init_data = {"user_key": self._user_key, "assistant_key": self.assistant_key}
+            resp = requests.post(self.__init_endpoint_url, json=init_data, headers=self.__headers, timeout=15)
+            init_response = resp.json()
+            if init_response.get("status") == "Failed":
+                raise RuntimeError(f"BUas init failed: {init_response.get('error')}")
+            self.__chat_key = init_response["chat_key"]
+
         chat_data = {
             "assistant_key": self.assistant_key,
             "chat_key": self.__chat_key,
@@ -349,30 +556,9 @@ class LLMModel:
         }
         resp = requests.post(self.__ask_endpoint_url, json=chat_data, headers=self.__headers, timeout=60)
         text = resp.text.strip()
-        # Detect when BUas server returns a JSON error payload
         if text.startswith("{") and '"status": "Failed"' in text:
             raise RuntimeError(f"BUas server error: {text}")
         return text
-
-    def _fallback_response(self, message: str, error_msg: str) -> str:
-        """
-        Graceful fallback so the gallery and print PDF never display broken JSON stack traces
-        if an external AI server is offline or unconfigured.
-        """
-        if self.role == "analysis":
-            return (
-                "The trajectory of your gaze traces a quiet dialogue between impulse and restraint. "
-                "Where the lines gather and overlap, attention lingers—searching for an anchor within "
-                "open space—while the sudden leaps across the canvas reveal a restless curiosity "
-                "drawn toward the unseen edges of perception."
-            )
-        else:
-            return (
-                "A silent thread of light and sight,\n"
-                "Where wandering eyes Composed the night;\n"
-                "In loops of thought and sudden grace,\n"
-                "A fleeting mind leaves its own trace."
-            )
 
     def update_assistant(
         self,
@@ -388,6 +574,8 @@ class LLMModel:
         provider: str = None,
         base_url: str = None,
         api_key: str = None,
+        fallback_provider: str = None,
+        fallback_model: str = None,
         vision_mode: str = None,
         image_generation: bool = False,
     ):
@@ -404,6 +592,8 @@ class LLMModel:
             "temperature": float(temperature) if temperature is not None else float(self._temperature),
             "provider": (provider or self._provider).lower(),
             "base_url": base_url if base_url is not None else self._base_url,
+            "fallback_provider": (fallback_provider if fallback_provider is not None else self._fallback_provider).lower(),
+            "fallback_model": fallback_model if fallback_model is not None else self._fallback_model,
         }
         if api_key is not None and api_key != "***":
             role_updates["api_key"] = api_key
@@ -448,6 +638,8 @@ class LLMModel:
             "llm": self._llm,
             "base_url": self._base_url,
             "has_api_key": bool(self._api_key),
+            "fallback_provider": self._fallback_provider,
+            "fallback_model": self._fallback_model,
             "name": self._name,
             "description": self._description,
             "purpose": self._purpose,
