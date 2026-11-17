@@ -111,11 +111,45 @@
             cursor: pointer;
             user-select: none;
         }
+        .auth-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(9, 11, 16, 0.96);
+            z-index: 2000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .auth-card {
+            background: #161922;
+            border: 1px solid #2b3040;
+            border-radius: 12px;
+            padding: 28px;
+            width: 100%;
+            max-width: 420px;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.65);
+        }
     </style>
 </head>
 <body>
 
-<div class="container py-4">
+<div id="adminAuthOverlay" class="auth-overlay">
+    <form class="auth-card" onsubmit="submitAdminLogin(event)">
+        <h4 class="mb-2">Latent Space Admin</h4>
+        <p class="text-muted small mb-3">
+            Enter the admin passcode (printed at server startup, set via <code>ADMIN_PASSWORD</code>, or stored in <code>config/admin_pin.txt</code>).
+        </p>
+        <div class="mb-3">
+            <label class="form-label small" for="adminPasswordInput">Admin Passcode</label>
+            <input type="password" class="form-control" id="adminPasswordInput" autocomplete="current-password" required autofocus>
+        </div>
+        <div id="adminAuthError" class="alert alert-danger py-2 px-3 small d-none"></div>
+        <button type="submit" class="btn btn-success w-100">Unlock Command Center</button>
+    </form>
+</div>
+
+<div class="container py-4" id="adminMainShell" style="display: none;">
     <header class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-3">
         <div>
             <h3 class="mb-0">Latent Space <span class="text-muted fs-6">Command Center</span></h3>
@@ -125,6 +159,7 @@
             <a href="/draw" class="btn btn-sm btn-outline-success">Browser Gaze Draw</a>
             <a href="/kiosk" class="btn btn-sm btn-outline-info">Web Print Kiosk</a>
             <span class="badge bg-secondary py-2 px-3" id="lastUpdate">Connecting...</span>
+            <button class="btn btn-sm btn-outline-danger" onclick="logoutAdmin()">Sign Out</button>
         </div>
     </header>
 
@@ -591,14 +626,93 @@
 
     function safeUrl(url) {
         const u = String(url ?? '').trim();
-        if (/^(https?:\/\/|\/)/i.test(u)) return escapeHtml(u);
+        if (/^(https?:\/\/|\/(?!\/))/i.test(u)) return escapeHtml(u);
         return '#';
+    }
+
+    let adminAuthenticated = false;
+    let monitorTimerId = null;
+    const _nativeFetch = window.fetch.bind(window);
+    window.fetch = async function(input, init) {
+        const res = await _nativeFetch(input, init);
+        const urlStr = typeof input === 'string' ? input : (input && input.url) || '';
+        if (res.status === 401 && !urlStr.includes('/api/auth/')) {
+            showAdminLock('Session expired or authentication required.');
+        }
+        return res;
+    };
+
+    function showAdminLock(errMsg = '') {
+        adminAuthenticated = false;
+        if (monitorTimerId !== null) {
+            clearInterval(monitorTimerId);
+            monitorTimerId = null;
+        }
+        document.getElementById('adminMainShell').style.display = 'none';
+        document.getElementById('adminAuthOverlay').style.display = 'flex';
+        const errBox = document.getElementById('adminAuthError');
+        if (errMsg) {
+            errBox.textContent = errMsg;
+            errBox.classList.remove('d-none');
+        } else {
+            errBox.classList.add('d-none');
+        }
+        setTimeout(() => document.getElementById('adminPasswordInput').focus(), 50);
+    }
+
+    function unlockAdminShell() {
+        adminAuthenticated = true;
+        document.getElementById('adminAuthOverlay').style.display = 'none';
+        document.getElementById('adminMainShell').style.display = 'block';
+        document.getElementById('adminAuthError').classList.add('d-none');
+        updateMonitor();
+        loadAIConfig();
+        loadAttributions();
+        loadPrintSettings();
+        if (monitorTimerId === null) {
+            monitorTimerId = setInterval(() => {
+                if (adminAuthenticated) updateMonitor();
+            }, 5000);
+        }
+    }
+
+    async function submitAdminLogin(event) {
+        event.preventDefault();
+        const pwInput = document.getElementById('adminPasswordInput');
+        const errBox = document.getElementById('adminAuthError');
+        errBox.classList.add('d-none');
+        try {
+            const res = await _nativeFetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: pwInput.value })
+            });
+            const data = await res.json();
+            if (res.ok && data.authenticated) {
+                pwInput.value = '';
+                unlockAdminShell();
+            } else {
+                errBox.textContent = data.error || 'Invalid passcode.';
+                errBox.classList.remove('d-none');
+            }
+        } catch (e) {
+            errBox.textContent = 'Connection error: ' + e;
+            errBox.classList.remove('d-none');
+        }
+    }
+
+    async function logoutAdmin() {
+        try {
+            await _nativeFetch('/api/auth/logout', { method: 'POST' });
+        } catch (_) {}
+        showAdminLock('');
     }
 
     // --- 1. MONITOR ---
     async function updateMonitor() {
         try {
             const res = await fetch('/api/status?t=' + Date.now());
+            if (!res.ok) return;
             const data = await res.json();
 
             const pipeState = data.pipeline || {};
@@ -1105,14 +1219,21 @@
     }
 
     // --- INIT ---
-    updateMonitor();
-    loadAIConfig();
-    loadAttributions();
-    loadPrintSettings();
-    setInterval(updateMonitor, 5000);
+    (async function initAdmin() {
+        try {
+            const res = await _nativeFetch('/api/auth/status?t=' + Date.now());
+            const data = await res.json();
+            if (res.ok && data.authenticated) {
+                unlockAdminShell();
+                return;
+            }
+        } catch (_) {}
+        showAdminLock('');
+    })();
 
     document.querySelectorAll('a[data-bs-toggle="tab"]').forEach(el => {
         el.addEventListener('shown.bs.tab', event => {
+            if (!adminAuthenticated) return;
             const target = event.target.getAttribute('href');
             if (target === '#tab-files') { loadFiles(); loadPrintSettings(); }
             if (target === '#tab-ai') loadAIConfig();

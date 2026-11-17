@@ -7,7 +7,10 @@ AI provider settings, printing preferences, and Kasboek attribution settings.
 
 import json
 import os
+import re
+import secrets
 import threading
+from datetime import datetime
 from pathlib import Path
 from copy import deepcopy
 
@@ -19,9 +22,14 @@ LOGS_DIR = Path(os.environ.get("LATENT_SPACE_LOGS_DIR", PROJECT_DIR / "logs")).r
 WEB_UI_DIR = PROJECT_DIR / "web_ui"
 CONFIG_DIR = Path(os.environ.get("LATENT_SPACE_CONFIG_DIR", PROJECT_DIR / "config")).resolve()
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
+ADMIN_PIN_FILE = CONFIG_DIR / "admin_pin.txt"
 ENV_FILE = PROJECT_DIR / "analysis_watcher" / ".env"
 
+ALLOWED_PAPER_FORMATS = {"A4", "A3", "A5", "Letter", "Legal"}
+_PRINTER_NAME_RE = re.compile(r"^[A-Za-z0-9 _.\-:()/\\]{1,128}$")
+
 _lock = threading.Lock()
+_history_lock = threading.Lock()
 _memory_settings = None
 
 DEFAULT_ANALYSIS_PROMPT = (
@@ -214,6 +222,114 @@ def load_settings() -> dict:
             return deepcopy(_memory_settings or DEFAULT_SETTINGS)
 
 
+def validate_safe_url(url: str, field_name: str = "url") -> str:
+    """Allow only empty strings, relative root paths ('/...'), or http(s):// URLs."""
+    if url is None:
+        return ""
+    if not isinstance(url, str):
+        raise ValueError(f"{field_name} must be a string")
+    val = url.strip()
+    if not val:
+        return ""
+    if any(ord(ch) < 32 for ch in val):
+        raise ValueError(f"{field_name} contains invalid control characters")
+    low = val.lower()
+    if low.startswith(("http://", "https://")) or (val.startswith("/") and not val.startswith("//")):
+        return val
+    raise ValueError(f"{field_name} must start with http://, https://, or /")
+
+
+def validate_attributions_data(data: dict) -> dict:
+    """Validate and sanitize attribution settings before saving."""
+    if not isinstance(data, dict):
+        raise ValueError("attributions payload must be an object")
+    cleaned = deepcopy(data)
+    for url_field in ("logo_path", "website_url", "company_linkedin_url"):
+        if url_field in cleaned:
+            cleaned[url_field] = validate_safe_url(cleaned[url_field], url_field)
+    if "founders" in cleaned:
+        if not isinstance(cleaned["founders"], list):
+            raise ValueError("founders must be a list")
+        safe_founders = []
+        for idx, f in enumerate(cleaned["founders"][:5]):
+            if not isinstance(f, dict):
+                raise ValueError(f"founders[{idx}] must be an object")
+            safe_founders.append({
+                "name": str(f.get("name") or "")[:120],
+                "url": validate_safe_url(f.get("url", ""), f"founders[{idx}].url"),
+            })
+        cleaned["founders"] = safe_founders
+    return cleaned
+
+
+def validate_printer_name(name: str) -> str:
+    """Validate printer name against allowed characters to prevent injection."""
+    if not isinstance(name, str):
+        raise ValueError("printer_name must be a string")
+    pname = name.strip() or "default"
+    if not _PRINTER_NAME_RE.match(pname):
+        raise ValueError("printer_name contains disallowed characters or exceeds 128 chars")
+    return pname
+
+
+def validate_printing_data(data: dict) -> dict:
+    """Validate printer configuration to prevent shell/command injection and invalid formats."""
+    if not isinstance(data, dict):
+        raise ValueError("printing payload must be an object")
+    cleaned = deepcopy(data)
+    if "auto_print" in cleaned:
+        cleaned["auto_print"] = bool(cleaned["auto_print"])
+    if "printer_name" in cleaned:
+        cleaned["printer_name"] = validate_printer_name(cleaned["printer_name"])
+    if "paper_format" in cleaned:
+        fmt = str(cleaned["paper_format"] or "A4").strip()
+        if fmt not in ALLOWED_PAPER_FORMATS:
+            raise ValueError(f"paper_format must be one of {sorted(ALLOWED_PAPER_FORMATS)}")
+        cleaned["paper_format"] = fmt
+    return cleaned
+
+
+def mask_settings_secrets(settings: dict) -> dict:
+    """Return a deep copy of settings with API keys replaced by '***'."""
+    masked = deepcopy(settings)
+    for role in ("analysis", "poem"):
+        role_cfg = masked.get("ai", {}).get(role)
+        if isinstance(role_cfg, dict) and role_cfg.get("api_key"):
+            role_cfg["has_api_key"] = True
+            role_cfg["api_key"] = "***"
+    return masked
+
+
+def get_or_create_admin_password() -> tuple:
+    """
+    Resolve the admin password/PIN from env vars (LATENT_SPACE_ADMIN_PASSWORD,
+    ADMIN_PASSWORD, ADMIN_PIN) or persist a generated 8-char passcode in config/admin_pin.txt.
+    Returns (password, source).
+    """
+    env = load_env_vars()
+    for var in ("LATENT_SPACE_ADMIN_PASSWORD", "ADMIN_PASSWORD", "ADMIN_PIN"):
+        val = (env.get(var) or "").strip()
+        if val:
+            return val, f"env:{var}"
+
+    ensure_directories()
+    with _lock:
+        if ADMIN_PIN_FILE.exists():
+            try:
+                existing = ADMIN_PIN_FILE.read_text(encoding="utf-8").strip()
+                if existing:
+                    return existing, str(ADMIN_PIN_FILE)
+            except Exception:
+                pass
+        pin = secrets.token_hex(4).upper()
+        atomic_write_text(ADMIN_PIN_FILE, pin + "\n", encoding="utf-8")
+        try:
+            os.chmod(ADMIN_PIN_FILE, 0o600)
+        except Exception:
+            pass
+        return pin, str(ADMIN_PIN_FILE)
+
+
 def save_settings_unlocked(settings: dict) -> dict:
     global _memory_settings
     ensure_directories()
@@ -223,8 +339,13 @@ def save_settings_unlocked(settings: dict) -> dict:
             existing = _read_existing_settings_raw()
         except Exception:
             existing = None
-    sanitized = _sanitize_incoming_settings(settings, existing=existing)
-    merged = _deep_merge(DEFAULT_SETTINGS, sanitized)
+    base = _deep_merge(DEFAULT_SETTINGS, existing or {})
+    sanitized = _sanitize_incoming_settings(settings, existing=base)
+    if isinstance(sanitized.get("attributions"), dict):
+        sanitized["attributions"] = validate_attributions_data(sanitized["attributions"])
+    if isinstance(sanitized.get("printing"), dict):
+        sanitized["printing"] = validate_printing_data(sanitized["printing"])
+    merged = _deep_merge(base, sanitized)
     _memory_settings = deepcopy(merged)
     try:
         atomic_write_text(SETTINGS_FILE, json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -253,9 +374,53 @@ def update_settings_section(section: str, data: dict) -> dict:
         clean_data = data
         if section == "ai" and isinstance(data, dict):
             clean_data = _sanitize_incoming_settings({"ai": data}, existing=current).get("ai", data)
+        elif section == "attributions":
+            clean_data = validate_attributions_data(data)
+        elif section == "printing":
+            clean_data = validate_printing_data(data)
 
         if isinstance(current.get(section), dict) and isinstance(clean_data, dict):
             current[section] = _deep_merge(current[section], clean_data)
         else:
             current[section] = clean_data
         return save_settings_unlocked(current)
+
+
+def mark_file_printed(filename: str, extra_meta: dict = None):
+    """Record a printed PDF atomically in shared_output/docs/print_history.json."""
+    print_log = DOCS_DIR / "print_history.json"
+    with _history_lock:
+        history = {"printed": [], "prints": []}
+        if print_log.exists():
+            try:
+                history = json.loads(print_log.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        if filename not in history.get("printed", []):
+            history.setdefault("printed", []).append(filename)
+        entry = {
+            "filename": filename,
+            "timestamp": datetime.now().isoformat(),
+        }
+        if isinstance(extra_meta, dict):
+            entry.update(extra_meta)
+        history.setdefault("prints", []).append(entry)
+        atomic_write_text(print_log, json.dumps(history, indent=2), encoding="utf-8")
+
+
+def remove_from_print_history(filenames):
+    """Prune deleted PDF filenames from print_history.json atomically."""
+    if not filenames:
+        return
+    remove_set = set(filenames)
+    print_log = DOCS_DIR / "print_history.json"
+    with _history_lock:
+        if not print_log.exists():
+            return
+        try:
+            history = json.loads(print_log.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        history["printed"] = [f for f in history.get("printed", []) if f not in remove_set]
+        history["prints"] = [p for p in history.get("prints", []) if p.get("filename") not in remove_set]
+        atomic_write_text(print_log, json.dumps(history, indent=2), encoding="utf-8")

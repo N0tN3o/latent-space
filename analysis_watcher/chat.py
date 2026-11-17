@@ -16,6 +16,12 @@ from config_manager import load_settings, update_settings_section, load_env_vars
 
 logger = logging.getLogger("image_analysis_pipeline")
 
+_OLLAMA_VISION_CAPS = {}
+_VISION_NAME_HINTS = (
+    "vision", "llava", "bakllava", "moondream", "minicpm-v",
+    "qwen2-vl", "qwen2.5vl", "pixtral", "gemma3",
+)
+
 ASSISTANT_KEY_TO_ROLE = {
     "8a79f5ec-c5dd-448c-9611-99610792a04b": "analysis",
     "959058ad-4417-49e3-9e71-252ee2fb033d": "poem",
@@ -262,10 +268,10 @@ class LLMModel:
                     other_key,
                 )
 
-        # 3. Cloud API failovers (from .env or settings)
+        # 3. Cloud API failovers (from .env or settings) — always use each provider's own default model
         gemini_key = self._resolve_key_for_provider("gemini", settings, env)
         if gemini_key:
-            add_candidate("gemini", self._fallback_model or "gemini-2.0-flash", "", gemini_key)
+            add_candidate("gemini", "gemini-2.0-flash", "", gemini_key)
 
         if env.get("GROQ_API_KEY"):
             add_candidate("openai_compatible", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1", env["GROQ_API_KEY"])
@@ -285,30 +291,32 @@ class LLMModel:
         if self._provider != "ollama":
             ollama_model = (
                 (other_cfg.get("model") if other_prov == "ollama" else "")
-                or self._fallback_model
                 or "llama3.2"
             )
             add_candidate("ollama", ollama_model, "http://localhost:11434/v1", "")
 
         return candidates
 
-    def _call_provider(self, provider: str, model: str, base_url: str, api_key: str, message: str, img_b64: str = None) -> str:
+    def _call_provider(self, provider: str, model: str, base_url: str, api_key: str, message: str, img_b64: str = None) -> tuple:
+        used_model = model
         if provider == "gemini":
-            reply = self._chat_gemini(message, img_b64, model_name=model, api_key=api_key)
+            used_model = model or self._llm or "gemini-2.0-flash"
+            reply = self._chat_gemini(message, img_b64, model_name=used_model, api_key=api_key)
         elif provider == "anthropic":
-            reply = self._chat_anthropic(message, img_b64, model_name=model, api_key=api_key)
+            used_model = model or self._llm or "claude-3-5-haiku-latest"
+            reply = self._chat_anthropic(message, img_b64, model_name=used_model, api_key=api_key)
         elif provider == "buas":
             reply = self._chat_buas(message)
         elif provider in ("ollama", "openai_compatible"):
-            reply = self._chat_openai_or_ollama(
+            reply, used_model = self._chat_openai_or_ollama(
                 message, img_b64, provider=provider, model_name=model, base_url=base_url, api_key=api_key
             )
         else:
             raise ValueError(f"Unknown AI provider: {provider}")
 
         if not reply or not reply.strip():
-            raise RuntimeError(f"Empty response from {provider} ({model})")
-        return reply.strip()
+            raise RuntimeError(f"Empty response from {provider} ({used_model})")
+        return reply.strip(), used_model
 
     def chat(self, message: str, image_path: str = None, allow_failover: bool = True) -> str:
         """
@@ -328,9 +336,9 @@ class LLMModel:
         primary_err = None
         for attempt in range(2):
             try:
-                reply = self._call_provider(self._provider, self._llm, self._base_url, self._api_key, message, img_b64)
+                reply, used_model = self._call_provider(self._provider, self._llm, self._base_url, self._api_key, message, img_b64)
                 self._last_used_provider = self._provider
-                self._last_used_model = self._llm
+                self._last_used_model = used_model
                 return reply
             except Exception as e:
                 primary_err = e
@@ -347,10 +355,10 @@ class LLMModel:
             for fb_prov, fb_model, fb_url, fb_key in self._build_failover_candidates():
                 try:
                     logger.warning(f"[chat] {self.role} failing over to {fb_prov} ({fb_model})...")
-                    reply = self._call_provider(fb_prov, fb_model, fb_url, fb_key, message, img_b64)
+                    reply, used_model = self._call_provider(fb_prov, fb_model, fb_url, fb_key, message, img_b64)
                     self._last_used_provider = fb_prov
-                    self._last_used_model = fb_model
-                    logger.info(f"[chat] {self.role} failover succeeded via {fb_prov} ({fb_model})")
+                    self._last_used_model = used_model
+                    logger.info(f"[chat] {self.role} failover succeeded via {fb_prov} ({used_model})")
                     return reply
                 except Exception as fb_e:
                     logger.warning(f"[chat] {self.role} failover {fb_prov} ({fb_model}) failed: {fb_e}")
@@ -387,6 +395,29 @@ class LLMModel:
                 return m
         return installed[0]
 
+    @staticmethod
+    def _ollama_supports_vision(clean_base: str, model_name: str) -> bool:
+        """Check (cached) whether a local Ollama model supports multimodal image inputs."""
+        if not model_name:
+            return False
+        low = model_name.lower()
+        if any(hint in low for hint in _VISION_NAME_HINTS):
+            return True
+        host_root = clean_base[:-3] if clean_base.endswith("/v1") else clean_base
+        cache_key = (host_root, model_name)
+        if cache_key in _OLLAMA_VISION_CAPS:
+            return _OLLAMA_VISION_CAPS[cache_key]
+        supported = False
+        try:
+            resp = requests.post(f"{host_root}/api/show", json={"model": model_name}, timeout=1.0)
+            if resp.ok:
+                caps = [str(c).lower() for c in resp.json().get("capabilities", [])]
+                supported = "vision" in caps
+        except Exception:
+            supported = False
+        _OLLAMA_VISION_CAPS[cache_key] = supported
+        return supported
+
     def _chat_openai_or_ollama(
         self,
         message: str,
@@ -395,7 +426,7 @@ class LLMModel:
         model_name: str = None,
         base_url: str = None,
         api_key: str = None,
-    ) -> str:
+    ) -> tuple:
         prov = (provider or self._provider).lower()
         mod = model_name if model_name is not None else self._llm
         b_url = (base_url if base_url is not None else self._base_url) or "http://localhost:11434/v1"
@@ -411,14 +442,19 @@ class LLMModel:
         if key:
             headers["Authorization"] = f"Bearer {key}"
 
+        send_img_b64 = img_b64
+        if send_img_b64 and prov == "ollama" and self._vision_mode == "auto":
+            if not self._ollama_supports_vision(clean_base, mod):
+                send_img_b64 = None
+
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
 
-        if img_b64:
+        if send_img_b64:
             user_content = [
                 {"type": "text", "text": message},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{send_img_b64}"}}
             ]
         else:
             user_content = message
@@ -434,13 +470,14 @@ class LLMModel:
         resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
 
         # If a text-only model on Ollama/OpenAI rejects image_url, retry with text only
-        if resp.status_code >= 400 and img_b64 is not None:
+        if resp.status_code >= 400 and send_img_b64 is not None:
             messages[-1]["content"] = message
             payload["messages"] = messages
             resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
 
         # If Ollama returns 404 because the configured model tag is not pulled locally,
         # automatically discover an installed non-embedding Ollama model and retry
+        used_model = mod
         if resp.status_code == 404 and prov == "ollama":
             try:
                 fallback_model = self._discover_ollama_text_model(clean_base, mod)
@@ -451,13 +488,13 @@ class LLMModel:
                     payload["messages"] = messages
                     resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
                     if resp.ok:
-                        self._llm = fallback_model
+                        used_model = fallback_model
             except Exception:
                 pass
 
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"].strip()
+        return data["choices"][0]["message"]["content"].strip(), used_model
 
     def _chat_gemini(self, message: str, img_b64: str = None, model_name: str = None, api_key: str = None) -> str:
         key = api_key if api_key is not None else self._api_key
@@ -557,6 +594,7 @@ class LLMModel:
         resp = requests.post(self.__ask_endpoint_url, json=chat_data, headers=self.__headers, timeout=60)
         text = resp.text.strip()
         if text.startswith("{") and '"status": "Failed"' in text:
+            self.__chat_key = None
             raise RuntimeError(f"BUas server error: {text}")
         return text
 

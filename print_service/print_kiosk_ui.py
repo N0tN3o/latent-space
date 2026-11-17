@@ -1,7 +1,6 @@
 import sys
 import os
 import subprocess
-import time
 import json
 import shutil
 from datetime import datetime, timedelta
@@ -12,14 +11,19 @@ from watchdog.events import FileSystemEventHandler
 # --- PyQt6 Imports ---
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QMessageBox, 
-                             QStackedWidget, QLineEdit, QScrollArea, QGridLayout,
-                             QScroller)
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QSize, QEvent
-from PyQt6.QtGui import QFont, QPixmap, QIcon
+                             QStackedWidget, QLineEdit, QScrollArea, QScroller)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QEvent
+from PyQt6.QtGui import QFont, QPixmap
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-from config_manager import SHARED_DIR, DOCS_DIR, PRINTED_DIR, atomic_write_text, load_settings
+from config_manager import (
+    DOCS_DIR,
+    PRINTED_DIR,
+    load_settings,
+    mark_file_printed,
+    validate_printer_name,
+)
 
 # Configuration
 INACTIVITY_TIMEOUT_SEC = 60  # Reset search after 60s of no activity
@@ -48,19 +52,7 @@ class PrintRecord:
         except: return False
     
     def mark_as_printed(self):
-        history = {'printed': [], 'prints': []}
-        if PRINT_LOG.exists():
-            try:
-                with open(PRINT_LOG, 'r') as f: history = json.load(f)
-            except: pass
-        if self.filename not in history['printed']:
-            history['printed'].append(self.filename)
-        history['prints'].append({
-            'filename': self.filename,
-            'timestamp': datetime.now().isoformat(),
-            'user_timestamp': self.timestamp.isoformat()
-        })
-        atomic_write_text(PRINT_LOG, json.dumps(history, indent=2), encoding="utf-8")
+        mark_file_printed(self.filename, extra_meta={"user_timestamp": self.timestamp.isoformat()})
         self.printed = True
     
     def get_thumbnail(self, size=(200, 280)):
@@ -72,31 +64,39 @@ class PrintRecord:
                 if not pixmap.isNull():
                     return pixmap.scaled(size[0], size[1], Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
 
-            # Try to generate a PNG from the PDF using common system tools
+            # Try to generate a PNG from the PDF using PyMuPDF, pdftoppm, or ImageMagick
             if self.path.exists():
                 generated = False
-                # Use pdftoppm (poppler) if available
                 try:
-                    if shutil.which('pdftoppm'):
-                        root = str(png_path.with_suffix(''))
-                        subprocess.run(['pdftoppm', '-png', '-singlefile', str(self.path), root], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                        if png_path.exists():
-                            generated = True
+                    import fitz
+                    doc = fitz.open(str(self.path))
+                    if len(doc) > 0:
+                        pix = doc[0].get_pixmap(dpi=120)
+                        pix.save(str(png_path))
+                        generated = png_path.exists()
+                    doc.close()
                 except Exception:
                     generated = False
 
-                # Fallback to ImageMagick `convert` if available
                 if not generated:
                     try:
-                        if shutil.which('convert'):
-                            # render only the first page
-                            subprocess.run(['convert', f"{str(self.path)}[0]", str(png_path)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                            if png_path.exists():
-                                generated = True
+                        if shutil.which('pdftoppm'):
+                            root = str(png_path.with_suffix(''))
+                            subprocess.run(['pdftoppm', '-png', '-singlefile', str(self.path), root], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            generated = png_path.exists()
                     except Exception:
                         generated = False
 
-                # If generation succeeded, try loading it
+                # Note: never invoke `convert` on Windows (System32/convert.exe is the disk utility)
+                if not generated:
+                    im_bin = shutil.which('magick') or (shutil.which('convert') if sys.platform != 'win32' else None)
+                    if im_bin:
+                        try:
+                            subprocess.run([im_bin, f"{str(self.path)}[0]", str(png_path)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                            generated = png_path.exists()
+                        except Exception:
+                            generated = False
+
                 if generated and png_path.exists():
                     pixmap = QPixmap(str(png_path))
                     if not pixmap.isNull():
@@ -335,15 +335,24 @@ class EnhancedPrintKioskUI(QMainWindow):
                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes: return
 
-        printer_name = (load_settings().get("printing", {}).get("printer_name", "default") or "").strip()
+        try:
+            printer_name = validate_printer_name(load_settings().get("printing", {}).get("printer_name", "default") or "default")
+        except ValueError as e:
+            QMessageBox.critical(self, "Error", f"Invalid printer configuration: {e}")
+            return
         is_custom_printer = bool(printer_name and printer_name.lower() != "default")
 
         try:
             if sys.platform == "win32":
                 if is_custom_printer:
-                    safe_printer = printer_name.replace('"', '`"')
-                    ps_cmd = f'Start-Process -FilePath "{record.path}" -Verb PrintTo -ArgumentList \'"{safe_printer}"\''
-                    subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], check=True)
+                    win_env = os.environ.copy()
+                    win_env["LS_PRINT_FILE"] = str(record.path)
+                    win_env["LS_PRINTER_ARG"] = f'"{printer_name}"'
+                    subprocess.run(
+                        ["powershell", "-NoProfile", "-Command", "Start-Process -FilePath $env:LS_PRINT_FILE -Verb PrintTo -ArgumentList $env:LS_PRINTER_ARG"],
+                        check=True,
+                        env=win_env,
+                    )
                 else:
                     os.startfile(str(record.path), "print")
             else:

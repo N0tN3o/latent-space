@@ -214,7 +214,6 @@
             <button class="btn btn-primary" id="submitBtn" onclick="submitDrawing()">Submit &amp; Analyze</button>
             <a href="/" class="btn">Gallery</a>
             <a href="/kiosk" class="btn">Kiosk</a>
-            <a href="/admin" class="btn">Admin</a>
         </div>
     </header>
 
@@ -249,10 +248,16 @@
 
         const W = 1280;
         const H = 720;
+        let dwellGrid = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+
+        function resetDwellGrid() {
+            dwellGrid = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+        }
 
         function resetArtCanvas() {
             artCtx.fillStyle = '#ffffff';
             artCtx.fillRect(0, 0, W, H);
+            resetDwellGrid();
         }
         resetArtCanvas();
 
@@ -310,7 +315,10 @@
                 prevPoint = null;
             } else if (nextState === STATES.SEARCHING) {
                 calibSamples = [];
+                calibTargets = [];
                 centerSamples = [];
+                earSamples = [];
+                calibStartTs = 0;
                 cursorCtx.clearRect(0, 0, W, H);
                 prevPoint = null;
                 statusBadge.textContent = 'Searching for gaze — Step in front of camera to begin';
@@ -319,7 +327,10 @@
                 resetArtCanvas();
                 hasDrawn = false;
                 calibSamples = [];
+                calibTargets = [];
                 centerSamples = [];
+                earSamples = [];
+                calibStartTs = performance.now();
                 cursorPos = [0.5, 0.5];
                 prevPoint = null;
                 drawCalibrationTarget(0);
@@ -358,16 +369,23 @@
             return `rgb(${shade}, 0, 0)`;
         }
 
+        function calibrationTargetAtProgress(pct) {
+            const p = Math.max(0, Math.min(100, pct));
+            if (p <= 33) {
+                return [0.5, 0.5];
+            }
+            const angle = ((p - 33) / 67.0) * Math.PI * 2.0;
+            return [0.5 + 0.36 * Math.cos(angle), 0.5 + 0.34 * Math.sin(angle)];
+        }
+
         function drawCalibrationTarget(pct) {
             cursorCtx.clearRect(0, 0, W, H);
-            let tx = W * 0.5;
-            let ty = H * 0.5;
+            const [normTx, normTy] = calibrationTargetAtProgress(pct);
+            const tx = W * normTx;
+            const ty = H * normTy;
             let instruction = 'Step 1/2: Look steadily at the center target';
 
-            if (pct > 35) {
-                const angle = ((pct - 35) / 65.0) * Math.PI * 2.0;
-                tx = W * (0.5 + 0.36 * Math.cos(angle));
-                ty = H * (0.5 + 0.34 * Math.sin(angle));
+            if (pct > 33) {
                 instruction = 'Step 2/2: Follow the moving target with your eyes';
 
                 cursorCtx.strokeStyle = '#e5e7eb';
@@ -423,6 +441,10 @@
             const gx = Math.max(0, Math.min(W, normX * W));
             const gy = Math.max(0, Math.min(H, normY * H));
             const curPoint = { x: gx, y: gy };
+
+            const col = Math.min(2, Math.max(0, Math.floor(Math.max(0, Math.min(0.9999, normX)) * 3)));
+            const row = Math.min(2, Math.max(0, Math.floor(Math.max(0, Math.min(0.9999, normY)) * 3)));
+            dwellGrid[row][col] += Math.min(dt, 0.25);
 
             cursorCtx.clearRect(0, 0, W, H);
             cursorCtx.strokeStyle = gazeControlMode === 'flow' ? '#3b82f6' : '#10b981';
@@ -596,7 +618,7 @@
                 const res = await fetch('/api/drawings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ image: dataUrl })
+                    body: JSON.stringify({ image: dataUrl, dwell_grid: dwellGrid })
                 });
                 const result = await res.json();
                 if (res.ok && result.status === 'success') {
@@ -620,19 +642,44 @@
 
         async function pollPipelineUntilDone(submittedRunId) {
             const btn = document.getElementById('submitBtn');
-            for (let i = 0; i < 60; i++) {
+            for (let i = 0; i < 75; i++) {
                 await new Promise(r => setTimeout(r, 1200));
                 try {
-                    const res = await fetch('/api/pipeline/status?t=' + Date.now());
+                    const res = await fetch(`/api/pipeline/status?run_id=${encodeURIComponent(submittedRunId)}&t=${Date.now()}`);
                     const state = await res.json();
-                    const stillWaiting = state.running
-                        && (state.active_run_id === submittedRunId || state.queue_length > 0);
-                    if (!stillWaiting && state.state !== 'QUEUED') {
+                    const run = state.run || null;
+
+                    let done = false;
+                    let isError = false;
+                    let errCode = null;
+                    let errMsg = null;
+
+                    if (run) {
+                        if (run.state === 'COMPLETED') {
+                            done = true;
+                        } else if (run.state === 'ERROR') {
+                            done = true;
+                            isError = true;
+                            errCode = run.error_code;
+                            errMsg = run.error;
+                        }
+                    } else {
+                        const stillWaiting = state.running
+                            && (state.active_run_id === submittedRunId || state.queue_length > 0);
+                        if (!stillWaiting && state.state !== 'QUEUED') {
+                            done = true;
+                            isError = state.last_status === 'error';
+                            errCode = state.last_error_code;
+                            errMsg = state.last_error;
+                        }
+                    }
+
+                    if (done) {
                         btn.disabled = false;
                         btn.textContent = 'Submit & Analyze';
-                        if (state.last_status === 'error') {
-                            const code = state.last_error_code || 'ERR_PIPELINE_FAILED';
-                            showDrawError(code, `We could not complete your reading (${state.last_error || 'AI error'}). Please try again.`);
+                        if (isError) {
+                            const code = errCode || 'ERR_PIPELINE_FAILED';
+                            showDrawError(code, `We could not complete your reading (${errMsg || 'AI error'}). Please try again.`);
                             statusBadge.textContent = `Failed (${code}) — Ready to retry`;
                         } else {
                             hideDrawError();
@@ -641,7 +688,7 @@
                                 : 'Artwork & Poem Ready — Redirecting to Gallery...';
                         }
                         if (!webcamRunning) {
-                            if (state.last_status !== 'error') {
+                            if (!isError) {
                                 setTimeout(() => { window.location.href = '/'; }, 1200);
                             } else {
                                 setState(STATES.IDLE);
@@ -659,11 +706,9 @@
             }
             btn.disabled = false;
             btn.textContent = 'Submit & Analyze';
-            if (webcamRunning) {
-                setState(STATES.SEARCHING);
-            } else {
-                window.location.href = '/';
-            }
+            showDrawError('ERR_PIPELINE_TIMEOUT', 'Analysis is taking longer than expected. Please check the Gallery or try again.');
+            statusBadge.textContent = 'Timed out waiting for reading';
+            setState(webcamRunning ? STATES.SEARCHING : STATES.IDLE);
         }
 
         // --- MediaPipe FaceLandmarker Webcam Gaze Tracking ---
@@ -671,14 +716,68 @@
         let webcamRunning = false;
         let lastGazeTs = 0;
         const GAZE_LOSS_TIMEOUT_MS = 2000;
+        const CALIB_DURATION_MS = 4500;
+        const CALIB_STEP1_RATIO = 0.33;
+        const CALIB_STEP2_SKIP_MS = 200;
+        let calibStartTs = 0;
         let calibSamples = [];
+        let calibTargets = [];
         let centerSamples = [];
-        const CALIB_NEEDED = 85;
+        let earSamples = [];
+        let blinkEarThr = 0.135;
         let centerNorm = [0.0, 0.0];
-        let spanNorm = [0.11, 0.075];
+        let weightsX = [0.0, 9.0, 0.0];
+        let weightsY = [0.0, 0.0, 13.0];
         let smoothedNorm = null;
         let leftHist = [];
         let rightHist = [];
+
+        function solveLinear3x3(A, b) {
+            const M = A.map((row, idx) => [...row, b[idx]]);
+            for (let col = 0; col < 3; col++) {
+                let pivot = col;
+                for (let r = col + 1; r < 3; r++) {
+                    if (Math.abs(M[r][col]) > Math.abs(M[pivot][col])) pivot = r;
+                }
+                [M[col], M[pivot]] = [M[pivot], M[col]];
+                if (Math.abs(M[col][col]) < 1e-12) return null;
+                const div = M[col][col];
+                for (let j = col; j < 4; j++) M[col][j] /= div;
+                for (let r = 0; r < 3; r++) {
+                    if (r === col) continue;
+                    const factor = M[r][col];
+                    for (let j = col; j < 4; j++) M[r][j] -= factor * M[col][j];
+                }
+            }
+            return [M[0][3], M[1][3], M[2][3]];
+        }
+
+        function fitRidgeAffineAxis(dx, dy, targetOffsets, primaryAxis, minGain, maxGain, defaultGain) {
+            const n = dx.length;
+            if (n < 6) {
+                return primaryAxis === 0 ? [0.0, defaultGain, 0.0] : [0.0, 0.0, defaultGain];
+            }
+            const lam = 1.5e-5 * n;
+            const XtX = [[1e-6, 0, 0], [0, lam, 0], [0, 0, lam]];
+            const Xty = [0, 0, 0];
+            for (let i = 0; i < n; i++) {
+                const f = [1.0, dx[i], dy[i]];
+                const y = targetOffsets[i];
+                for (let r = 0; r < 3; r++) {
+                    Xty[r] += f[r] * y;
+                    for (let c = 0; c < 3; c++) {
+                        XtX[r][c] += f[r] * f[c];
+                    }
+                }
+            }
+            const w = solveLinear3x3(XtX, Xty) || (primaryAxis === 0 ? [0, defaultGain, 0] : [0, 0, defaultGain]);
+            const pIdx = primaryAxis + 1;
+            const cIdx = (1 - primaryAxis) + 1;
+            w[0] = Math.max(-0.15, Math.min(0.15, w[0]));
+            w[pIdx] = Math.max(minGain, Math.min(maxGain, w[pIdx]));
+            w[cIdx] = Math.max(-4.0, Math.min(4.0, w[cIdx]));
+            return w;
+        }
 
         function softSCurve(x, gain = 1.2) {
             const c = (x - 0.5) * 2.0;
@@ -689,6 +788,8 @@
         window.recenterCursorNow = function() {
             if (smoothedNorm) {
                 centerNorm = [smoothedNorm[0], smoothedNorm[1]];
+                weightsX[0] = 0.0;
+                weightsY[0] = 0.0;
             }
             cursorPos = [0.5, 0.5];
             prevPoint = null;
@@ -726,14 +827,21 @@
                 const filesetResolver = await vision.FilesetResolver.forVisionTasks(
                     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
                 );
-                faceLandmarker = await vision.FaceLandmarker.createFromOptions(filesetResolver, {
-                    baseOptions: {
-                        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
-                        delegate: 'GPU'
-                    },
-                    runningMode: 'VIDEO',
-                    numFaces: 1
-                });
+                const modelAssetPath = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+                try {
+                    faceLandmarker = await vision.FaceLandmarker.createFromOptions(filesetResolver, {
+                        baseOptions: { modelAssetPath, delegate: 'GPU' },
+                        runningMode: 'VIDEO',
+                        numFaces: 1
+                    });
+                } catch (gpuErr) {
+                    console.warn('GPU delegate unavailable, falling back to CPU delegate:', gpuErr);
+                    faceLandmarker = await vision.FaceLandmarker.createFromOptions(filesetResolver, {
+                        baseOptions: { modelAssetPath, delegate: 'CPU' },
+                        runningMode: 'VIDEO',
+                        numFaces: 1
+                    });
+                }
 
                 const video = document.getElementById('webcamVideo');
                 const stream = await navigator.mediaDevices.getUserMedia({
@@ -747,7 +855,7 @@
                 document.getElementById('centerBtn').style.display = 'inline-block';
                 camBtn.textContent = 'Webcam Active';
                 webcamRunning = true;
-                window.startCalibration();
+                setState(STATES.SEARCHING);
                 requestAnimationFrame(processVideoFrame);
             } catch (err) {
                 console.error(err);
@@ -807,7 +915,8 @@
             const left = canthusEye([468, 469, 470, 471], 33, 133, 159, 145);
             const right = canthusEye([473, 474, 475, 476], 362, 263, 386, 374);
             const ear = 0.5 * (left.ear + right.ear);
-            const isBlinking = ear < 0.165;
+            const minEar = Math.min(left.ear, right.ear);
+            const isBlinking = (ear < blinkEarThr) && (minEar < blinkEarThr * 1.1);
 
             // Glasses glare outlier rejection: weight the steadier eye higher
             leftHist.push(left.norm);
@@ -833,9 +942,17 @@
                 wLeft * left.norm[1] + wRight * right.norm[1]
             ];
 
-            // Gentle head-pose assist from nose tip (1)
+            // Translation-invariant head yaw/pitch relative to eye midpoint (independent of seating position)
+            const lOuter = pt(33);
+            const rOuter = pt(263);
+            const eyeMidX = 0.5 * (lOuter[0] + rOuter[0]);
+            const eyeMidY = 0.5 * (lOuter[1] + rOuter[1]);
+            const outerDist = Math.max(Math.hypot(rOuter[0] - lOuter[0], rOuter[1] - lOuter[1]), 1e-4);
             const nose = pt(1);
-            const headOffset = [nose[0] - 0.5, nose[1] - 0.5];
+            const headOffset = [
+                (nose[0] - eyeMidX) / outerDist,
+                (nose[1] - eyeMidY) / outerDist - 0.35
+            ];
             const HEAD_WEIGHT = 0.22;
 
             const norm = [
@@ -872,7 +989,7 @@
                     }
 
                     const lm = res.faceLandmarks[0];
-                    const { norm, isBlinking } = computeCanthusGazeAndBlink(lm);
+                    const { norm, isBlinking, ear } = computeCanthusGazeAndBlink(lm);
 
                     eyeCtx.fillStyle = isBlinking ? '#f59e0b' : '#10b981';
                     for (const idx of [468, 469, 470, 471, 473, 474, 475, 476]) {
@@ -896,43 +1013,64 @@
                         }
                     }
 
-                    if (gazeState === STATES.CALIBRATING && smoothedNorm && !isBlinking) {
-                        calibSamples.push([...smoothedNorm]);
-                        const pct = Math.min(100, Math.round((calibSamples.length / CALIB_NEEDED) * 100));
-                        if (pct <= 35) {
-                            centerSamples.push([...smoothedNorm]);
+                    if (gazeState === STATES.CALIBRATING) {
+                        if (!calibStartTs) calibStartTs = now;
+                        const elapsedMs = Math.max(0, now - calibStartTs);
+                        const pct = Math.min(100, Math.round((elapsedMs / CALIB_DURATION_MS) * 100));
+                        const step1Ms = CALIB_DURATION_MS * CALIB_STEP1_RATIO;
+
+                        if (!isBlinking) {
+                            const [tx, ty] = calibrationTargetAtProgress(pct);
+                            if (pct <= 33) {
+                                centerSamples.push([...norm]);
+                                earSamples.push(ear);
+                                calibSamples.push([...norm]);
+                                calibTargets.push([tx, ty]);
+                            } else if ((elapsedMs - step1Ms) >= CALIB_STEP2_SKIP_MS) {
+                                calibSamples.push([...norm]);
+                                calibTargets.push([tx, ty]);
+                            }
                         }
+
                         drawCalibrationTarget(pct);
-                        statusBadge.textContent = pct <= 35
+                        statusBadge.textContent = pct <= 33
                             ? `Calibrating ${pct}% — Look at the center target`
                             : `Calibrating ${pct}% — Follow the moving target`;
 
-                        if (calibSamples.length >= CALIB_NEEDED) {
-                            const xs = calibSamples.map(s => s[0]).sort((a, b) => a - b);
-                            const ys = calibSamples.map(s => s[1]).sort((a, b) => a - b);
+                        if (elapsedMs >= CALIB_DURATION_MS) {
+                            if (earSamples.length > 3) {
+                                const sortedEar = [...earSamples].sort((a, b) => a - b);
+                                const baseEar = sortedEar[Math.floor(sortedEar.length / 2)];
+                                blinkEarThr = Math.max(0.10, Math.min(0.155, baseEar * 0.52));
+                            }
 
                             if (centerSamples.length > 3) {
                                 const cxs = centerSamples.map(s => s[0]).sort((a, b) => a - b);
                                 const cys = centerSamples.map(s => s[1]).sort((a, b) => a - b);
                                 const cm = Math.floor(centerSamples.length / 2);
                                 centerNorm = [cxs[cm], cys[cm]];
-                            } else {
+                            } else if (calibSamples.length > 0) {
+                                const xs = calibSamples.map(s => s[0]).sort((a, b) => a - b);
+                                const ys = calibSamples.map(s => s[1]).sort((a, b) => a - b);
                                 const m = Math.floor(xs.length / 2);
                                 centerNorm = [xs[m], ys[m]];
                             }
 
-                            const p10 = Math.floor(xs.length * 0.10);
-                            const p90 = Math.floor(xs.length * 0.90);
-                            spanNorm = [
-                                Math.max(0.11, xs[p90] - xs[p10]),
-                                Math.max(0.075, ys[p90] - ys[p10])
-                            ];
+                            const dx = calibSamples.map(s => s[0] - centerNorm[0]);
+                            const dy = calibSamples.map(s => s[1] - centerNorm[1]);
+                            const txOff = calibTargets.map(t => t[0] - 0.5);
+                            const tyOff = calibTargets.map(t => t[1] - 0.5);
+                            weightsX = fitRidgeAffineAxis(dx, dy, txOff, 0, 4.5, 14.0, 9.0);
+                            weightsY = fitRidgeAffineAxis(dx, dy, tyOff, 1, 6.0, 18.0, 13.0);
+
                             window.startTimedSession();
                         }
-                    } else if (gazeState === STATES.DRAWING && smoothedNorm) {
+                    } else if (gazeState === STATES.DRAWING && smoothedNorm && !pointerDown) {
                         if (!isBlinking) {
-                            const linX = Math.max(0, Math.min(1, 0.5 + (smoothedNorm[0] - centerNorm[0]) / spanNorm[0]));
-                            const linY = Math.max(0, Math.min(1, 0.5 + (smoothedNorm[1] - centerNorm[1]) / spanNorm[1]));
+                            const dx = smoothedNorm[0] - centerNorm[0];
+                            const dy = smoothedNorm[1] - centerNorm[1];
+                            const linX = Math.max(0, Math.min(1, 0.5 + weightsX[0] + weightsX[1] * dx + weightsX[2] * dy));
+                            const linY = Math.max(0, Math.min(1, 0.5 + weightsY[0] + weightsY[1] * dx + weightsY[2] * dy));
                             const targetX = softSCurve(linX);
                             const targetY = softSCurve(linY);
 

@@ -30,8 +30,53 @@ DEADZONE = 0.018
 SACCADE_SPEED_THR = 0.25
 SMOOTH_ALPHA = 0.55
 ROLLING_BUFFER = 7
-BLINK_EAR_THRESHOLD = 0.165  # Eye Aspect Ratio below which a blink is occurring
-HEAD_POSE_WEIGHT = 0.22     # Gentle head-orientation assist
+BLINK_EAR_THRESHOLD = 0.135  # Adaptive default Eye Aspect Ratio threshold (prevents downward-gaze false positives)
+HEAD_POSE_WEIGHT = 0.22      # Translation-invariant head yaw/pitch assist
+CALIB_DURATION_SEC = 4.5
+CALIB_STEP1_RATIO = 0.33
+CALIB_STEP2_SKIP_SEC = 0.20
+
+
+def calibration_target_at_progress(pct: float) -> tuple:
+    """Return normalized (tx, ty) calibration target position for progress pct in [0, 100]."""
+    p = float(np.clip(pct, 0.0, 100.0))
+    if p <= 33.0:
+        return (0.5, 0.5)
+    angle = ((p - 33.0) / 67.0) * (2.0 * np.pi)
+    tx = 0.5 + 0.36 * np.cos(angle)
+    ty = 0.5 + 0.34 * np.sin(angle)
+    return (float(tx), float(ty))
+
+
+def fit_ridge_affine_axis(dx: np.ndarray, dy: np.ndarray, target_offset: np.ndarray,
+                          primary_axis: int, min_gain: float, max_gain: float,
+                          default_gain: float) -> np.ndarray:
+    """
+    Fit target_offset ~= b + w_x * dx + w_y * dy with Ridge regularization,
+    clamping gain bounds so motionless calibration stays safely responsive.
+    """
+    n = len(dx)
+    if n < 6:
+        w = np.zeros(3, dtype=np.float32)
+        w[primary_axis + 1] = default_gain
+        return w
+
+    X = np.column_stack([np.ones(n, dtype=np.float64), dx.astype(np.float64), dy.astype(np.float64)])
+    y = target_offset.astype(np.float64)
+    lam = 1.5e-5 * n
+    reg = np.diag([1e-6, lam, lam])
+    try:
+        w = np.linalg.solve(X.T @ X + reg, X.T @ y)
+    except np.linalg.LinAlgError:
+        w = np.array([0.0, default_gain if primary_axis == 0 else 0.0, default_gain if primary_axis == 1 else 0.0])
+
+    # Clamp primary and cross gains to physiological bounds
+    p_idx = primary_axis + 1
+    c_idx = (1 - primary_axis) + 1
+    w[0] = float(np.clip(w[0], -0.15, 0.15))
+    w[p_idx] = float(np.clip(w[p_idx], min_gain, max_gain))
+    w[c_idx] = float(np.clip(w[c_idx], -4.0, 4.0))
+    return w.astype(np.float32)
 
 
 def nplm_to_xy(lm, idx, w, h):
@@ -113,17 +158,24 @@ class EyeTracker:
         self.horiz_thr = DEFAULT_HORIZ_THRESHOLD
         self.vert_thr = DEFAULT_VERT_THRESHOLD
         self.deadzone = DEADZONE
+        self.blink_ear_thr = BLINK_EAR_THRESHOLD
         self.is_blinking = False
 
-        # Calibration data
+        # Calibration data (affine weights + legacy range fallback)
         self.center_norm = np.array([0.0, 0.0], dtype=np.float32)
         self.range_min = np.array([-0.08, -0.055], dtype=np.float32)
         self.range_max = np.array([0.08, 0.055], dtype=np.float32)
+        self.weights_x = np.array([0.0, 9.0, 0.0], dtype=np.float32)
+        self.weights_y = np.array([0.0, 0.0, 13.0], dtype=np.float32)
 
-        # Calibration state
+        # Time-based Calibration state
         self.is_calibrating = False
+        self.calibration_duration_sec = CALIB_DURATION_SEC
+        self.calibration_start_time = None
         self.calibration_samples = []
+        self.calibration_targets = []
         self.center_samples = []
+        self.ear_samples = []
         self.calibration_needed = 90
 
         # Anti-snap-back & Flow steering state
@@ -146,27 +198,52 @@ class EyeTracker:
         print("Gaze center re-anchored to current eye position.")
 
     def start_auto_calibration(self):
-        """Resets and starts the guided calibration process."""
+        """Resets and starts the time-based guided calibration process."""
         self.calibration_samples = []
+        self.calibration_targets = []
         self.center_samples = []
+        self.ear_samples = []
+        self.calibration_start_time = time.time()
         self.is_calibrating = True
         self.cursor_pos = np.array([0.5, 0.5], dtype=np.float32)
         print("Starting calibration - look at the center first, then follow the target.")
 
-    def add_calibration_sample(self, gaze_info):
-        if not self.is_calibrating or gaze_info is None:
+    def get_calibration_progress(self, now: float = None) -> float:
+        """Return elapsed calibration progress [0.0, 100.0] independent of camera FPS."""
+        if not self.is_calibrating or self.calibration_start_time is None:
+            return 0.0
+        cur = time.time() if now is None else now
+        elapsed = max(0.0, cur - self.calibration_start_time)
+        return float(np.clip((elapsed / self.calibration_duration_sec) * 100.0, 0.0, 100.0))
+
+    def add_calibration_sample(self, gaze_info, now: float = None):
+        if not self.is_calibrating:
             return False
 
-        if gaze_info.get("is_blinking", False):
-            return False
+        cur = time.time() if now is None else now
+        if self.calibration_start_time is None:
+            self.calibration_start_time = cur
 
-        sample = gaze_info["smoothed_norm"]
-        self.calibration_samples.append(sample)
-        # First 30% of samples capture the user's natural resting center gaze
-        if len(self.calibration_samples) <= int(self.calibration_needed * 0.3):
-            self.center_samples.append(sample)
+        elapsed = max(0.0, cur - self.calibration_start_time)
+        progress = self.get_calibration_progress(cur)
+        step1_dur = self.calibration_duration_sec * CALIB_STEP1_RATIO
 
-        if len(self.calibration_samples) >= self.calibration_needed:
+        if gaze_info is not None and not gaze_info.get("is_blinking", False):
+            # Use unlagged raw normalized signal paired with known target coordinates
+            sample = gaze_info.get("eye_norm", gaze_info["smoothed_norm"])
+            tx, ty = calibration_target_at_progress(progress)
+
+            if progress <= 33.0:
+                self.center_samples.append(sample)
+                if "ear" in gaze_info:
+                    self.ear_samples.append(float(gaze_info["ear"]))
+                self.calibration_samples.append(sample)
+                self.calibration_targets.append([tx, ty])
+            elif (elapsed - step1_dur) >= CALIB_STEP2_SKIP_SEC:
+                self.calibration_samples.append(sample)
+                self.calibration_targets.append([tx, ty])
+
+        if progress >= 100.0:
             self.finish_calibration()
             return True
 
@@ -177,19 +254,31 @@ class EyeTracker:
             self.is_calibrating = False
             return
 
+        if self.ear_samples:
+            baseline_ear = float(np.median(np.array(self.ear_samples, dtype=np.float32)))
+            self.blink_ear_thr = float(np.clip(baseline_ear * 0.52, 0.10, 0.155))
+
         arr = np.array(self.calibration_samples, dtype=np.float32)
+        t_arr = np.array(self.calibration_targets, dtype=np.float32) if self.calibration_targets else None
+
         if self.center_samples:
             self.center_norm = np.median(np.array(self.center_samples, dtype=np.float32), axis=0)
         else:
             self.center_norm = np.median(arr, axis=0)
 
-        p_low = np.percentile(arr, 10, axis=0)
-        p_high = np.percentile(arr, 90, axis=0)
+        dx = arr[:, 0] - self.center_norm[0]
+        dy = arr[:, 1] - self.center_norm[1]
+        if t_arr is not None and len(t_arr) == len(arr):
+            self.weights_x = fit_ridge_affine_axis(dx, dy, t_arr[:, 0] - 0.5, primary_axis=0, min_gain=4.5, max_gain=14.0, default_gain=9.0)
+            self.weights_y = fit_ridge_affine_axis(dx, dy, t_arr[:, 1] - 0.5, primary_axis=1, min_gain=6.0, max_gain=18.0, default_gain=13.0)
+        else:
+            self.weights_x = np.array([0.0, 9.0, 0.0], dtype=np.float32)
+            self.weights_y = np.array([0.0, 0.0, 13.0], dtype=np.float32)
 
-        # Enforce a realistic physiological minimum span so staring straight ahead never creates a tiny hypersensitive box
-        span = np.maximum(p_high - p_low, np.array([0.11, 0.075], dtype=np.float32))
-        self.range_min = self.center_norm - 0.5 * span
-        self.range_max = self.center_norm + 0.5 * span
+        span_x = float(np.clip(1.0 / max(abs(float(self.weights_x[1])), 1e-3), 0.07, 0.25))
+        span_y = float(np.clip(1.0 / max(abs(float(self.weights_y[2])), 1e-3), 0.055, 0.20))
+        self.range_min = self.center_norm - 0.5 * np.array([span_x, span_y], dtype=np.float32)
+        self.range_max = self.center_norm + 0.5 * np.array([span_x, span_y], dtype=np.float32)
 
         stds = arr.std(axis=0)
         self.horiz_thr = max(DEFAULT_HORIZ_THRESHOLD, float(stds[0]) * 2.5)
@@ -199,9 +288,9 @@ class EyeTracker:
         self.is_calibrating = False
         self.cursor_pos = np.array([0.5, 0.5], dtype=np.float32)
         print("Calibration complete!")
-        print(f"  Center:  {self.center_norm}")
-        print(f"  Range X: [{self.range_min[0]:.4f}, {self.range_max[0]:.4f}]")
-        print(f"  Range Y: [{self.range_min[1]:.4f}, {self.range_max[1]:.4f}]")
+        print(f"  Center:    {self.center_norm}")
+        print(f"  Weights X: {self.weights_x}")
+        print(f"  Weights Y: {self.weights_y}")
 
         from utils import save_calibration
         save_calibration(self.get_calibration_data())
@@ -213,6 +302,14 @@ class EyeTracker:
         span = np.maximum(r_max - r_min, np.array([0.11, 0.075], dtype=np.float32))
         self.range_min = self.center_norm - 0.5 * span
         self.range_max = self.center_norm + 0.5 * span
+        if "weights_x" in data and "weights_y" in data:
+            self.weights_x = np.array(data["weights_x"], dtype=np.float32)
+            self.weights_y = np.array(data["weights_y"], dtype=np.float32)
+        else:
+            self.weights_x = np.array([0.0, 1.0 / float(span[0]), 0.0], dtype=np.float32)
+            self.weights_y = np.array([0.0, 0.0, 1.0 / float(span[1])], dtype=np.float32)
+        if "blink_ear_thr" in data:
+            self.blink_ear_thr = float(np.clip(float(data["blink_ear_thr"]), 0.10, 0.165))
         self.cursor_pos = np.array([0.5, 0.5], dtype=np.float32)
 
     def get_calibration_data(self):
@@ -220,6 +317,9 @@ class EyeTracker:
             "center_norm": self.center_norm.tolist(),
             "range_min": self.range_min.tolist(),
             "range_max": self.range_max.tolist(),
+            "weights_x": self.weights_x.tolist(),
+            "weights_y": self.weights_y.tolist(),
+            "blink_ear_thr": float(self.blink_ear_thr),
         }
 
     def get_calibrated_gaze(self, gaze_info, dt=0.033):
@@ -230,11 +330,11 @@ class EyeTracker:
             return (float(self.cursor_pos[0]), float(self.cursor_pos[1]))
 
         raw_norm = gaze_info["smoothed_norm"]
+        dx = float(raw_norm[0]) - float(self.center_norm[0])
+        dy = float(raw_norm[1]) - float(self.center_norm[1])
 
-        span_x = max(float(self.range_max[0] - self.range_min[0]), 0.08)
-        span_y = max(float(self.range_max[1] - self.range_min[1]), 0.055)
-        lin_x = 0.5 + (float(raw_norm[0]) - float(self.center_norm[0])) / span_x
-        lin_y = 0.5 + (float(raw_norm[1]) - float(self.center_norm[1])) / span_y
+        lin_x = 0.5 + float(self.weights_x[0]) + float(self.weights_x[1]) * dx + float(self.weights_x[2]) * dy
+        lin_y = 0.5 + float(self.weights_y[0]) + float(self.weights_y[1]) * dx + float(self.weights_y[2]) * dy
 
         lin_x = float(np.clip(np.nan_to_num(lin_x, nan=0.5), 0.0, 1.0))
         lin_y = float(np.clip(np.nan_to_num(lin_y, nan=0.5), 0.0, 1.0))
@@ -294,7 +394,8 @@ class EyeTracker:
             right_norm, right_ear = compute_canthus_normalized_iris(right_center, r_outer, r_inner, r_top, r_bot)
 
             avg_ear = 0.5 * (left_ear + right_ear)
-            is_blinking = avg_ear < BLINK_EAR_THRESHOLD
+            min_ear = min(left_ear, right_ear)
+            is_blinking = (avg_ear < self.blink_ear_thr) and (min_ear < self.blink_ear_thr * 1.1)
             self.is_blinking = is_blinking
 
             # Glasses glare / single-eye outlier rejection:
@@ -309,10 +410,13 @@ class EyeTracker:
             w_right = l_jitter / (l_jitter + r_jitter)
             eye_only_norm = w_left * left_norm + w_right * right_norm
 
+            # Translation-invariant head yaw/pitch relative to eye midpoint (independent of chair position)
+            eye_mid = 0.5 * (l_outer + r_outer)
+            outer_dist = max(float(np.linalg.norm(r_outer - l_outer)), 1.0)
             nose_pt = nplm_to_xy(lm, FACEMESH_LANDMARKS["nose_tip"], w, h)
             head_offset = np.array([
-                (nose_pt[0] / float(w)) - 0.5,
-                (nose_pt[1] / float(h)) - 0.5,
+                (nose_pt[0] - eye_mid[0]) / outer_dist,
+                (nose_pt[1] - eye_mid[1]) / outer_dist - 0.35,
             ], dtype=np.float32)
 
             combined_norm = eye_only_norm + HEAD_POSE_WEIGHT * head_offset

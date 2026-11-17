@@ -2,7 +2,15 @@
 __pycache__/
 *.pyc
 venv/
+.venv/
 *.egg-info/
+
+# Environment & Runtime Config (may contain API keys / admin PIN / local calibration)
+.env
+analysis_watcher/.env
+config/admin_pin.txt
+config/settings.json
+gaze_painter/calibrations/calibration.json
 
 # Logs & Data
 logs/

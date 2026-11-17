@@ -16,10 +16,13 @@ Serves:
 import base64
 from email.parser import BytesParser
 from email.policy import default as email_default_policy
+import hmac
+from http.cookies import SimpleCookie
 import json
 import mimetypes
 import os
 import queue
+import secrets
 import sys
 import threading
 import time
@@ -48,10 +51,13 @@ from config_manager import (
     WEB_UI_DIR,
     atomic_write_bytes,
     atomic_write_text,
+    get_or_create_admin_password,
     load_settings,
+    mask_settings_secrets,
     save_settings,
     update_settings_section,
     ensure_directories,
+    validate_printer_name,
 )
 
 ensure_directories()
@@ -77,6 +83,8 @@ except Exception as e:
 _pipeline_lock = threading.Lock()
 _pipeline_queue = queue.Queue()
 _worker_thread = None
+_run_statuses = {}  # run_id -> {"run_id", "state", "status", "error_code", "error", "updated_at"}
+MAX_RUN_HISTORY = 100
 _pipeline_state = {
     "state": "IDLE",  # "IDLE" | "QUEUED" | "RUNNING" | "ERROR"
     "running": False,
@@ -87,16 +95,125 @@ _pipeline_state = {
     "last_error_code": None,
     "last_error": None,
 }
+
+
+def _record_run_status_unlocked(rid: str, state: str, status: str, error_code: str = None, error: str = None):
+    _run_statuses[rid] = {
+        "run_id": rid,
+        "state": state,
+        "status": status,
+        "error_code": error_code,
+        "error": error,
+        "updated_at": datetime.now().isoformat(),
+    }
+    while len(_run_statuses) > MAX_RUN_HISTORY:
+        oldest_key = next(iter(_run_statuses))
+        _run_statuses.pop(oldest_key, None)
 _watcher_thread = None
 _watcher_stop = threading.Event()
 _ollama_cache = {"status": "unknown", "ts": 0.0}
 _ollama_cache_lock = threading.Lock()
 
+MAX_JSON_BODY_BYTES = 1 * 1024 * 1024        # 1 MB for settings/auth/config JSON
+MAX_DRAWING_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB for drawing uploads
+SYNC_PIPELINE_TIMEOUT_SEC = 90.0
+REQUEST_SOCKET_TIMEOUT_SEC = 30.0
+ADMIN_SESSION_COOKIE = "ls_admin_session"
+ADMIN_SESSION_TTL_SEC = 12 * 3600
+MAX_ADMIN_SESSIONS = 128
+LOGIN_WINDOW_SEC = 300
+LOGIN_MAX_FAILURES = 8
+
+_auth_lock = threading.Lock()
+_admin_sessions = {}   # token -> expiry_monotonic
+_login_failures = {}   # client_ip -> [monotonic_timestamps]
+
+
+def _prune_sessions_unlocked(now: float):
+    expired = [tok for tok, exp in _admin_sessions.items() if exp <= now]
+    for tok in expired:
+        _admin_sessions.pop(tok, None)
+    if len(_admin_sessions) > MAX_ADMIN_SESSIONS:
+        oldest = sorted(_admin_sessions.items(), key=lambda kv: kv[1])
+        for tok, _ in oldest[: len(_admin_sessions) - MAX_ADMIN_SESSIONS]:
+            _admin_sessions.pop(tok, None)
+
+
+def _create_admin_session() -> str:
+    now = time.monotonic()
+    token = secrets.token_urlsafe(32)
+    with _auth_lock:
+        _prune_sessions_unlocked(now)
+        _admin_sessions[token] = now + ADMIN_SESSION_TTL_SEC
+    return token
+
+
+def _validate_admin_session(token: str) -> bool:
+    if not token:
+        return False
+    now = time.monotonic()
+    with _auth_lock:
+        _prune_sessions_unlocked(now)
+        exp = _admin_sessions.get(token)
+        if exp is None or exp <= now:
+            _admin_sessions.pop(token, None)
+            return False
+        _admin_sessions[token] = now + ADMIN_SESSION_TTL_SEC
+        return True
+
+
+def _revoke_admin_session(token: str):
+    if token:
+        with _auth_lock:
+            _admin_sessions.pop(token, None)
+
+
+def _check_login_rate_limit(client_ip: str) -> tuple:
+    now = time.monotonic()
+    with _auth_lock:
+        recent = [ts for ts in _login_failures.get(client_ip, []) if (now - ts) < LOGIN_WINDOW_SEC]
+        if recent:
+            _login_failures[client_ip] = recent
+        else:
+            _login_failures.pop(client_ip, None)
+        if len(recent) >= LOGIN_MAX_FAILURES:
+            retry_after = max(1, int(LOGIN_WINDOW_SEC - (now - recent[0])))
+            return False, retry_after
+        return True, 0
+
+
+def _record_login_failure(client_ip: str):
+    now = time.monotonic()
+    with _auth_lock:
+        recent = [ts for ts in _login_failures.get(client_ip, []) if (now - ts) < LOGIN_WINDOW_SEC]
+        recent.append(now)
+        _login_failures[client_ip] = recent
+
+
+def _clear_login_failures(client_ip: str):
+    with _auth_lock:
+        _login_failures.pop(client_ip, None)
+
+
+def _is_valid_image_bytes(data: bytes) -> bool:
+    """Verify uploaded drawing bytes start with a recognized image magic header."""
+    if not data or len(data) < 12:
+        return False
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return True
+    if data.startswith(b"\xff\xd8\xff"):
+        return True
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return True
+    if data.startswith(b"BM"):
+        return True
+    return False
+
 
 def _pipeline_worker_loop():
     """Single dedicated FIFO worker thread processing every queued drawing sequentially."""
     while True:
-        rid, snap_path, done_event, result_holder = _pipeline_queue.get()
+        rid, snap_path, done_event, result_holder, dwell_grid = _pipeline_queue.get()
         try:
             with _pipeline_lock:
                 _pipeline_state["state"] = "RUNNING"
@@ -106,14 +223,23 @@ def _pipeline_worker_loop():
                 _pipeline_state["last_status"] = "running"
                 _pipeline_state["last_error_code"] = None
                 _pipeline_state["last_error"] = None
+                _record_run_status_unlocked(rid, state="RUNNING", status="running")
 
-            ok = run_analysis_pipeline(run_id=rid, snapshot_path=snap_path, raise_on_error=True)
+            ok = run_analysis_pipeline(
+                run_id=rid,
+                snapshot_path=snap_path,
+                raise_on_error=True,
+                dwell_grid=dwell_grid,
+            )
             with _pipeline_lock:
                 _pipeline_state["last_status"] = "success" if ok else "failed"
                 _pipeline_state["last_run"] = datetime.now().isoformat()
                 if not ok:
                     _pipeline_state["last_error_code"] = "ERR_PIPELINE_FAILED"
                     _pipeline_state["last_error"] = "Pipeline returned failure"
+                    _record_run_status_unlocked(rid, state="ERROR", status="failed", error_code="ERR_PIPELINE_FAILED", error="Pipeline returned failure")
+                else:
+                    _record_run_status_unlocked(rid, state="COMPLETED", status="success")
             if result_holder is not None:
                 result_holder["ok"] = bool(ok)
                 result_holder["run_id"] = rid
@@ -124,6 +250,7 @@ def _pipeline_worker_loop():
                 _pipeline_state["last_error_code"] = err.code
                 _pipeline_state["last_error"] = str(err)
                 _pipeline_state["last_run"] = datetime.now().isoformat()
+                _record_run_status_unlocked(rid, state="ERROR", status="error", error_code=err.code, error=str(err))
             if result_holder is not None:
                 result_holder["ok"] = False
                 result_holder["run_id"] = rid
@@ -136,6 +263,7 @@ def _pipeline_worker_loop():
                 _pipeline_state["last_error_code"] = "ERR_PIPELINE_FAILED"
                 _pipeline_state["last_error"] = str(exc)
                 _pipeline_state["last_run"] = datetime.now().isoformat()
+                _record_run_status_unlocked(rid, state="ERROR", status="error", error_code="ERR_PIPELINE_FAILED", error=str(exc))
             if result_holder is not None:
                 result_holder["ok"] = False
                 result_holder["run_id"] = rid
@@ -173,6 +301,7 @@ def enqueue_pipeline_job(
     run_id: str = None,
     done_event: threading.Event = None,
     result_holder: dict = None,
+    dwell_grid=None,
 ) -> tuple:
     """Snapshot drawing input to input_{run_id}.png and enqueue into FIFO worker queue."""
     if not AI_AVAILABLE:
@@ -185,7 +314,9 @@ def enqueue_pipeline_job(
     else:
         _, snap = snapshot_drawing_input(source_path or (SHARED_DIR / "image.png"), run_id=rid)
 
-    _pipeline_queue.put((rid, str(snap), done_event, result_holder))
+    with _pipeline_lock:
+        _record_run_status_unlocked(rid, state="QUEUED", status="queued")
+    _pipeline_queue.put((rid, str(snap), done_event, result_holder, dwell_grid))
     with _pipeline_lock:
         qlen = _pipeline_queue.qsize()
         _pipeline_state["queue_length"] = qlen
@@ -463,22 +594,83 @@ class InvalidJSONError(ValueError):
     """Raised when an HTTP request body is not valid JSON."""
 
 
+class PayloadTooLargeError(ValueError):
+    """Raised when Content-Length exceeds the configured limit."""
+
+
+class LockedThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
+    def setup(self):
+        super().setup()
+        try:
+            self.request.settimeout(REQUEST_SOCKET_TIMEOUT_SEC)
+        except Exception:
+            pass
+
     def log_message(self, fmt, *args):
         # Quiet routine polling logs; print errors or mutations
         if len(args) >= 2 and str(args[1]).startswith(("4", "5")):
             super().log_message(fmt, *args)
 
+    def end_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("Referrer-Policy", "same-origin")
+        super().end_headers()
+
     def _send_cors_headers(self):
         # Omit wildcard Access-Control-Allow-Origin so arbitrary third-party websites cannot invoke local APIs
         pass
 
-    def _send_json(self, data, status=200):
+    def _get_session_cookie_token(self) -> str:
+        raw_cookie = self.headers.get("Cookie", "")
+        if not raw_cookie:
+            return ""
+        try:
+            cookie = SimpleCookie()
+            cookie.load(raw_cookie)
+            morsel = cookie.get(ADMIN_SESSION_COOKIE)
+            return morsel.value if morsel else ""
+        except Exception:
+            return ""
+
+    def _is_admin_authenticated(self) -> bool:
+        expected_pw, _ = get_or_create_admin_password()
+        auth_header = (self.headers.get("Authorization") or "").strip()
+        bearer_token = ""
+        if auth_header.lower().startswith("bearer "):
+            bearer_token = auth_header[7:].strip()
+        header_token = (self.headers.get("X-Admin-Token") or "").strip() or bearer_token
+        if header_token:
+            if hmac.compare_digest(header_token, expected_pw) or _validate_admin_session(header_token):
+                return True
+        cookie_token = self._get_session_cookie_token()
+        if cookie_token and _validate_admin_session(cookie_token):
+            return True
+        return False
+
+    def _require_admin(self) -> bool:
+        if self._is_admin_authenticated():
+            return True
+        self._send_json(
+            {"status": "error", "error": "Admin authentication required", "error_code": "ERR_UNAUTHORIZED"},
+            status=401,
+        )
+        return False
+
+    def _send_json(self, data, status=200, extra_headers: list = None):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if extra_headers:
+            for k, v in extra_headers:
+                self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -513,14 +705,26 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
-    def _read_json_body(self) -> dict:
+    def _read_raw_body(self, max_bytes: int = MAX_JSON_BODY_BYTES) -> bytes:
         try:
             length = int(self.headers.get("Content-Length", 0))
         except ValueError as e:
             raise InvalidJSONError("Invalid Content-Length header") from e
-        if length <= 0:
-            return {}
+        if length < 0:
+            raise InvalidJSONError("Negative Content-Length header")
+        if length > max_bytes:
+            raise PayloadTooLargeError(f"Request body exceeds {max_bytes} byte limit")
+        if length == 0:
+            return b""
         raw = self.rfile.read(length)
+        if len(raw) != length:
+            raise InvalidJSONError("Incomplete request body")
+        return raw
+
+    def _read_json_body(self, max_bytes: int = MAX_JSON_BODY_BYTES) -> dict:
+        raw = self._read_raw_body(max_bytes=max_bytes)
+        if not raw:
+            return {}
         try:
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as e:
@@ -575,39 +779,66 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
 
         if path.startswith("/shared_output/"):
             rel = path[len("/shared_output/"):]
+            rel_parts = Path(rel).parts
+            if not rel or any(part.startswith(".") for part in rel_parts):
+                return self._send_text("Forbidden", status=403)
             target = (SHARED_DIR / rel).resolve()
             if not target.is_relative_to(SHARED_DIR.resolve()):
                 return self._send_text("Forbidden", status=403)
             return self._send_file(target)
 
-        # API GET routes
-        if path in ("/api/status", "/api/monitoring"):
-            return self._send_json(api_get_status())
+        # Public auth & gallery metadata routes
+        if path == "/api/auth/status":
+            return self._send_json({"authenticated": self._is_admin_authenticated()})
+
+        if path == "/api/public/info":
+            settings = load_settings()
+            port = int(os.environ.get("PORT", settings.get("server", {}).get("port", 8000)))
+            return self._send_json({"lan_url": f"http://{_get_lan_ip()}:{port}"})
 
         if path == "/api/pipeline/status":
+            req_run_id = (query.get("run_id") or [""])[0]
             with _pipeline_lock:
                 snap = dict(_pipeline_state)
                 snap["queue_length"] = _pipeline_queue.qsize()
+                if req_run_id:
+                    snap["run"] = _run_statuses.get(req_run_id)
             return self._send_json(snap)
-
-        if path == "/api/settings":
-            settings = load_settings()
-            for role in ("analysis", "poem"):
-                if settings.get("ai", {}).get(role, {}).get("api_key"):
-                    settings["ai"][role]["has_api_key"] = True
-                    settings["ai"][role]["api_key"] = "***"
-            return self._send_json(settings)
 
         if path == "/api/settings/attributions":
             return self._send_json(load_settings().get("attributions", {}))
 
         if path == "/api/settings/printing":
-            return self._send_json(load_settings().get("printing", {}))
+            printing_cfg = load_settings().get("printing", {})
+            if self._is_admin_authenticated():
+                return self._send_json(printing_cfg)
+            return self._send_json({
+                "auto_print": bool(printing_cfg.get("auto_print", False)),
+                "paper_format": printing_cfg.get("paper_format", "A4"),
+            })
+
+        if path == "/api/files/prints":
+            return self._send_json(api_list_prints())
+
+        # Admin-protected GET routes
+        if path in ("/api/status", "/api/monitoring"):
+            if not self._require_admin():
+                return
+            return self._send_json(api_get_status())
+
+        if path == "/api/settings":
+            if not self._require_admin():
+                return
+            return self._send_json(mask_settings_secrets(load_settings()))
 
         if path == "/api/settings/tts":
+            if not self._require_admin():
+                return
             return self._send_json(load_settings().get("tts", {}))
 
         if path == "/api/ai/config":
+            if not self._require_admin():
+                return
             model_type = (query.get("type") or ["analysis"])[0]
             try:
                 model = LLMModel(model_type)
@@ -617,10 +848,9 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                 model = LLMModel(model_type)
                 return self._send_json({"status": "success", "config": model.get_config_dict(), "warning": str(e)})
 
-        if path == "/api/files/prints":
-            return self._send_json(api_list_prints())
-
         if path.startswith("/api/logs/"):
+            if not self._require_admin():
+                return
             log_type = path[len("/api/logs/"):]
             return self._send_text(api_get_logs(log_type))
 
@@ -629,7 +859,9 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             self._handle_post()
-        except InvalidJSONError as e:
+        except PayloadTooLargeError as e:
+            self._send_json({"status": "error", "error": str(e)}, status=413)
+        except (InvalidJSONError, ValueError) as e:
             self._send_json({"status": "error", "error": str(e)}, status=400)
 
     def _handle_post(self):
@@ -637,27 +869,74 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         path = unquote(parsed.path)
         query = parse_qs(parsed.query)
 
+        if path == "/api/auth/login":
+            client_ip = self.client_address[0] if self.client_address else "unknown"
+            allowed, retry_after = _check_login_rate_limit(client_ip)
+            if not allowed:
+                return self._send_json(
+                    {"status": "error", "error": f"Too many login attempts. Retry in {retry_after}s."},
+                    status=429,
+                    extra_headers=[("Retry-After", str(retry_after))],
+                )
+            data = self._read_json_body()
+            supplied = str(data.get("password") or "")
+            expected_pw, _ = get_or_create_admin_password()
+            if not supplied or not hmac.compare_digest(supplied, expected_pw):
+                _record_login_failure(client_ip)
+                return self._send_json({"status": "error", "error": "Invalid admin password"}, status=401)
+            _clear_login_failures(client_ip)
+            session_tok = _create_admin_session()
+            cookie_val = (
+                f"{ADMIN_SESSION_COOKIE}={session_tok}; HttpOnly; SameSite=Strict; Path=/; "
+                f"Max-Age={ADMIN_SESSION_TTL_SEC}"
+            )
+            return self._send_json(
+                {"status": "success", "authenticated": True},
+                status=200,
+                extra_headers=[("Set-Cookie", cookie_val)],
+            )
+
+        if path == "/api/auth/logout":
+            cookie_tok = self._get_session_cookie_token()
+            _revoke_admin_session(cookie_tok)
+            expired_cookie = f"{ADMIN_SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
+            return self._send_json(
+                {"status": "success", "authenticated": False},
+                status=200,
+                extra_headers=[("Set-Cookie", expired_cookie)],
+            )
+
         if path == "/api/drawings":
             target_path = SHARED_DIR / "image.png"
             ctype = self.headers.get("Content-Type", "")
             try:
+                dwell_grid = None
                 if "multipart/form-data" in ctype:
-                    length = int(self.headers.get("Content-Length", 0))
-                    raw_body = self.rfile.read(length) if length > 0 else b""
+                    raw_body = self._read_raw_body(max_bytes=MAX_DRAWING_UPLOAD_BYTES)
                     img_bytes = self._extract_multipart_file(ctype, raw_body, "file")
                     if not img_bytes:
                         return self._send_json({"status": "error", "error": "Missing file field"}, 400)
+                    dwell_raw = self._extract_multipart_file(ctype, raw_body, "dwell_grid")
+                    if dwell_raw:
+                        try:
+                            dwell_grid = json.loads(dwell_raw.decode("utf-8"))
+                        except Exception:
+                            dwell_grid = None
                 else:
-                    data = self._read_json_body()
+                    data = self._read_json_body(max_bytes=MAX_DRAWING_UPLOAD_BYTES)
                     img_data = data.get("image", "")
-                    if not img_data:
+                    dwell_grid = data.get("dwell_grid")
+                    if not img_data or not isinstance(img_data, str):
                         return self._send_json({"status": "error", "error": "No image provided"}, 400)
                     if "," in img_data:
                         img_data = img_data.split(",", 1)[1]
                     try:
-                        img_bytes = base64.b64decode(img_data)
+                        img_bytes = base64.b64decode(img_data, validate=True)
                     except Exception as dec_err:
                         return self._send_json({"status": "error", "error": f"Invalid base64 image: {dec_err}"}, 400)
+
+                if not _is_valid_image_bytes(img_bytes):
+                    return self._send_json({"status": "error", "error": "Uploaded data is not a valid image"}, 400)
 
                 if not AI_AVAILABLE:
                     atomic_write_bytes(target_path, img_bytes)
@@ -672,8 +951,18 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                         image_bytes=img_bytes,
                         done_event=done_event,
                         result_holder=result_holder,
+                        dwell_grid=dwell_grid,
                     )
-                    done_event.wait()
+                    if not done_event.wait(timeout=SYNC_PIPELINE_TIMEOUT_SEC):
+                        return self._send_json(
+                            {
+                                "status": "error",
+                                "run_id": rid,
+                                "error_code": "ERR_PIPELINE_TIMEOUT",
+                                "error": "Analysis timed out waiting for completion",
+                            },
+                            status=504,
+                        )
                     ok = result_holder.get("ok", False)
                     return self._send_json(
                         {
@@ -686,7 +975,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                         status=200 if ok else 500,
                     )
                 else:
-                    rid, qlen = enqueue_pipeline_job(image_bytes=img_bytes)
+                    rid, qlen = enqueue_pipeline_job(image_bytes=img_bytes, dwell_grid=dwell_grid)
                     return self._send_json({
                         "status": "success",
                         "run_id": rid,
@@ -694,10 +983,14 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                         "message": "Drawing saved and queued for analysis",
                         "pipeline_started": True,
                     })
-            except InvalidJSONError:
+            except (InvalidJSONError, PayloadTooLargeError):
                 raise
             except Exception as e:
                 return self._send_json({"status": "error", "error": str(e)}, 500)
+
+        # All remaining POST routes require Admin authentication
+        if not self._require_admin():
+            return
 
         if path == "/api/pipeline/run":
             live_img = SHARED_DIR / "image.png"
@@ -718,7 +1011,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             data = self._read_json_body()
             updated = save_settings(data)
             _sync_attributions_to_content_json(updated.get("attributions", {}))
-            return self._send_json({"status": "success", "settings": updated})
+            return self._send_json({"status": "success", "settings": mask_settings_secrets(updated)})
 
         if path == "/api/settings/attributions":
             data = self._read_json_body()
@@ -740,7 +1033,11 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/ai/config":
             data = self._read_json_body()
             model_type = data.get("model_type", "analysis")
+            if model_type not in ("analysis", "poem"):
+                return self._send_json({"status": "error", "error": "model_type must be 'analysis' or 'poem'"}, 400)
             config_data = data.get("config", {})
+            if not isinstance(config_data, dict):
+                return self._send_json({"status": "error", "error": "config must be an object"}, 400)
             try:
                 model = LLMModel(model_type)
                 response = model.update_assistant(**config_data)
@@ -751,6 +1048,8 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/ai/test":
             data = self._read_json_body()
             model_type = data.get("model_type", "analysis")
+            if model_type not in ("analysis", "poem"):
+                return self._send_json({"status": "error", "error": "model_type must be 'analysis' or 'poem'"}, 400)
             try:
                 model = LLMModel(model_type)
                 reply = model.chat(
@@ -783,7 +1082,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             data = self._read_json_body()
             filename = data.get("filename", "")
             mark_only = bool(data.get("mark_only", False))
-            if not filename or "/" in filename or "\\" in filename or ".." in filename:
+            if not isinstance(filename, str) or not filename or "/" in filename or "\\" in filename or ".." in filename:
                 return self._send_json({"status": "error", "error": "Invalid filename"}, 400)
             pdf_path = DOCS_DIR / filename
             if not pdf_path.exists():
@@ -792,7 +1091,8 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                 mark_file_printed(filename)
                 return self._send_json({"status": "success", "filename": filename, "mode": "browser"})
             settings = load_settings()
-            printer_name = data.get("printer_name") or settings.get("printing", {}).get("printer_name", "default")
+            raw_printer = data.get("printer_name") or settings.get("printing", {}).get("printer_name", "default")
+            printer_name = validate_printer_name(raw_printer)
             res = send_pdf_to_printer(str(pdf_path), printer_name=printer_name)
             return self._send_json(res, 200 if res.get("status") == "success" else 500)
 
@@ -801,25 +1101,30 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             action = data.get("action")
             filename = data.get("filename")
             deleted_names = []
+
+            def _delete_print_artifacts(pdf_file: Path) -> str:
+                stem = pdf_file.stem
+                for suffix in (".pdf", ".png", ".json", ".heatmap.png"):
+                    p = pdf_file.with_name(f"{stem}{suffix}")
+                    if p.exists():
+                        p.unlink()
+                if stem.startswith("print_"):
+                    rid = stem[len("print_"):]
+                    audio_p = SHARED_DIR / f"output_{rid}.mp3"
+                    if audio_p.exists():
+                        audio_p.unlink()
+                return pdf_file.name
+
             try:
-                if action == "specific" and filename and "/" not in filename and "\\" not in filename and ".." not in filename:
-                    file_path = DOCS_DIR / filename
-                    for suffix in (".pdf", ".png", ".json", ".heatmap.png"):
-                        p = file_path.with_name(f"{file_path.stem}{suffix}")
-                        if p.exists():
-                            p.unlink()
-                    deleted_names.append(filename)
+                if action == "specific" and isinstance(filename, str) and filename and "/" not in filename and "\\" not in filename and ".." not in filename:
+                    deleted_names.append(_delete_print_artifacts(DOCS_DIR / filename))
                 elif action == "all":
                     today_int = int(datetime.now().strftime("%Y%m%d"))
                     for f in DOCS_DIR.glob("print_*.pdf"):
                         try:
                             f_date = int(f.name.split("_")[1])
                             if f_date < today_int:
-                                for suffix in (".pdf", ".png", ".json", ".heatmap.png"):
-                                    p = f.with_name(f"{f.stem}{suffix}")
-                                    if p.exists():
-                                        p.unlink()
-                                deleted_names.append(f.name)
+                                deleted_names.append(_delete_print_artifacts(f))
                         except Exception:
                             pass
                 if deleted_names and AI_AVAILABLE:
@@ -833,11 +1138,16 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
 
 def run_server(host="0.0.0.0", port=8000):
     start_background_watcher()
-    server = ThreadingHTTPServer((host, port), LatentSpaceRequestHandler)
+    admin_pw, auth_src = get_or_create_admin_password()
+    server = LockedThreadingHTTPServer((host, port), LatentSpaceRequestHandler)
     print("=" * 64)
     print("LATENT SPACE UNIFIED SERVER")
     print(f"Project Root:  {PROJECT_DIR}")
     print(f"Shared Output: {SHARED_DIR}")
+    if auth_src.startswith("env:"):
+        print(f"Admin Auth:    Configured via {auth_src}")
+    else:
+        print(f"Admin Auth:    Passcode '{admin_pw}' (saved in {auth_src})")
     print("=" * 64)
     print(f"  Gallery:            http://localhost:{port}/")
     print(f"  Browser Gaze Draw:  http://localhost:{port}/draw")

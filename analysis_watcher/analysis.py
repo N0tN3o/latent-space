@@ -1,18 +1,23 @@
 import base64
 import os
 import sys
+import threading
 from pathlib import Path
 import cv2
 import numpy as np
 import requests
 
-# Add project root so config_manager can be imported
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+# Add project root and current dir so config_manager and heatmap can be imported
+CURRENT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CURRENT_DIR.parent
+for p in (str(PROJECT_ROOT), str(CURRENT_DIR)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 from config_manager import load_settings
+from heatmap import compute_zone_matrix
 
+_CACHE_LOCK = threading.Lock()
 _CLIP_CACHE = {"model": None, "processor": None, "failed": False}
 _SIGLIP_CACHE = {"model": None, "processor": None, "failed": False}
 _RESNET_CACHE = {"model": None, "failed": False}
@@ -64,7 +69,8 @@ def compute_fractal_dimension(binary_mask: np.ndarray) -> float:
     if n < 3:
         return 1.1
 
-    sizes = 2 ** np.arange(n - 1, 1, -1)
+    max_exp = n - 2 if n >= 4 else n - 1
+    sizes = 2 ** np.arange(max_exp, 0, -1)
     counts = []
     valid_sizes = []
 
@@ -104,11 +110,73 @@ def compute_spatial_entropy(zone_densities: list) -> float:
     return float(np.clip(entropy / max_entropy, 0.0, 1.0))
 
 
-def analyze_stroke_geometry(filename: str) -> dict:
+def _dilated_dice(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
+    """Compute Sorensen-Dice overlap between two boolean masks (0.0 if both empty)."""
+    denom = int(np.sum(mask_a)) + int(np.sum(mask_b))
+    if denom == 0:
+        return 0.0
+    inter = int(np.sum(mask_a & mask_b))
+    return float((2.0 * inter) / denom)
+
+
+def _count_sharp_bends(contours: list, hierarchy) -> tuple:
+    """
+    Filter anti-aliased specks and measure genuine sharp directional bends
+    (turn angle > ~60 deg across segments >= 12px) on outer stroke contours.
+    Returns (valid_components, enclosed_loops, sharp_bends, total_perim).
+    """
+    if not contours or hierarchy is None:
+        return 0, 0, 0, 0.0
+
+    hier = hierarchy[0]
+    valid_components = 0
+    enclosed_loops = 0
+    sharp_bends = 0
+    total_perim = 0.0
+
+    for idx, cnt in enumerate(contours):
+        perim = float(cv2.arcLength(cnt, True))
+        area = float(cv2.contourArea(cnt))
+        if perim < 20.0 and area < 9.0:
+            continue
+
+        parent = int(hier[idx][3])
+        if parent != -1:
+            if area >= 16.0:
+                enclosed_loops += 1
+            continue
+
+        valid_components += 1
+        total_perim += perim
+        eps = float(np.clip(0.015 * perim, 4.0, 14.0))
+        approx = cv2.approxPolyDP(cnt, eps, True).reshape(-1, 2)
+        m = len(approx)
+        if m < 3:
+            continue
+
+        for k in range(m):
+            p_prev = approx[(k - 1) % m].astype(np.float32)
+            p_curr = approx[k].astype(np.float32)
+            p_next = approx[(k + 1) % m].astype(np.float32)
+            v1 = p_curr - p_prev
+            v2 = p_next - p_curr
+            n1 = float(np.linalg.norm(v1))
+            n2 = float(np.linalg.norm(v2))
+            if n1 < 8.0 or n2 < 8.0:
+                continue
+            cos_turn = float(np.dot(v1, v2) / (n1 * n2))
+            if cos_turn < 0.50:  # exterior turn > 60 deg
+                sharp_bends += 1
+
+    return valid_components, enclosed_loops, sharp_bends, total_perim
+
+
+def analyze_stroke_geometry(filename: str, canvas_filename: str = None, dwell_grid=None) -> dict:
     """
     100% Self-Hosted Mathematical, Fractal, and Rorschach Geometry Analyzer.
-    Extracts stroke density, 3x3 spatial attention distribution, Shannon spatial entropy,
-    box-counting fractal dimension (Df), bilateral Rorschach symmetry, and loop topology.
+    Extracts stroke density, 3x3 spatial attention distribution (aligned with heatmap),
+    Shannon spatial entropy, box-counting fractal dimension (Df), bilateral Dice symmetry,
+    and loop/angularity topology.
     """
     img = cv2.imread(str(filename), cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -117,7 +185,7 @@ def analyze_stroke_geometry(filename: str) -> dict:
             "description": "An abstract gaze-tracked drawing on a blank canvas."
         }
 
-    _, binary = cv2.threshold(img, 220, 255, cv2.THRESH_BINARY_INV)
+    _, binary = cv2.threshold(img, 230, 255, cv2.THRESH_BINARY_INV)
     h, w = binary.shape
     stroke_mask = (binary > 0).astype(np.float32)
 
@@ -132,19 +200,18 @@ def analyze_stroke_geometry(filename: str) -> dict:
     else:
         density_desc = "heavily saturated, intense, and consuming"
 
-    # 2. 3x3 Grid spatial attention & Shannon entropy
+    # 2. 3x3 Grid spatial attention & Shannon entropy (computed on uncropped canvas or real gaze dwell grid)
     zone_names = [
         ["upper-left", "upper-center", "upper-right"],
         ["mid-left", "center", "mid-right"],
         ["lower-left", "lower-center", "lower-right"]
     ]
-    h_step, w_step = max(1, h // 3), max(1, w // 3)
+    zone_matrix = compute_zone_matrix(scribble_filename=canvas_filename or filename, dwell_grid=dwell_grid)
     zone_scores = []
     raw_densities = []
     for r in range(3):
         for c in range(3):
-            region = stroke_mask[r * h_step:(r + 1) * h_step, c * w_step:(c + 1) * w_step]
-            val = float(np.mean(region))
+            val = float(zone_matrix[r, c])
             raw_densities.append(val)
             zone_scores.append((val, zone_names[r][c]))
 
@@ -170,38 +237,28 @@ def analyze_stroke_geometry(filename: str) -> dict:
     else:
         fractal_desc = f"high space-filling fractal intricacy (D={fractal_dim:.2f}), akin to dense abstract expressionist webs"
 
-    # 4. Bilateral Rorschach Symmetry
-    left_half = stroke_mask[:, :w // 2]
-    right_half_flipped = np.fliplr(stroke_mask[:, w - (w // 2):])
-    horiz_sym = 1.0 - float(np.mean(np.abs(left_half - right_half_flipped))) / max(ink_ratio * 2.0, 0.05)
-    horiz_sym = float(np.clip(horiz_sym, 0.0, 1.0))
+    # 4. Bilateral Rorschach Symmetry (Scale-invariant 5x5 dilated Dice overlap)
+    dilated = cv2.dilate(binary, np.ones((5, 5), dtype=np.uint8), iterations=1) > 0
+    left_half = dilated[:, :w // 2]
+    right_half_flipped = np.fliplr(dilated[:, w - (w // 2):])
+    horiz_sym = _dilated_dice(left_half, right_half_flipped)
 
-    top_half = stroke_mask[:h // 2, :]
-    bottom_half_flipped = np.flipud(stroke_mask[h - (h // 2):, :])
-    vert_sym = 1.0 - float(np.mean(np.abs(top_half - bottom_half_flipped))) / max(ink_ratio * 2.0, 0.05)
-    vert_sym = float(np.clip(vert_sym, 0.0, 1.0))
+    top_half = dilated[:h // 2, :]
+    bottom_half_flipped = np.flipud(dilated[h - (h // 2):, :])
+    vert_sym = _dilated_dice(top_half, bottom_half_flipped)
 
-    if horiz_sym > 0.65 and vert_sym > 0.65:
+    if horiz_sym > 0.62 and vert_sym > 0.62:
         symmetry_desc = "strikingly symmetrical and centered, like a classic Rorschach inkblot"
-    elif horiz_sym > 0.55:
+    elif horiz_sym > 0.50:
         symmetry_desc = "horizontally mirrored with bilateral balance"
-    elif vert_sym > 0.55:
+    elif vert_sym > 0.50:
         symmetry_desc = "vertically balanced between upper and lower realms"
     else:
         symmetry_desc = "decidedly asymmetrical, driven by directional drift and spontaneous tension"
 
     # 5. Contours, enclosed loops, and angularity vs. curvature
     contours, hierarchy = cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    num_components = len(contours)
-    enclosed_loops = int(np.sum(hierarchy[0][:, 3] != -1)) if hierarchy is not None else 0
-
-    sharp_corners = 0
-    for cnt in contours:
-        perim = cv2.arcLength(cnt, True)
-        if perim < 15:
-            continue
-        approx = cv2.approxPolyDP(cnt, 0.03 * perim, True)
-        sharp_corners += len(approx)
+    num_components, enclosed_loops, sharp_bends, total_perim = _count_sharp_bends(contours, hierarchy)
 
     if enclosed_loops >= 6:
         structure_desc = f"an intricate lattice of {enclosed_loops} enclosed loops and recurring self-intersecting orbits"
@@ -219,9 +276,10 @@ def analyze_stroke_geometry(filename: str) -> dict:
         structure_desc = "a continuous, unbroken stream-of-consciousness trajectory"
         archetype_hint = "Continuous Horizon Trace"
 
+    bends_per_100px = (sharp_bends / max(total_perim / 100.0, 1.0)) if total_perim > 0 else 0.0
     line_quality = (
         "angular, darting, and electric with sudden directional shifts"
-        if sharp_corners > 18
+        if (sharp_bends >= 3 and bends_per_100px >= 0.16)
         else "fluid, sweeping, and organic in its transitions"
     )
 
@@ -243,6 +301,8 @@ def analyze_stroke_geometry(filename: str) -> dict:
         "ink_ratio": round(ink_ratio, 4),
         "fractal_dimension": round(fractal_dim, 3),
         "spatial_entropy": round(spatial_entropy, 3),
+        "horiz_symmetry": round(horiz_sym, 3),
+        "vert_symmetry": round(vert_sym, 3),
         "primary_zone": primary_zone,
         "secondary_zone": secondary_zone,
         "enclosed_loops": enclosed_loops,
@@ -379,20 +439,39 @@ def run_resnet_classification(filename: str):
         return None
 
 
-def analyze_drawing(filename: str, mode: str = "auto") -> dict:
+def _is_ollama_vision_model_ready() -> bool:
+    """Fast local check (<=0.6s) whether configured ollama_vision_model is pulled locally."""
+    try:
+        settings = load_settings()
+        ai_cfg = settings.get("ai", {})
+        vision_model = ai_cfg.get("ollama_vision_model") or "moondream"
+        base_url = ai_cfg.get("analysis", {}).get("base_url", "http://localhost:11434")
+        host = base_url.replace("/v1", "").rstrip("/")
+        if not host.startswith("http"):
+            return False
+        resp = requests.get(f"{host}/api/tags", timeout=0.6)
+        if not resp.ok:
+            return False
+        names = [m.get("name", "") for m in resp.json().get("models", [])]
+        return any(n == vision_model or n.startswith(f"{vision_model}:") for n in names)
+    except Exception:
+        return False
+
+
+def analyze_drawing(filename: str, mode: str = "auto", canvas_filename: str = None, dwell_grid=None) -> dict:
     """
     Comprehensive self-hosted drawing analysis returning a short `label` (archetype)
     and a rich `prompt_context` for the Psychoanalysis LLM.
 
     Supported modes:
-      - "auto" / "vision": Fractal + Entropy + Rorschach Geometry (+ direct image to Vision LLM)
+      - "auto" / "vision": Fractal + Entropy + Rorschach Geometry (+ local Ollama Vision / Vision LLM)
       - "ollama_vision": Self-hosted Ollama Vision model (moondream / llava) + Fractal/Rorschach Geometry
       - "clip": Self-hosted OpenAI CLIP zero-shot abstract art & Rorschach + Fractal/Rorschach Geometry
       - "siglip": Self-hosted Google SigLIP zero-shot abstract art & Rorschach + Fractal/Rorschach Geometry
       - "stroke_metrics": Fast local Fractal + Entropy + Rorschach Geometry only
       - "resnet50": Legacy ImageNet ResNet50 + Fractal/Rorschach Geometry
     """
-    geom = analyze_stroke_geometry(filename)
+    geom = analyze_stroke_geometry(filename, canvas_filename=canvas_filename, dwell_grid=dwell_grid)
     sections = [geom["description"]]
     summary_label = geom["summary_label"]
 
@@ -400,16 +479,22 @@ def analyze_drawing(filename: str, mode: str = "auto") -> dict:
     if mode == "ollama_vision":
         extra = run_ollama_vision_analysis(filename)
     elif mode == "clip":
-        extra = run_clip_abstract_analysis(filename)
-    elif mode == "siglip":
-        extra = run_siglip_abstract_analysis(filename)
-    elif mode == "resnet50":
-        extra = run_resnet_classification(filename)
-    elif mode == "auto":
-        if _SIGLIP_CACHE["model"] is not None:
-            extra = run_siglip_abstract_analysis(filename)
-        elif _CLIP_CACHE["model"] is not None:
+        with _CACHE_LOCK:
             extra = run_clip_abstract_analysis(filename)
+    elif mode == "siglip":
+        with _CACHE_LOCK:
+            extra = run_siglip_abstract_analysis(filename)
+    elif mode == "resnet50":
+        with _CACHE_LOCK:
+            extra = run_resnet_classification(filename)
+    elif mode == "auto":
+        with _CACHE_LOCK:
+            if _SIGLIP_CACHE["model"] is not None:
+                extra = run_siglip_abstract_analysis(filename)
+            elif _CLIP_CACHE["model"] is not None:
+                extra = run_clip_abstract_analysis(filename)
+        if extra is None and _is_ollama_vision_model_ready():
+            extra = run_ollama_vision_analysis(filename)
 
     if extra:
         sections.insert(0, extra["description"])

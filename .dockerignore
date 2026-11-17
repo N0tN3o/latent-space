@@ -1,0 +1,16 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+.env
+analysis_watcher/.env
+config/admin_pin.txt
+config/settings.json
+gaze_painter/calibrations/calibration.json
+logs/
+*.log
+shared_output/
+tests/
+.DS_Store

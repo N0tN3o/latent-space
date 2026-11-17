@@ -40,7 +40,12 @@ An interactive art installation that transforms human gaze into AI-interpreted a
    - **Live Gallery**: `http://localhost:8000/`
    - **Browser Gaze Painter**: `http://localhost:8000/draw`
    - **Web Print Kiosk**: `http://localhost:8000/kiosk`
-   - **Admin Command Center**: `http://localhost:8000/admin`
+   - **Admin Command Center**: `http://localhost:8000/admin` (protected by admin passcode—set `LATENT_SPACE_ADMIN_PASSWORD` / `ADMIN_PASSWORD` in `.env`, or use the auto-generated passcode printed on startup and saved in `config/admin_pin.txt`)
+
+4. **Run the Test Suite**
+   ```bash
+   python -m unittest discover -s tests -v
+   ```
 
 ### Launch Modes (`start_everything.py`)
 ```bash

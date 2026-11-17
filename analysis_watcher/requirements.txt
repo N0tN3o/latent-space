@@ -1,7 +1,6 @@
-opencv-python
-google-cloud-texttospeech
-requests
-matplotlib
-numpy
-elevenlabs
-pydub
+-r ../requirements.txt
+
+# Optional: Text-to-Speech narration (requires ffmpeg installed for pydub audio overlay)
+# elevenlabs
+# pydub
+# google-cloud-texttospeech

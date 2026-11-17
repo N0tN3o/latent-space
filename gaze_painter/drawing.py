@@ -18,6 +18,7 @@ class GazePainter:
         self.stroke_color = (0, 0, 0)  # Black in BGR
         self.stroke_history = []  # Store stroke points for smoother lines
         self.has_drawn = False
+        self.dwell_grid = np.zeros((3, 3), dtype=np.float32)
 
     def clear(self):
         """Clear the canvas"""
@@ -27,6 +28,7 @@ class GazePainter:
         self.dwell_time = 0.0
         self.stroke_history = []
         self.has_drawn = False
+        self.dwell_grid.fill(0.0)
 
     def update(self, gaze_norm, dt):
         """
@@ -43,6 +45,11 @@ class GazePainter:
         gx = int(np.clip(gaze_norm[0], 0, 1) * self.w)
         gy = int(np.clip(gaze_norm[1], 0, 1) * self.h)
         cur_point = (gx, gy)
+
+        if dt and dt > 0:
+            col = min(2, max(0, int(np.clip(gaze_norm[0], 0.0, 0.9999) * 3)))
+            row = min(2, max(0, int(np.clip(gaze_norm[1], 0.0, 0.9999) * 3)))
+            self.dwell_grid[row, col] += float(min(dt, 0.25))
         
         # Initialize on first point
         if self.prev_point is None:
@@ -137,18 +144,18 @@ class GazePainter:
         display = np.ones((self.h, self.w, 3), dtype=np.uint8) * 255
         pct = int(np.clip(progress_pct, 0, 100))
 
-        if pct <= 35:
+        if pct <= 33:
             tx = int(self.w * 0.5)
             ty = int(self.h * 0.5)
             instruction = "Step 1/2: Look steadily at the center target"
         else:
-            angle = ((pct - 35) / 65.0) * (2.0 * np.pi)
+            angle = ((pct - 33) / 67.0) * (2.0 * np.pi)
             tx = int(self.w * (0.5 + 0.36 * np.cos(angle)))
             ty = int(self.h * (0.5 + 0.34 * np.sin(angle)))
             instruction = "Step 2/2: Follow the moving target with your eyes"
 
         # Draw subtle guide ring when orbiting
-        if pct > 35:
+        if pct > 33:
             axes = (int(self.w * 0.36), int(self.h * 0.34))
             cv2.ellipse(display, (self.w // 2, self.h // 2), axes, 0, 0, 360, (230, 230, 230), 1, cv2.LINE_AA)
 

@@ -12,6 +12,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 from datetime import datetime
@@ -33,6 +34,9 @@ from config_manager import (
     load_settings,
     load_env_vars,
     ensure_directories,
+    mark_file_printed,
+    remove_from_print_history,
+    validate_printer_name,
 )
 from chat import LLMModel, AIGenerationError
 from analysis import analyze_drawing
@@ -43,7 +47,6 @@ ensure_directories()
 
 _id_lock = threading.Lock()
 _last_run_id = ""
-_history_lock = threading.Lock()
 _watcher_sig_lock = threading.Lock()
 _handled_image_sig = None
 
@@ -158,10 +161,22 @@ def get_gallery_url():
     return f"http://127.0.0.1:{port}/"
 
 
+def _wrap_preserving_lines(text: str, width: int) -> str:
+    """Wrap paragraphs/lines to a fixed character width while preserving explicit newlines."""
+    lines = []
+    for raw_line in (text or "").splitlines():
+        stripped = raw_line.rstrip()
+        if not stripped:
+            lines.append("")
+        else:
+            lines.extend(textwrap.wrap(stripped, width=width, break_long_words=True, break_on_hyphens=False))
+    return "\n".join(lines)
+
+
 def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> str:
     """
     Fallback PDF renderer using thread-safe Matplotlib Figure API if Playwright/Chrome is unavailable.
-    Renders the artwork, heatmap, analysis, poem, and optional Kasboek attribution onto an A4 PDF.
+    Renders the artwork, archetype metrics, heatmap, analysis, poem, and optional Kasboek attribution onto an A4 PDF.
     """
     from matplotlib.backends.backend_pdf import FigureCanvasPdf
     from matplotlib.figure import Figure
@@ -176,32 +191,45 @@ def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> 
     if scribble_file.exists():
         img = cv2.imread(str(scribble_file), cv2.IMREAD_GRAYSCALE)
         if img is not None:
-            ax_img = fig.add_axes([0.2, 0.56, 0.6, 0.36])
+            ax_img = fig.add_axes([0.2, 0.58, 0.6, 0.35])
             ax_img.imshow(img, cmap="gray", vmin=0, vmax=255)
             ax_img.axis("off")
 
-    # Title
+    # Title & Archetype/Metrics badge
     fig.text(
-        0.5, 0.52,
+        0.5, 0.54,
         "Latent Space, Through the Eyes of the Algorithm",
         ha="center", va="center", fontsize=14, fontweight="bold", color="#2a2a2a"
     )
+    badge_parts = []
+    if website_data.get("archetype"):
+        badge_parts.append(str(website_data["archetype"]).upper())
+    if isinstance(website_data.get("fractalDimension"), (int, float)):
+        badge_parts.append(f"FRACTAL D={website_data['fractalDimension']:.2f}")
+    if isinstance(website_data.get("spatialEntropy"), (int, float)):
+        badge_parts.append(f"ENTROPY={round(website_data['spatialEntropy'] * 100)}%")
+    if badge_parts:
+        fig.text(
+            0.5, 0.512,
+            "  ·  ".join(badge_parts),
+            ha="center", va="center", fontsize=8, color="#555555",
+            bbox=dict(boxstyle="round,pad=0.35", facecolor="#fafafa", edgecolor="#d0d0d0", linewidth=0.8),
+        )
 
-    # 2. Analysis on bottom-left
-    fig.text(0.08, 0.47, "ANALYSIS", fontsize=9, fontweight="bold", color="#666666")
-    analysis_text = website_data.get("psychoanalysis", "")
+    # 2. Analysis on bottom-left (bounded to left column x=0.07..0.49 via explicit wrapping)
+    fig.text(0.07, 0.475, "ANALYSIS", fontsize=9, fontweight="bold", color="#666666")
+    analysis_wrapped = _wrap_preserving_lines(website_data.get("psychoanalysis", ""), width=48)
     fig.text(
-        0.08, 0.45, analysis_text,
-        ha="left", va="top", fontsize=8.5, color="#2a2a2a",
-        wrap=True, bbox=dict(boxstyle="square,pad=0", facecolor="none", edgecolor="none"),
+        0.07, 0.455, analysis_wrapped,
+        ha="left", va="top", fontsize=8.5, linespacing=1.42, color="#2a2a2a",
     )
 
-    # 3. Poem on bottom-right
-    fig.text(0.55, 0.47, "POEM", fontsize=9, fontweight="bold", color="#666666")
-    poem_text = website_data.get("poem", "")
+    # 3. Poem on bottom-right (bounded to right column x=0.54..0.93)
+    fig.text(0.54, 0.475, "POEM", fontsize=9, fontweight="bold", color="#666666")
+    poem_wrapped = _wrap_preserving_lines(website_data.get("poem", ""), width=42)
     fig.text(
-        0.55, 0.45, poem_text,
-        ha="left", va="top", fontsize=8.5, style="italic", color="#2a2a2a", wrap=True
+        0.54, 0.455, poem_wrapped,
+        ha="left", va="top", fontsize=8.5, linespacing=1.45, style="italic", color="#2a2a2a",
     )
 
     # 4. Heatmap below poem
@@ -209,14 +237,27 @@ def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> 
     if heatmap_file.exists():
         hm = cv2.imread(str(heatmap_file), cv2.IMREAD_GRAYSCALE)
         if hm is not None:
-            fig.text(0.55, 0.25, "ATTENTION SPAN", fontsize=8, fontweight="bold", color="#666666")
-            ax_hm = fig.add_axes([0.55, 0.12, 0.15, 0.12])
+            fig.text(0.54, 0.235, "ATTENTION SPAN", fontsize=8, fontweight="bold", color="#666666")
+            ax_hm = fig.add_axes([0.54, 0.115, 0.14, 0.105])
             ax_hm.imshow(hm, cmap="gray", vmin=0, vmax=255)
             ax_hm.axis("off")
 
     # 5. Attribution footer if enabled
     attr = settings.get("attributions", {})
     if attr.get("enabled"):
+        if attr.get("show_logo", True):
+            logo_file = PROJECT_ROOT / "kasboek-logo.jpg"
+            if logo_file.exists():
+                try:
+                    logo_bgr = cv2.imread(str(logo_file))
+                    if logo_bgr is not None:
+                        logo_rgb = cv2.cvtColor(logo_bgr, cv2.COLOR_BGR2RGB)
+                        ax_logo = fig.add_axes([0.07, 0.035, 0.10, 0.045])
+                        ax_logo.imshow(logo_rgb)
+                        ax_logo.axis("off")
+                except Exception:
+                    pass
+
         founders_str = ", ".join(
             f"{f.get('name')} ({f.get('url')})"
             for f in attr.get("founders", [])
@@ -226,17 +267,25 @@ def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> 
             f"{attr.get('intro_text', 'Made possible by Kasboek.')} "
             f"{attr.get('learn_more_text', 'To learn more, visit')} {attr.get('website_url', '')} | "
             f"{attr.get('company_linkedin_url', '')}"
-        )
+        ).strip()
         if founders_str:
             attr_line += f"\n{attr.get('thanks_text', 'Thank you for letting us use this:')} {founders_str}"
-        fig.text(0.5, 0.05, attr_line, ha="center", va="center", fontsize=6.5, color="#444444")
+        attr_wrapped = _wrap_preserving_lines(attr_line, width=92)
+        fig.text(0.5, 0.055, attr_wrapped, ha="center", va="center", fontsize=6.5, color="#444444")
 
     ts_str = datetime.now().strftime("%B %d, %Y %H:%M")
-    fig.text(0.5, 0.02, ts_str, ha="center", va="center", fontsize=7.5, style="italic", color="#666666")
+    fig.text(0.5, 0.018, ts_str, ha="center", va="center", fontsize=7.5, style="italic", color="#666666")
 
-    tmp_pdf = pdf_path.with_name(f".tmp_{os.getpid()}_{pdf_path.name}")
-    fig.savefig(str(tmp_pdf), format="pdf")
-    os.replace(str(tmp_pdf), str(pdf_path))
+    tmp_pdf = pdf_path.with_name(f".tmp_{os.getpid()}_{threading.get_ident()}_{pdf_path.name}")
+    try:
+        fig.savefig(str(tmp_pdf), format="pdf")
+        os.replace(str(tmp_pdf), str(pdf_path))
+    finally:
+        if tmp_pdf.exists():
+            try:
+                tmp_pdf.unlink()
+            except Exception:
+                pass
     return str(pdf_path)
 
 
@@ -271,6 +320,13 @@ def save_print_pdf(url=None, out_dir=None, website_data=None, run_id=None):
             )
             page = browser.new_page()
             page.goto(url, wait_until="networkidle", timeout=15000)
+            try:
+                page.wait_for_function(
+                    "() => document.getElementById('lastUpdate') && document.getElementById('lastUpdate').textContent !== 'Waiting for data...'",
+                    timeout=5000,
+                )
+            except Exception:
+                pass
             page.pdf(
                 path=str(pdf_path),
                 format=paper_format,
@@ -290,43 +346,6 @@ def save_print_pdf(url=None, out_dir=None, website_data=None, run_id=None):
             return None
 
 
-def mark_file_printed(filename: str):
-    """Record a printed PDF atomically in shared_output/docs/print_history.json."""
-    print_log = DOCS_DIR / "print_history.json"
-    with _history_lock:
-        history = {"printed": [], "prints": []}
-        if print_log.exists():
-            try:
-                history = json.loads(print_log.read_text(encoding="utf-8"))
-            except Exception:
-                pass
-        if filename not in history.get("printed", []):
-            history.setdefault("printed", []).append(filename)
-        history.setdefault("prints", []).append({
-            "filename": filename,
-            "timestamp": datetime.now().isoformat(),
-        })
-        atomic_write_text(print_log, json.dumps(history, indent=2), encoding="utf-8")
-
-
-def remove_from_print_history(filenames):
-    """Prune deleted PDF filenames from print_history.json atomically."""
-    if not filenames:
-        return
-    remove_set = set(filenames)
-    print_log = DOCS_DIR / "print_history.json"
-    with _history_lock:
-        if not print_log.exists():
-            return
-        try:
-            history = json.loads(print_log.read_text(encoding="utf-8"))
-        except Exception:
-            return
-        history["printed"] = [f for f in history.get("printed", []) if f not in remove_set]
-        history["prints"] = [p for p in history.get("prints", []) if p.get("filename") not in remove_set]
-        atomic_write_text(print_log, json.dumps(history, indent=2), encoding="utf-8")
-
-
 def send_pdf_to_printer(pdf_path: str, printer_name: str = "default") -> dict:
     """
     Cross-platform print helper for Windows, macOS, and Linux.
@@ -336,45 +355,60 @@ def send_pdf_to_printer(pdf_path: str, printer_name: str = "default") -> dict:
     if not path.exists():
         return {"status": "error", "error": f"File not found: {pdf_path}"}
 
-    target_printer = (printer_name or "").strip()
+    target_printer = validate_printer_name(printer_name or "default")
     is_custom_printer = bool(target_printer and target_printer.lower() != "default")
 
     sys_name = platform.system()
     try:
         if sys_name == "Windows":
+            win_env = os.environ.copy()
+            win_env["LS_PRINT_FILE"] = str(path)
             if is_custom_printer:
+                win_env["LS_PRINTER_ARG"] = f'"{target_printer}"'
                 try:
-                    safe_printer = target_printer.replace('"', '`"')
                     subprocess.run(
                         [
                             "powershell",
                             "-NoProfile",
                             "-Command",
-                            f'Start-Process -FilePath "{path}" -Verb PrintTo -ArgumentList \'"{safe_printer}"\'',
+                            "Start-Process -FilePath $env:LS_PRINT_FILE -Verb PrintTo -ArgumentList $env:LS_PRINTER_ARG",
                         ],
                         check=True,
                         capture_output=True,
                         text=True,
+                        env=win_env,
                     )
                 except Exception:
                     try:
                         os.startfile(str(path), "print")
                     except Exception:
                         subprocess.run(
-                            ["powershell", "-NoProfile", "-Command", f'Start-Process -FilePath "{path}" -Verb Print'],
+                            [
+                                "powershell",
+                                "-NoProfile",
+                                "-Command",
+                                "Start-Process -FilePath $env:LS_PRINT_FILE -Verb Print",
+                            ],
                             check=True,
                             capture_output=True,
                             text=True,
+                            env=win_env,
                         )
             else:
                 try:
                     os.startfile(str(path), "print")
                 except Exception:
                     subprocess.run(
-                        ["powershell", "-NoProfile", "-Command", f'Start-Process -FilePath "{path}" -Verb Print'],
+                        [
+                            "powershell",
+                            "-NoProfile",
+                            "-Command",
+                            "Start-Process -FilePath $env:LS_PRINT_FILE -Verb Print",
+                        ],
                         check=True,
                         capture_output=True,
                         text=True,
+                        env=win_env,
                     )
         else:
             cmd = ["lp"]
@@ -461,7 +495,7 @@ def _write_content_error(run_id: str, code: str, message: str, settings: dict = 
     atomic_write_text(SHARED_DIR / "content.json", json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def run_analysis_pipeline(run_id: str = None, snapshot_path: str = None, raise_on_error: bool = False) -> bool:
+def run_analysis_pipeline(run_id: str = None, snapshot_path: str = None, raise_on_error: bool = False, dwell_grid=None) -> bool:
     """
     Run the complete Latent Space pipeline on an isolated per-drawing snapshot:
       1. Validate & preprocess drawing image (fails fast with ERR_DRAWING_BLANK)
@@ -526,9 +560,14 @@ def run_analysis_pipeline(run_id: str = None, snapshot_path: str = None, raise_o
         except Exception as e:
             main_logger.warning(f"[{rid}] Poem init note (will still attempt failover on chat): {e}")
 
-        # 3. Abstract Art & Visual Perception Analysis
+        # 3. Abstract Art & Visual Perception Analysis (spatial zones computed on uncropped canvas or dwell_grid)
         main_logger.info(f"[{rid}] Starting visual perception analysis (mode={vision_mode})")
-        perception = analyze_drawing(str(image_path), mode=vision_mode)
+        perception = analyze_drawing(
+            str(image_path),
+            mode=vision_mode,
+            canvas_filename=str(input_img),
+            dwell_grid=dwell_grid,
+        )
         summary_label = perception["label"]
         prompt_context = perception["prompt_context"]
         prediction_logger.info(summary_label)
@@ -547,11 +586,12 @@ def run_analysis_pipeline(run_id: str = None, snapshot_path: str = None, raise_o
         # 6. Optional Text-to-Speech (Non-critical: never reuse stale audio)
         poem_audio = _run_optional_tts(poem_text, settings, run_id=rid)
 
-        # 7. Attention Heatmap (Non-critical: draw_heatmap falls back to randomized 3x3 matrix on failure)
+        # 7. Attention Heatmap (aligned 1:1 with spatial analysis zones)
         main_logger.info(f"[{rid}] Generating attention heatmap")
         draw_heatmap(
             scribble_filename=str(input_img),
             heatmap_filename=str(heatmap_run),
+            dwell_grid=dwell_grid,
         )
         main_logger.info(f"[{rid}] Heatmap complete")
 
@@ -566,6 +606,7 @@ def run_analysis_pipeline(run_id: str = None, snapshot_path: str = None, raise_o
         atomic_write_bytes(SHARED_DIR / "image_processed.png", Path(processed_run).read_bytes())
         atomic_write_bytes(SHARED_DIR / "heatmap.png", Path(heatmap_run).read_bytes())
 
+        expected_pdf_name = f"print_{rid}.pdf"
         geom = perception.get("geometry", {})
         website_data = {
             "status": "ok",
@@ -579,6 +620,7 @@ def run_analysis_pipeline(run_id: str = None, snapshot_path: str = None, raise_o
             "psychoanalysis": analysis_text,
             "poem": poem_text,
             "poemAudio": poem_audio,
+            "printPDF": f"docs/{expected_pdf_name}",
             "analysisProvider": f"{analysis_model._last_used_provider}:{analysis_model._last_used_model}",
             "poemProvider": f"{poem_model._last_used_provider}:{poem_model._last_used_model}",
             "attributions": settings.get("attributions", {}),
@@ -608,6 +650,9 @@ def run_analysis_pipeline(run_id: str = None, snapshot_path: str = None, raise_o
                 printer_name = printing_cfg.get("printer_name", "default")
                 main_logger.info(f"[{rid}] Auto-print enabled — printing {pdf_path.name} on '{printer_name}'")
                 send_pdf_to_printer(str(pdf_path), printer_name=printer_name)
+        else:
+            website_data["printPDF"] = ""
+            atomic_write_text(content_file, json.dumps(website_data, indent=2, ensure_ascii=False), encoding="utf-8")
 
         main_logger.info(f"[{rid}] Pipeline concluded in {datetime.now() - start_time}")
         return True

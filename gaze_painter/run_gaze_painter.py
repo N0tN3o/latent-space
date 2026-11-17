@@ -80,14 +80,12 @@ class GazeTrackingPainter:
         self.has_calibration = False
 
     def get_calibration_percentage(self) -> int:
-        progress = len(self.tracker.calibration_samples)
-        total = max(1, self.tracker.calibration_needed)
-        return int(min(100, (progress / total) * 100))
+        return int(round(self.tracker.get_calibration_progress()))
 
     def get_calibration_progress_text(self):
         percentage = self.get_calibration_percentage()
 
-        if percentage <= 35:
+        if percentage <= 33:
             instruction = "Look at the center target"
         elif percentage < 75:
             instruction = "Follow the moving target"
@@ -96,23 +94,27 @@ class GazeTrackingPainter:
 
         return f"Calibrating {percentage}% - {instruction}"
 
-    def _upload_to_remote(self, filepath: Path):
+    def _upload_to_remote(self, png_bytes: bytes, dwell_grid=None) -> bool:
         if not self.remote_url:
-            return
+            return False
         try:
             import requests
             url = f"{self.remote_url.rstrip('/')}/api/drawings"
-            with open(filepath, "rb") as f:
-                resp = requests.post(url, files={"file": ("image.png", f, "image/png")}, timeout=15)
+            files = {"file": ("image.png", png_bytes, "image/png")}
+            if dwell_grid is not None:
+                files["dwell_grid"] = ("dwell.json", json.dumps(dwell_grid).encode("utf-8"), "application/json")
+            resp = requests.post(url, files=files, timeout=15)
             if resp.ok:
                 print(f"Uploaded drawing to remote server: {url}")
-            else:
-                print(f"Remote upload returned {resp.status_code}: {resp.text}")
+                return True
+            print(f"Remote upload returned {resp.status_code}: {resp.text}")
+            return False
         except Exception as e:
             print(f"Warning: could not upload to remote server ({self.remote_url}): {e}")
+            return False
 
     def save_and_reset(self):
-        """Save drawing atomically to shared_output/image.png (and optionally upload via HTTP)."""
+        """Save drawing atomically to shared_output/image.png or upload via HTTP (never both to avoid double runs)."""
         print("Saving drawing...")
         filepath = SHARED_DIR / "image.png"
         tmp_path = SHARED_DIR / "image.tmp.png"
@@ -122,10 +124,19 @@ class GazeTrackingPainter:
                 self._reset_after_save()
                 return
 
-            cv2.imwrite(str(tmp_path), self.painter.canvas)
+            ok, encoded = cv2.imencode(".png", self.painter.canvas)
+            if not ok:
+                raise RuntimeError("Failed to encode drawing canvas as PNG")
+            png_bytes = encoded.tobytes()
+            dwell_list = self.painter.dwell_grid.tolist() if hasattr(self.painter, "dwell_grid") else None
+
+            if self.remote_url and self._upload_to_remote(png_bytes, dwell_grid=dwell_list):
+                self._reset_after_save()
+                return
+
+            tmp_path.write_bytes(png_bytes)
             os.replace(str(tmp_path), str(filepath))
             print(f"Drawing saved to {filepath} ({filepath.stat().st_size} bytes)")
-            self._upload_to_remote(filepath)
 
         except Exception as e:
             print(f"Error saving file: {e}")
@@ -165,13 +176,8 @@ class GazeTrackingPainter:
     def _reset_after_save(self):
         self.close_canvas()
         self.painter.clear()
-        now = time.time()
-        if self.last_gaze_time is not None and (now - self.last_gaze_time) < GAZE_LOSS_TIMEOUT_SEC:
-            print("Gaze present. Starting new drawing session.")
-            self.transition_to(STATE_DRAWING)
-        else:
-            print("Gaze lost. Returning to search state.")
-            self.transition_to(STATE_SEARCHING)
+        print("Session saved. Returning to search/calibration state for next session.")
+        self.transition_to(STATE_SEARCHING)
 
     def run(self):
         print("=" * 60)
@@ -215,7 +221,7 @@ class GazeTrackingPainter:
                     continue
 
                 self.status_text = self.get_calibration_progress_text()
-                calibration_done = self.tracker.add_calibration_sample(gaze_info)
+                calibration_done = self.tracker.add_calibration_sample(gaze_info, now=now)
 
                 if calibration_done:
                     self.transition_to(STATE_DRAWING)

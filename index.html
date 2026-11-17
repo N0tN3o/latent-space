@@ -277,17 +277,22 @@
             font-weight: 700;
         }
         
+        @page {
+            size: A4;
+            margin: 12mm;
+        }
+
         @media print {
             audio, .floating-nav { display: none !important; }
+            .container { padding: 0 10px 8px; }
             .update-info { display: block; }
             .page-footer {
-                position: fixed;
-                bottom: 0;
-                left: 0;
-                right: 0;
-                padding: 10px 20px;
+                position: static;
+                margin-top: 14px;
+                padding: 10px 16px;
                 background: white;
                 border-top: 1px solid #ddd;
+                page-break-inside: avoid;
             }
             .attribution-text a {
                 text-decoration: none;
@@ -303,7 +308,6 @@
         <button onclick="stepHistory(-1)" title="Newer Artwork (Right Arrow)">Next</button>
         <a href="/draw">Gaze Draw</a>
         <a href="/kiosk">Print Kiosk</a>
-        <a href="/admin">Admin</a>
         <button onclick="window.print()">Print</button>
     </nav>
 
@@ -385,7 +389,7 @@ No two the same, yet all the same.</div>
         const CONFIG = {
             dataFile: '/shared_output/content.json',
             attributionsApi: '/api/settings/attributions',
-            statusApi: '/api/status',
+            statusApi: '/api/public/info',
             printsApi: '/api/files/prints',
             refreshInterval: 4000,
         };
@@ -413,6 +417,12 @@ No two the same, yet all the same.</div>
             const div = document.createElement('div');
             div.textContent = str || '';
             return div.innerHTML;
+        }
+
+        function safeUrl(url) {
+            const u = String(url ?? '').trim();
+            if (/^(https?:\/\/|\/(?!\/))/i.test(u)) return escapeHtml(u);
+            return '';
         }
 
         function renderQRCode(targetPath) {
@@ -466,7 +476,9 @@ No two the same, yet all the same.</div>
 
             section.style.display = 'block';
             if (attr.show_logo !== false) {
-                logo.src = (attr.logo_path || '/kasboek-logo.jpg') + '?t=' + Date.now();
+                const rawLogo = String(attr.logo_path || '/kasboek-logo.jpg').trim();
+                const safeLogo = /^(https?:\/\/|\/(?!\/))/i.test(rawLogo) ? rawLogo : '/kasboek-logo.jpg';
+                logo.src = safeLogo + '?t=' + Date.now();
                 logo.style.display = 'block';
             } else {
                 logo.style.display = 'none';
@@ -476,9 +488,9 @@ No two the same, yet all the same.</div>
             const intro = escapeHtml(attr.intro_text || 'Made possible by Kasboek.');
             const learnMore = escapeHtml(attr.learn_more_text || 'To learn more, visit');
             const webLabel = escapeHtml(attr.website_label || 'Kasboek Website');
-            const webUrl = escapeHtml(attr.website_url || '');
+            const webUrl = safeUrl(attr.website_url || '');
             const liLabel = escapeHtml(attr.company_linkedin_label || 'Kasboek LinkedIn');
-            const liUrl = escapeHtml(attr.company_linkedin_url || '');
+            const liUrl = safeUrl(attr.company_linkedin_url || '');
             const thanksText = escapeHtml(attr.thanks_text || 'Thank you for letting us use this:');
 
             let linksHtml = [];
@@ -494,7 +506,7 @@ No two the same, yet all the same.</div>
                 for (const f of attr.founders) {
                     if (f && f.name && f.name.trim()) {
                         const fName = escapeHtml(f.name.trim());
-                        const fUrl = f.url ? escapeHtml(f.url.trim()) : '';
+                        const fUrl = f.url ? safeUrl(f.url) : '';
                         if (fUrl) {
                             foundersHtml.push(`<a href="${fUrl}" target="_blank" rel="noopener noreferrer">${fName}</a>`);
                         } else {

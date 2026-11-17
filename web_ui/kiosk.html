@@ -283,6 +283,38 @@
             text-decoration: underline;
             margin: 0 4px;
         }
+
+        .staff-modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.72);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 200;
+            padding: 20px;
+        }
+
+        .staff-modal {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 24px;
+            width: 100%;
+            max-width: 380px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .staff-modal input {
+            background: #0e0f12;
+            border: 1px solid var(--card-border);
+            color: var(--text-main);
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 1rem;
+        }
     </style>
 </head>
 <body>
@@ -294,7 +326,7 @@
         <div class="nav-links">
             <a href="/" class="btn">Gallery</a>
             <a href="/draw" class="btn">Gaze Draw</a>
-            <a href="/admin" class="btn">Admin</a>
+            <button class="btn" id="staffAuthBtn" onclick="handleStaffAuthClick()">Staff Unlock</button>
         </div>
     </header>
 
@@ -320,8 +352,25 @@
         <div class="kiosk-attribution" id="kioskAttribution"></div>
     </footer>
 
+    <div class="staff-modal-backdrop" id="staffLoginModal">
+        <form class="staff-modal" onsubmit="submitStaffLogin(event)">
+            <h3 style="font-size: 1.15rem;">Staff Unlock Required</h3>
+            <p style="font-size: 0.88rem; color: var(--text-muted);">
+                Enter the Admin passcode (printed at server startup or in <code>config/admin_pin.txt</code>) to enable host printing and auto-print controls.
+            </p>
+            <input type="password" id="staffPinInput" placeholder="Admin passcode" autocomplete="current-password" required>
+            <div id="staffLoginError" style="color: #f87171; font-size: 0.85rem; display: none;"></div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button type="button" class="btn" onclick="closeStaffModal()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Unlock</button>
+            </div>
+        </form>
+    </div>
+
     <script>
         let allPrints = [];
+        let isStaffUnlocked = false;
+        let pendingStaffAction = null;
 
         function escapeHtml(str) {
             return String(str ?? '')
@@ -334,8 +383,74 @@
 
         function safeUrl(url) {
             const u = String(url ?? '').trim();
-            if (/^(https?:\/\/|\/)/i.test(u)) return escapeHtml(u);
+            if (/^(https?:\/\/|\/(?!\/))/i.test(u)) return escapeHtml(u);
             return '#';
+        }
+
+        async function refreshAuthStatus() {
+            try {
+                const res = await fetch('/api/auth/status?t=' + Date.now());
+                if (res.ok) {
+                    const data = await res.json();
+                    isStaffUnlocked = !!data.authenticated;
+                    const btn = document.getElementById('staffAuthBtn');
+                    btn.textContent = isStaffUnlocked ? 'Staff Unlocked (Lock)' : 'Staff Unlock';
+                    btn.classList.toggle('btn-primary', isStaffUnlocked);
+                }
+            } catch (_) {}
+        }
+
+        function openStaffModal(onUnlocked = null) {
+            pendingStaffAction = onUnlocked;
+            document.getElementById('staffLoginError').style.display = 'none';
+            document.getElementById('staffPinInput').value = '';
+            document.getElementById('staffLoginModal').style.display = 'flex';
+            setTimeout(() => document.getElementById('staffPinInput').focus(), 50);
+        }
+
+        function closeStaffModal() {
+            pendingStaffAction = null;
+            document.getElementById('staffLoginModal').style.display = 'none';
+        }
+
+        async function handleStaffAuthClick() {
+            if (!isStaffUnlocked) {
+                openStaffModal();
+                return;
+            }
+            try {
+                await fetch('/api/auth/logout', { method: 'POST' });
+            } catch (_) {}
+            await refreshAuthStatus();
+        }
+
+        async function submitStaffLogin(e) {
+            e.preventDefault();
+            const pw = document.getElementById('staffPinInput').value;
+            const errEl = document.getElementById('staffLoginError');
+            errEl.style.display = 'none';
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: pw })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    errEl.textContent = data.error || 'Authentication failed';
+                    errEl.style.display = 'block';
+                    return;
+                }
+                const nextAction = pendingStaffAction;
+                closeStaffModal();
+                await refreshAuthStatus();
+                if (typeof nextAction === 'function') {
+                    nextAction();
+                }
+            } catch (err) {
+                errEl.textContent = 'Connection error: ' + err;
+                errEl.style.display = 'block';
+            }
         }
 
         async function loadPrints() {
@@ -398,13 +513,28 @@
         }
 
         async function toggleAutoPrint(enabled) {
+            const toggle = document.getElementById('autoPrintToggle');
             try {
-                await fetch('/api/settings/printing', {
+                const res = await fetch('/api/settings/printing', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({auto_print: enabled})
                 });
+                if (res.status === 401) {
+                    toggle.checked = !enabled;
+                    openStaffModal(() => {
+                        toggle.checked = enabled;
+                        toggleAutoPrint(enabled);
+                    });
+                    return;
+                }
+                if (!res.ok) {
+                    toggle.checked = !enabled;
+                    const err = await res.json().catch(() => ({}));
+                    alert('Failed to update auto-print setting: ' + (err.error || res.statusText));
+                }
             } catch (e) {
+                toggle.checked = !enabled;
                 alert('Failed to update auto-print setting: ' + e);
             }
         }
@@ -477,13 +607,15 @@
         }
 
         async function browserPrint(filename, pdfUrl) {
-            try {
-                await fetch('/api/files/print', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({filename: filename, mark_only: true})
-                });
-            } catch (_) {}
+            if (isStaffUnlocked) {
+                try {
+                    await fetch('/api/files/print', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({filename: filename, mark_only: true})
+                    });
+                } catch (_) {}
+            }
 
             const w = window.open(pdfUrl, '_blank');
             if (w) {
@@ -501,6 +633,10 @@
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({filename: filename, mark_only: false})
                 });
+                if (res.status === 401) {
+                    openStaffModal(() => hostPrint(filename));
+                    return;
+                }
                 const data = await res.json();
                 if (res.ok && data.status === 'success') {
                     alert('Sent print job to host printer.');
@@ -513,6 +649,7 @@
             }
         }
 
+        refreshAuthStatus();
         loadSettings();
         loadPrints();
         setInterval(loadPrints, 5000);
