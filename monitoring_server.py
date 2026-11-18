@@ -50,16 +50,23 @@ from config_manager import (
     atomic_write_bytes,
     ensure_directories,
     get_configured_ollama_host,
+    get_lan_ip,
     get_or_create_admin_password,
+    get_public_base_url,
+    get_server_host,
+    get_server_port,
     load_settings,
     mark_file_printed,
     mask_settings_secrets,
+    release_nonblocking_lock,
     remove_from_print_history,
     save_settings,
     send_pdf_to_printer,
+    try_acquire_nonblocking_lock,
     update_content_json,
     update_settings_section,
     validate_printer_name,
+    write_content_json,
 )
 from qr_utils import qr_svg
 
@@ -115,6 +122,7 @@ def _record_run_status_unlocked(rid: str, state: str, status: str, error_code: s
 
 _watcher_thread = None
 _watcher_stop = threading.Event()
+_watcher_lock_fd = None
 _ollama_cache = {"status": "unknown", "ts": 0.0}
 _ollama_cache_lock = threading.Lock()
 _ollama_probe_lock = threading.Lock()
@@ -128,7 +136,7 @@ MAX_DRAWING_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB for drawing uploads
 MAX_IMAGE_WIDTH = 4096
 MAX_IMAGE_HEIGHT = 4096
 MAX_IMAGE_PIXELS = 4096 * 4096
-SYNC_PIPELINE_TIMEOUT_SEC = 90.0
+SYNC_PIPELINE_TIMEOUT_SEC = 155.0
 REQUEST_SOCKET_TIMEOUT_SEC = 30.0
 ADMIN_SESSION_COOKIE = "ls_admin_session"
 ADMIN_SESSION_TTL_SEC = 12 * 3600
@@ -293,6 +301,7 @@ def _pipeline_worker_loop():
                     except Exception:
                         pass
                 with _pipeline_lock:
+                    _pipeline_state["last_run"] = datetime.now().isoformat()
                     _pipeline_state["last_status"] = "error"
                     _pipeline_state["last_error_code"] = "ERR_PIPELINE_TIMEOUT"
                     _pipeline_state["last_error"] = "Queued job cancelled after caller timeout"
@@ -437,17 +446,21 @@ def enqueue_pipeline_job(
 
 def start_background_watcher():
     """Start the file watcher in a daemon thread if not already running externally."""
-    global _watcher_thread
+    global _watcher_thread, _watcher_lock_fd
     _ensure_pipeline_worker()
     if _watcher_thread is not None and _watcher_thread.is_alive():
         return
     if get_service_status("run_analysis_watcher") == "running":
         return
+    if _watcher_lock_fd is None:
+        _watcher_lock_fd = try_acquire_nonblocking_lock(config_manager.LOGS_DIR / ".watcher.lock")
+        if _watcher_lock_fd is None:
+            return
     if AI_AVAILABLE:
         _watcher_stop.clear()
         _watcher_thread = threading.Thread(
             target=watch_loop,
-            args=(_watcher_stop, lambda img_p: enqueue_pipeline_job(source_path=img_p)),
+            args=(_watcher_stop, lambda img_p, dwell_grid=None: enqueue_pipeline_job(source_path=img_p, dwell_grid=dwell_grid)),
             daemon=True,
         )
         _watcher_thread.start()
@@ -538,6 +551,68 @@ def _sync_attributions_to_content_json(attr_data: dict):
     update_content_json(_apply)
 
 
+def _evict_deleted_prints_and_sync_gallery(deleted_names: list):
+    """Evict deleted metadata caches and keep content.json from pointing to removed files."""
+    if not deleted_names:
+        return
+    docs_dir = config_manager.DOCS_DIR
+    shared_dir = config_manager.SHARED_DIR
+    deleted_set = set(deleted_names)
+    deleted_stems = {Path(n).stem for n in deleted_names}
+    deleted_rids = {s[len("print_"):] for s in deleted_stems if s.startswith("print_")}
+
+    with _prints_cache_lock:
+        for stem in deleted_stems:
+            _prints_meta_cache.pop(str(docs_dir / f"{stem}.json"), None)
+
+    def _sync_deleted(current: dict):
+        cur_pdf_name = Path(current.get("printPDF") or "").name
+        cur_scribble_stem = Path(current.get("scribblePath") or "").stem
+        cur_rid = str(current.get("runId") or "")
+        if cur_pdf_name not in deleted_set and cur_scribble_stem not in deleted_stems and cur_rid not in deleted_rids:
+            return None
+
+        settings = load_settings()
+        candidates = []
+        if docs_dir.exists():
+            for pdf in docs_dir.glob("print_*.pdf"):
+                try:
+                    candidates.append((pdf.stat().st_mtime, pdf))
+                except Exception:
+                    continue
+        candidates.sort(key=lambda item: (item[0], item[1].name), reverse=True)
+
+        for _, pdf in candidates:
+            meta = _read_cached_meta(pdf.with_suffix(".json"))
+            if not meta:
+                continue
+            payload = dict(meta)
+            payload["status"] = "ok"
+            payload["pdfRendering"] = False
+            payload["attributions"] = settings.get("attributions", {})
+            for rel_key in ("scribblePath", "heatmapPath", "poemAudio", "printPDF"):
+                rel_val = payload.get(rel_key) or ""
+                if rel_val and not (shared_dir / rel_val.lstrip("/")).exists():
+                    payload[rel_key] = ""
+            return payload
+
+        return {
+            "status": "empty",
+            "runId": "",
+            "scribblePath": "",
+            "heatmapPath": "",
+            "psychoanalysis": "",
+            "poem": "",
+            "poemAudio": "",
+            "printPDF": "",
+            "pdfRendering": False,
+            "attributions": settings.get("attributions", {}),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    update_content_json(_sync_deleted)
+
+
 # --- Core API Business Logic ---
 
 def _get_lan_ip() -> str:
@@ -545,15 +620,7 @@ def _get_lan_ip() -> str:
     with _lan_ip_lock:
         if (now - _lan_ip_cache["ts"]) < 30.0:
             return _lan_ip_cache["ip"]
-    import socket
-    ip = "localhost"
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-    except Exception:
-        ip = "localhost"
+    ip = get_lan_ip()
     with _lan_ip_lock:
         _lan_ip_cache["ip"] = ip
         _lan_ip_cache["ts"] = time.monotonic()
@@ -616,7 +683,7 @@ def api_get_status() -> dict:
         printed_count = 0
 
     host_name = os.environ.get("COMPUTERNAME") or (os.uname().nodename if hasattr(os, "uname") else "Local Host")
-    port = int(os.environ.get("PORT", settings.get("server", {}).get("port", 8000)))
+    port = get_server_port(settings)
     lan_ip = _get_lan_ip()
     sys_stats = get_system_stats()
     with _pipeline_lock:
@@ -626,6 +693,7 @@ def api_get_status() -> dict:
     return {
         "device": host_name,
         "lan_url": f"http://{lan_ip}:{port}",
+        "public_url": get_public_base_url(settings, lan_ip=lan_ip),
         "services": services,
         "pipeline": pipe_snapshot,
         "system": sys_stats,
@@ -722,7 +790,7 @@ def api_list_prints() -> list:
 
 
 def api_get_logs(log_type: str) -> str:
-    if "/" in log_type or "\\" in log_type or ".." in log_type:
+    if not log_type or "\x00" in log_type or "/" in log_type or "\\" in log_type or ".." in log_type:
         return "Invalid log name"
     logs_dir = config_manager.LOGS_DIR
     candidates = [
@@ -781,10 +849,19 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             os.environ.get(var) for var in ("RENDER", "SPACE_ID", "RAILWAY_ENVIRONMENT", "FLY_APP_NAME")
         )
         if trust_proxy:
-            for hdr in ("CF-Connecting-IP", "Fly-Client-IP", "X-Forwarded-For"):
-                val = (self.headers.get(hdr) or "").strip()
-                if val:
-                    return val.split(",")[0].strip()
+            if os.environ.get("FLY_APP_NAME"):
+                fly_vals = [v.strip() for v in (self.headers.get_all("Fly-Client-IP") or []) if v.strip()]
+                if fly_vals:
+                    return fly_vals[-1]
+            if os.environ.get("LATENT_SPACE_TRUST_CF") == "1":
+                cf_vals = [v.strip() for v in (self.headers.get_all("CF-Connecting-IP") or []) if v.strip()]
+                if cf_vals:
+                    return cf_vals[-1]
+            xff_all = self.headers.get_all("X-Forwarded-For") or []
+            if xff_all:
+                parts = [p.strip() for hdr in xff_all for p in hdr.split(",") if p.strip()]
+                if parts:
+                    return parts[-1]
         return peer
 
     def _get_session_cookie_token(self) -> str:
@@ -799,7 +876,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         except Exception:
             return ""
 
-    def _is_admin_authenticated(self) -> bool:
+    def _check_admin_auth_state(self) -> tuple:
         expected_pw, _ = get_or_create_admin_password()
         auth_header = (self.headers.get("Authorization") or "").strip()
         bearer_token = ""
@@ -807,16 +884,41 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             bearer_token = auth_header[7:].strip()
         header_token = (self.headers.get("X-Admin-Token") or "").strip() or bearer_token
         if header_token:
-            if hmac.compare_digest(header_token, expected_pw) or _validate_admin_session(header_token):
-                return True
+            if _validate_admin_session(header_token):
+                return True, 0
+            client_ip = self._get_client_ip()
+            allowed, retry_after = _check_login_rate_limit(client_ip)
+            if not allowed:
+                return False, retry_after
+            if hmac.compare_digest(header_token, expected_pw):
+                _clear_login_failures(client_ip)
+                return True, 0
+            _record_login_failure(client_ip)
+            return False, 0
         cookie_token = self._get_session_cookie_token()
         if cookie_token and _validate_admin_session(cookie_token):
-            return True
-        return False
+            return True, 0
+        return False, 0
+
+    def _is_admin_authenticated(self) -> bool:
+        ok, _ = self._check_admin_auth_state()
+        return ok
 
     def _require_admin(self) -> bool:
-        if self._is_admin_authenticated():
+        ok, retry_after = self._check_admin_auth_state()
+        if ok:
             return True
+        if retry_after > 0:
+            self._send_json(
+                {
+                    "status": "error",
+                    "error": f"Too many authentication attempts. Retry in {retry_after}s.",
+                    "error_code": "ERR_RATE_LIMIT",
+                },
+                status=429,
+                extra_headers=[("Retry-After", str(retry_after))],
+            )
+            return False
         self._send_json(
             {"status": "error", "error": "Admin authentication required", "error_code": "ERR_UNAUTHORIZED"},
             status=401,
@@ -976,6 +1078,8 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         query = parse_qs(parsed.query)
+        if "\x00" in path:
+            return self._send_text("Bad Request", status=400)
 
         # Static & UI routes
         if path in ("/", "/index.html"):
@@ -1042,8 +1146,12 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/public/info":
             settings = load_settings()
-            port = int(os.environ.get("PORT", settings.get("server", {}).get("port", 8000)))
-            return self._send_json({"lan_url": f"http://{_get_lan_ip()}:{port}"})
+            port = get_server_port(settings)
+            lan_ip = _get_lan_ip()
+            return self._send_json({
+                "lan_url": get_public_base_url(settings, lan_ip=lan_ip),
+                "local_lan_url": f"http://{lan_ip}:{port}",
+            })
 
         if path == "/api/pipeline/status":
             req_run_id = (query.get("run_id") or [""])[0]
@@ -1123,6 +1231,8 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         query = parse_qs(parsed.query)
+        if "\x00" in path:
+            return self._send_json({"status": "error", "error": "Bad Request"}, status=400)
 
         if path == "/api/auth/login":
             client_ip = self._get_client_ip()
@@ -1337,7 +1447,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                 return self._send_json({
                     "status": "success",
                     "provider": model._provider,
-                    "model": model._llm,
+                    "model": model._last_used_model or model._llm,
                     "reply": reply,
                 })
             except AIGenerationError as e:
@@ -1425,6 +1535,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
 
             if deleted_names:
                 remove_from_print_history(deleted_names)
+                _evict_deleted_prints_and_sync_gallery(deleted_names)
             return self._send_json({"status": "success", "deleted": len(deleted_names)})
 
         return self._send_json({"error": "Not Found"}, 404)
@@ -1455,6 +1566,7 @@ def run_server(host="0.0.0.0", port=8000):
     except KeyboardInterrupt:
         print("\nShutting down server...")
         _watcher_stop.set()
+        release_nonblocking_lock(_watcher_lock_fd)
         server.server_close()
         if os.environ.get("LATENT_SPACE_MANAGED") != "1":
             try:
@@ -1466,6 +1578,6 @@ def run_server(host="0.0.0.0", port=8000):
 
 if __name__ == "__main__":
     settings = load_settings()
-    port = int(os.environ.get("PORT", settings.get("server", {}).get("port", 8000)))
-    host = os.environ.get("HOST", settings.get("server", {}).get("host", "0.0.0.0"))
+    port = get_server_port(settings)
+    host = get_server_host(settings)
     run_server(host=host, port=port)

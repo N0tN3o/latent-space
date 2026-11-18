@@ -486,6 +486,13 @@ def _is_ollama_vision_model_ready() -> bool:
         return False
 
 
+_OPENAI_COMPAT_VISION_HINTS = (
+    "gpt-4o", "gpt-4-turbo", "gpt-4.1", "gpt-4.5", "chatgpt-4o",
+    "vision", "pixtral", "llava", "qwen2-vl", "qwen2.5-vl", "qwen2.5vl",
+    "llama-3.2-11b-vision", "llama-3.2-90b-vision", "llama-4-",
+)
+
+
 def _analysis_llm_handles_vision_natively() -> bool:
     """Return True when the configured analysis LLM already receives the image directly."""
     try:
@@ -493,14 +500,19 @@ def _analysis_llm_handles_vision_natively() -> bool:
         settings = load_settings()
         acfg = settings.get("ai", {}).get("analysis", {})
         prov = (acfg.get("provider") or "ollama").lower()
-        mod = acfg.get("model") or ""
+        mod = (acfg.get("model") or "").lower()
         if prov in ("gemini", "anthropic"):
             return True
+        if prov == "openai_compatible":
+            return (
+                any(h in mod for h in _OPENAI_COMPAT_VISION_HINTS)
+                or mod.startswith(("o1", "o3", "o4"))
+            )
         if prov == "ollama":
             base_url = (acfg.get("base_url") or "http://localhost:11434/v1").rstrip("/")
             if not base_url.endswith("/v1") and "11434" in base_url and "/api" not in base_url:
                 base_url += "/v1"
-            return LLMModel._ollama_supports_vision(base_url, mod)
+            return LLMModel._ollama_supports_vision(base_url, acfg.get("model") or "")
     except Exception:
         pass
     return False

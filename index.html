@@ -395,7 +395,7 @@
         let lastContentSignature = null;
         let lastAttrSignature = null;
         let lanBaseUrl = window.location.origin;
-        let lanUrlFetched = false;
+        let lastPublicInfoTs = 0;
         let liveRunId = null;
 
         let historyList = [];
@@ -497,7 +497,8 @@
             if (attr.show_logo !== false) {
                 const rawLogo = String(attr.logo_path || '/kasboek-logo.jpg').trim();
                 const safeLogo = /^(https?:\/\/|\/(?!\/))/i.test(rawLogo) ? rawLogo : '/kasboek-logo.jpg';
-                logo.src = safeLogo + '?t=' + Date.now();
+                const sep = safeLogo.includes('?') ? '&' : '?';
+                logo.src = safeLogo + sep + 't=' + Date.now();
                 logo.style.display = 'block';
             } else {
                 logo.style.display = 'none';
@@ -586,6 +587,7 @@
             const poemAudio = document.getElementById('poemAudio');
             poemAudio.pause();
             poemAudio.removeAttribute('src');
+            delete poemAudio.dataset.audioPath;
             poemAudio.style.display = 'none';
 
             renderQRCode('');
@@ -593,6 +595,13 @@
 
         function applyViewData(data, isHistorical = false) {
             const errorBanner = document.getElementById('errorBanner');
+            if (!isHistorical && data.status === 'empty') {
+                errorBanner.style.display = 'none';
+                errorBanner.innerHTML = '';
+                clearArtworkView('Waiting for the first gaze drawing — open Gaze Draw to begin.');
+                document.getElementById('lastUpdate').textContent = 'Waiting for data...';
+                return;
+            }
             if (!isHistorical && data.status === 'error') {
                 const code = escapeHtml(data.errorCode || 'ERR_PIPELINE_FAILED');
                 const msg = escapeHtml(
@@ -642,14 +651,19 @@
             document.getElementById('poemText').textContent = data.poem || '';
 
             const poemAudio = document.getElementById('poemAudio');
-            if (data.poemAudio && !isHistorical) {
-                poemAudio.style.display = 'block';
-                poemAudio.src = buildPath(data.poemAudio) + '?t=' + Date.now();
-                poemAudio.load();
-                poemAudio.play().catch(() => {});
+            const nextAudioSrc = (data.poemAudio && !isHistorical) ? buildPath(data.poemAudio) : '';
+            if (nextAudioSrc) {
+                if (poemAudio.dataset.audioPath !== nextAudioSrc) {
+                    poemAudio.dataset.audioPath = nextAudioSrc;
+                    poemAudio.style.display = 'block';
+                    poemAudio.src = nextAudioSrc + '?t=' + Date.now();
+                    poemAudio.load();
+                    poemAudio.play().catch(() => {});
+                }
             } else {
                 poemAudio.pause();
                 poemAudio.removeAttribute('src');
+                delete poemAudio.dataset.audioPath;
                 poemAudio.style.display = 'none';
             }
 
@@ -719,13 +733,21 @@
             await refreshAttributions();
             if (historyIdx !== -1) return;
             try {
-                if (!lanUrlFetched && (lanBaseUrl.includes('localhost') || lanBaseUrl.includes('127.0.0.1'))) {
-                    lanUrlFetched = true;
+                const nowMs = Date.now();
+                if (!lastPublicInfoTs || (nowMs - lastPublicInfoTs) >= 30000) {
                     try {
                         const st = await fetch(CONFIG.statusApi);
                         if (st.ok) {
+                            lastPublicInfoTs = nowMs;
                             const stJson = await st.json();
-                            if (stJson.lan_url) lanBaseUrl = stJson.lan_url;
+                            const pageHost = window.location.hostname;
+                            const isLocalOrigin = pageHost === 'localhost' || pageHost === '127.0.0.1' || pageHost === '[::1]' || pageHost === '::1';
+                            const hasCustomRemote = stJson.lan_url && stJson.local_lan_url && stJson.lan_url !== stJson.local_lan_url;
+                            if (stJson.lan_url && (isLocalOrigin || hasCustomRemote)) {
+                                lanBaseUrl = stJson.lan_url;
+                            } else if (!isLocalOrigin && !hasCustomRemote) {
+                                lanBaseUrl = window.location.origin;
+                            }
                         }
                     } catch (_) {}
                 }
@@ -744,7 +766,8 @@
                         pa: data.poemAudio,
                         pdf: data.printPDF,
                         pr: !!data.pdfRendering,
-                        t: data.timestamp
+                        t: data.timestamp,
+                        base: lanBaseUrl
                     });
 
                     if (sig !== lastContentSignature) {

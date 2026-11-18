@@ -11,6 +11,9 @@ Pillow>=10.0.0
 # Optional: High-fidelity A4 HTML-to-PDF rendering (falls back to built-in Matplotlib PDF renderer if omitted)
 # playwright>=1.40.0
 
+# Optional: Windows .NET PrintDocument rendering without SumatraPDF or pdftoppm
+# PyMuPDF
+
 # Optional: Zero-shot CLIP abstract art & Rorschach analyzer (mode="clip")
 # torch
 # transformers

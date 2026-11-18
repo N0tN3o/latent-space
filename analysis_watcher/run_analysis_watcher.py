@@ -29,9 +29,13 @@ from config_manager import (
     atomic_write_bytes,
     atomic_write_text,
     ensure_directories,
+    get_public_base_url,
+    get_server_port,
     load_env_vars,
     load_settings,
+    release_nonblocking_lock,
     send_pdf_to_printer,
+    try_acquire_nonblocking_lock,
     write_content_json,
 )
 from analysis import analyze_drawing
@@ -164,7 +168,7 @@ def find_chrome():
 
 def get_gallery_url(print_render: bool = False):
     settings = load_settings()
-    port = os.environ.get("PORT") or settings.get("server", {}).get("port", 8000)
+    port = get_server_port(settings)
     suffix = "?print_render=1" if print_render else ""
     return f"http://127.0.0.1:{port}/{suffix}"
 
@@ -225,20 +229,7 @@ def _fit_text_block(text: str, base_width: int, base_fontsize: float, max_height
 
 
 def _get_qr_base_url(settings: dict) -> str:
-    remote_url = (settings.get("server", {}).get("remote_server_url") or "").strip().rstrip("/")
-    if remote_url.startswith(("http://", "https://")):
-        return remote_url
-    port = os.environ.get("PORT") or settings.get("server", {}).get("port", 8000)
-    host_ip = "127.0.0.1"
-    try:
-        import socket
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        host_ip = s.getsockname()[0]
-        s.close()
-    except Exception:
-        host_ip = "127.0.0.1"
-    return f"http://{host_ip}:{port}"
+    return get_public_base_url(settings)
 
 
 def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> str:
@@ -446,12 +437,21 @@ def save_print_pdf(url=None, out_dir=None, website_data=None, run_id=None):
                     )
                 except Exception:
                     pass
-                page.pdf(
-                    path=str(pdf_path),
-                    format=paper_format,
-                    print_background=True,
-                    margin={"top": "0cm", "right": "0cm", "bottom": "0cm", "left": "0cm"},
-                )
+                tmp_pdf = pdf_path.with_name(f".tmp_{os.getpid()}_{threading.get_ident()}_{pdf_path.name}")
+                try:
+                    page.pdf(
+                        path=str(tmp_pdf),
+                        format=paper_format,
+                        print_background=True,
+                        margin={"top": "0cm", "right": "0cm", "bottom": "0cm", "left": "0cm"},
+                    )
+                    os.replace(str(tmp_pdf), str(pdf_path))
+                finally:
+                    if tmp_pdf.exists():
+                        try:
+                            tmp_pdf.unlink()
+                        except Exception:
+                            pass
             finally:
                 browser.close()
         return str(pdf_path)
@@ -512,7 +512,9 @@ def _run_optional_tts(poem: str, settings: dict, run_id: str = None) -> str:
     elif provider == "google_cloud":
         try:
             from tts_gc import gc_tts_setup, run_gc_tts
-            client, voice, audio_config = gc_tts_setup()
+            raw_v1 = (tts_cfg.get("voice_id_1") or "").strip()
+            gc_voice = raw_v1 if ("-" in raw_v1 and len(raw_v1) >= 6) else "en-US-Chirp3-HD-Zephyr"
+            client, voice, audio_config = gc_tts_setup(voice_id=gc_voice)
             run_gc_tts(client, voice, audio_config, poem, str(config_manager.SHARED_DIR / f"output_{rid}"))
             return audio_filename
         except Exception as e:
@@ -549,6 +551,8 @@ def cleanup_orphaned_temp_files():
         "heatmap_*.png",
         "output_rae_*.mp3",
         "output_ryan_*.mp3",
+        "image.tmp.png",
+        "dwell_grid.tmp.json",
         ".tmp_*",
         ".*.tmp",
     )
@@ -610,6 +614,7 @@ def run_analysis_pipeline(
     processed_run = config_manager.SHARED_DIR / f"image_processed_{rid}.png"
     heatmap_run = config_manager.SHARED_DIR / f"heatmap_{rid}.png"
     poem_audio = ""
+    wrote_live_content = False
 
     def _check_cancelled():
         if cancel_event is not None and cancel_event.is_set():
@@ -745,6 +750,7 @@ def run_analysis_pipeline(
         }
 
         write_content_json(website_data)
+        wrote_live_content = True
         main_logger.info(f"[{rid}] Website content.json updated")
 
         # 9. Render Print PDF and save sidecar metadata
@@ -806,7 +812,7 @@ def run_analysis_pipeline(
                     orphan_mp3.unlink()
             except Exception:
                 pass
-        if err.code != "ERR_PIPELINE_TIMEOUT":
+        if err.code != "ERR_PIPELINE_TIMEOUT" or wrote_live_content:
             _write_content_error(rid, err.code, str(err), load_settings())
         if raise_on_error:
             raise
@@ -840,6 +846,22 @@ def run_analysis_pipeline(
                 pass
 
 
+def _consume_local_dwell_grid():
+    """Read and remove optional sidecar dwell_grid.json written by local Desktop Gaze Painter."""
+    dwell_path = config_manager.SHARED_DIR / "dwell_grid.json"
+    if not dwell_path.exists():
+        return None
+    try:
+        data = json.loads(dwell_path.read_text(encoding="utf-8"))
+    except Exception:
+        data = None
+    try:
+        dwell_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    return data
+
+
 def watch_loop(stop_event=None, runner_fn=None):
     """Continuously watch shared_output/image.png for changes and trigger/enqueue the pipeline."""
     global _handled_image_sig
@@ -860,18 +882,29 @@ def watch_loop(stop_event=None, runner_fn=None):
                         should_trigger = True
 
             if should_trigger:
+                local_dwell = _consume_local_dwell_grid()
                 print("\n[analysis_watcher] Detected new drawing in image.png, queuing analysis pipeline...")
                 if runner_fn is not None:
-                    runner_fn(image_path)
+                    if local_dwell is not None:
+                        try:
+                            runner_fn(image_path, dwell_grid=local_dwell)
+                        except TypeError:
+                            runner_fn(image_path)
+                    else:
+                        runner_fn(image_path)
                 else:
                     rid, snap = snapshot_drawing_input(image_path)
-                    run_analysis_pipeline(run_id=rid, snapshot_path=str(snap))
+                    run_analysis_pipeline(run_id=rid, snapshot_path=str(snap), dwell_grid=local_dwell)
         except Exception as e:
             print(f"[analysis_watcher] Watch error: {e}")
         time.sleep(0.5)
 
 
 if __name__ == "__main__":
+    _standalone_lock_fd = try_acquire_nonblocking_lock(config_manager.LOGS_DIR / ".watcher.lock")
+    if _standalone_lock_fd is None:
+        print("[analysis_watcher] Another watcher instance is already running; exiting.")
+        sys.exit(0)
     try:
         watch_loop()
     except KeyboardInterrupt:
@@ -881,3 +914,5 @@ if __name__ == "__main__":
             stop_ollama_serving()
         except Exception:
             pass
+    finally:
+        release_nonblocking_lock(_standalone_lock_fd)

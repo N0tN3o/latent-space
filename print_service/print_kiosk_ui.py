@@ -128,9 +128,18 @@ class PDFWatcher(FileSystemEventHandler):
     def __init__(self, callback):
         self.callback = callback
 
+    @staticmethod
+    def _is_final_print_pdf(path_str: str) -> bool:
+        name = Path(path_str).name
+        return name.startswith("print_") and name.endswith(".pdf") and not name.startswith(".")
+
     def on_created(self, event):
-        if event.src_path.endswith(".pdf") and "print_" in event.src_path:
+        if not getattr(event, "is_directory", False) and self._is_final_print_pdf(event.src_path):
             self.callback(event.src_path)
+
+    def on_moved(self, event):
+        if not getattr(event, "is_directory", False) and self._is_final_print_pdf(event.dest_path):
+            self.callback(event.dest_path)
 
 
 class PrintQueueItem(QWidget):
@@ -216,6 +225,11 @@ class EnhancedPrintKioskUI(QMainWindow):
         self.setup_ui()
         self.setup_file_watcher()
         self.refresh_queue()
+
+        self.sync_timer = QTimer(self)
+        self.sync_timer.setInterval(10000)
+        self.sync_timer.timeout.connect(self.refresh_queue)
+        self.sync_timer.start()
 
     def eventFilter(self, obj, event):
         if event.type() in [QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress, QEvent.Type.TouchBegin, QEvent.Type.Wheel]:

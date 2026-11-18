@@ -287,6 +287,115 @@ class TestCVAndGeometry(unittest.TestCase):
                 m.chat("Hi", allow_failover=False)
             self.assertNotIn("AttributeError", str(ctx.exception))
 
+    def test_gemini_header_auth_secret_redaction_and_cross_role_key(self):
+        # 1. Spoofed host substring must not match cloud vendor
+        self.assertEqual(chat._is_cloud_openai_compatible_host("https://evilopenai.com/v1"), "")
+        self.assertEqual(chat._is_cloud_openai_compatible_host("https://api.openai.com/v1"), "openai")
+
+        # 2. Gemini sends key in x-goog-api-key header (not URL) and redacts secrets from errors
+        secret_key = "AIzaSySuperSecretUnitTestKey999"
+        config_manager.update_settings_section("ai", {
+            "analysis": {
+                "provider": "gemini",
+                "model": "gemini-2.0-flash",
+                "api_key": secret_key,
+                "fallback_provider": "none",
+            },
+            "poem": {
+                "provider": "gemini",
+                "model": "gemini-2.0-flash",
+                "api_key": "",
+                "fallback_provider": "none",
+            },
+        })
+        # Cross-role key sharing for Gemini when poem key is empty
+        with mock.patch("chat.load_env_vars", return_value={}):
+            poem_m = chat.LLMModel("poem")
+            self.assertEqual(poem_m._api_key, secret_key)
+
+        err_resp = mock.MagicMock(status_code=403, ok=False)
+        err_resp.raise_for_status.side_effect = chat.requests.exceptions.HTTPError(
+            f"403 Forbidden for url: https://example.test/?key={secret_key}",
+            response=err_resp,
+        )
+        with mock.patch("chat.requests.post", return_value=err_resp) as post_mock:
+            m = chat.LLMModel("analysis")
+            with self.assertRaises(chat.AIGenerationError) as exc_ctx:
+                m.chat("Hello", allow_failover=False)
+        call_url = post_mock.call_args.args[0]
+        call_headers = post_mock.call_args.kwargs["headers"]
+        self.assertNotIn(secret_key, call_url)
+        self.assertEqual(call_headers.get("x-goog-api-key"), secret_key)
+        self.assertNotIn(secret_key, str(exc_ctx.exception))
+
+        # 3. Explicit openai_compatible fallback with gpt-* model picks OpenAI over Groq
+        config_manager.update_settings_section("ai", {
+            "analysis": {
+                "provider": "anthropic",
+                "model": "claude-3-5-haiku-latest",
+                "fallback_provider": "openai_compatible",
+                "fallback_model": "gpt-4o",
+            },
+            "poem": {"provider": "ollama", "model": "llama3.2"},
+        })
+        env = {"GROQ_API_KEY": "gsk-123", "OPENAI_API_KEY": "sk-oai-456"}
+        with mock.patch("chat.load_env_vars", return_value=env):
+            m2 = chat.LLMModel("analysis")
+            cands = m2._build_failover_candidates()
+        self.assertEqual(cands[0][0], "openai_compatible")
+        self.assertEqual(cands[0][1], "gpt-4o")
+        self.assertEqual(cands[0][2], "https://api.openai.com/v1")
+
+    def test_empty_model_cross_provider_failover_and_native_vision_detection(self):
+        # 1. Failover to Gemini when poem has model="" must NOT send Ollama's llama3.2 to Gemini
+        config_manager.update_settings_section("ai", {
+            "analysis": {
+                "provider": "ollama",
+                "model": "llama3.2",
+                "base_url": "http://localhost:11434/v1",
+                "fallback_provider": "auto",
+            },
+            "poem": {
+                "provider": "gemini",
+                "model": "",
+                "api_key": "gem-shared-key",
+            },
+        })
+        resp_gemini = mock.MagicMock(status_code=200, ok=True)
+        resp_gemini.json.return_value = {"candidates": [{"content": {"parts": [{"text": "Gemini fallback"}]}}]}
+
+        with mock.patch("chat.load_env_vars", return_value={}), \
+             mock.patch("chat.requests.post", side_effect=[
+                 chat.requests.exceptions.ConnectionError("ollama down"),
+                 resp_gemini,
+             ]) as post_mock:
+            m = chat.LLMModel("analysis")
+            reply = m.chat("Hello", allow_failover=True)
+
+        self.assertEqual(reply, "Gemini fallback")
+        self.assertIn("models/gemini-2.0-flash:generateContent", post_mock.call_args_list[1].args[0])
+        self.assertNotIn("llama3.2", post_mock.call_args_list[1].args[0])
+        self.assertEqual(m._last_used_model, "gemini-2.0-flash")
+
+        # 2. Blank base_url must not steal a remote role's OpenAI-compatible API key
+        config_manager.update_settings_section("ai", {
+            "analysis": {"provider": "openai_compatible", "model": "local", "base_url": "", "api_key": ""},
+            "poem": {"provider": "openai_compatible", "model": "gpt-4o", "base_url": "https://api.openai.com/v1", "api_key": "sk-poem"},
+        })
+        with mock.patch("chat.load_env_vars", return_value={}):
+            m_blank = chat.LLMModel("analysis")
+            self.assertEqual(m_blank._api_key, "")
+
+        # 3. _analysis_llm_handles_vision_natively detects gpt-4o vs text-only Groq
+        config_manager.update_settings_section("ai", {
+            "analysis": {"provider": "openai_compatible", "model": "gpt-4o", "base_url": "https://api.openai.com/v1"}
+        })
+        self.assertTrue(analysis._analysis_llm_handles_vision_natively())
+        config_manager.update_settings_section("ai", {
+            "analysis": {"provider": "openai_compatible", "model": "llama-3.3-70b-versatile", "base_url": "https://api.groq.com/openai/v1"}
+        })
+        self.assertFalse(analysis._analysis_llm_handles_vision_natively())
+
 
 class TestTimeBasedAffineGazeCalibration(unittest.TestCase):
     def _make_fake_tracker(self):

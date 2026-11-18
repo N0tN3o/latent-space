@@ -302,6 +302,19 @@
                             <span id="ttsSaveBadge" class="small text-muted"></span>
                         </div>
                     </div>
+                    <div class="row g-2 mt-2 align-items-end">
+                        <div class="col-md-5">
+                            <label class="form-label small text-muted mb-1">Primary Voice ID (ElevenLabs Voice 1 or Google Cloud Voice Name)</label>
+                            <input type="text" id="ttsVoice1Input" class="form-control form-control-sm" placeholder="45QiOxkuEAY6ckHqLMe8 or en-US-Chirp3-HD-Zephyr">
+                        </div>
+                        <div class="col-md-5">
+                            <label class="form-label small text-muted mb-1">Secondary Harmony Voice ID (ElevenLabs Voice 2)</label>
+                            <input type="text" id="ttsVoice2Input" class="form-control form-control-sm" placeholder="tJHJUEHzOkMoPmJJ5jo2">
+                        </div>
+                        <div class="col-md-2">
+                            <button class="btn btn-sm btn-outline-light w-100" onclick="saveTTSSettings()">Save TTS</button>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="row g-4">
@@ -611,8 +624,8 @@
             <!-- 4. PRINTS & AUTO-PRINT TAB -->
             <div class="tab-pane fade" id="tab-files">
                 <div class="p-3 rounded border border-secondary mb-4" style="background: #1d222e;">
-                    <div class="row g-3 align-items-center">
-                        <div class="col-md-5">
+                    <div class="row g-3 align-items-end">
+                        <div class="col-md-4">
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="printAutoToggle" onchange="savePrintSettings()">
                                 <label class="form-check-label fw-bold" for="printAutoToggle">
@@ -623,12 +636,31 @@
                                 Automatically sends new PDFs to the host printer without needing a kiosk screen.
                             </div>
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-3">
                             <label class="form-label small text-muted mb-1">Host Printer Name</label>
                             <input type="text" class="form-control form-control-sm" id="printerNameInput" value="default" placeholder="default">
                         </div>
+                        <div class="col-md-2">
+                            <label class="form-label small text-muted mb-1">Paper Format</label>
+                            <select id="paperFormatSelect" class="form-select form-select-sm">
+                                <option value="A4">A4</option>
+                                <option value="A3">A3</option>
+                                <option value="A5">A5</option>
+                                <option value="Letter">Letter</option>
+                                <option value="Legal">Legal</option>
+                            </select>
+                        </div>
                         <div class="col-md-3 d-flex align-items-end gap-2">
                             <button class="btn btn-sm btn-success w-100" onclick="savePrintSettings()">Save Print Config</button>
+                        </div>
+                    </div>
+                    <div class="row g-2 mt-2 align-items-end">
+                        <div class="col-md-9">
+                            <label class="form-label small text-muted mb-1">Public / QR Base URL <span class="text-muted">(Optional — overrides auto-detected LAN IP on Gallery &amp; PDF QR codes)</span></label>
+                            <input type="text" class="form-control form-control-sm" id="remoteServerUrlInput" placeholder="https://art.example.org (leave blank for LAN IP)">
+                        </div>
+                        <div class="col-md-3">
+                            <button class="btn btn-sm btn-outline-light w-100" onclick="saveServerUrlSetting()">Save Public QR URL</button>
                         </div>
                     </div>
                 </div>
@@ -903,22 +935,90 @@
     }
 
     // --- 2. AI CONFIG ---
+    const loadedRoleEndpoints = {
+        analysis: { provider: 'ollama', baseUrl: '', hasKey: false },
+        poem: { provider: 'ollama', baseUrl: '', hasKey: false }
+    };
+
+    function _normEndpointUrl(prov, baseUrl) {
+        const p = (prov || 'ollama').trim().toLowerCase();
+        if (p !== 'openai_compatible' && p !== 'ollama') return '';
+        return (baseUrl || '').trim().replace(/\/+$/, '');
+    }
+
+    function syncEndpointKeyGuard(role) {
+        const loaded = loadedRoleEndpoints[role];
+        const curProv = document.getElementById(`${role}_provider`).value;
+        const curBase = _normEndpointUrl(curProv, document.getElementById(`${role}_base_url`).value);
+        const loadedBase = _normEndpointUrl(loaded.provider, loaded.baseUrl);
+        const endpointChanged = (curProv !== loaded.provider) || (curBase !== loadedBase);
+        const typedKey = document.getElementById(`${role}_api_key`).value.trim();
+        const clearEl = document.getElementById(`${role}_clear_api_key`);
+        const statusEl = document.getElementById(`${role}_api_key_status`);
+
+        if (endpointChanged) {
+            if (!typedKey) {
+                clearEl.checked = true;
+            }
+            statusEl.textContent = curProv === 'ollama' ? '(Optional for Ollama)' : '(Enter API key or clear)';
+        } else {
+            clearEl.checked = false;
+            statusEl.textContent = loaded.hasKey ? '(Saved — leave blank to keep)' : '(Optional for Ollama)';
+        }
+    }
+
     function applyRolePreset(role, provider, model, baseUrl, ollamaVisionModel = null) {
-        document.getElementById(`${role}_provider`).value = provider;
+        const provEl = document.getElementById(`${role}_provider`);
+        const baseEl = document.getElementById(`${role}_base_url`);
+        const loaded = loadedRoleEndpoints[role];
+        const prevUiChanged = (provEl.value !== provider) || (_normEndpointUrl(provEl.value, baseEl.value) !== _normEndpointUrl(provider, baseUrl));
+        provEl.value = provider;
         document.getElementById(`${role}_model`).value = model;
-        document.getElementById(`${role}_base_url`).value = baseUrl;
+        baseEl.value = baseUrl;
+        if (prevUiChanged) {
+            document.getElementById(`${role}_api_key`).value = '';
+        }
+        if ((provider !== loaded.provider) || (_normEndpointUrl(provider, baseUrl) !== _normEndpointUrl(loaded.provider, loaded.baseUrl))) {
+            document.getElementById(`${role}_api_key`).value = '';
+        }
+        syncEndpointKeyGuard(role);
         if (ollamaVisionModel) {
             document.getElementById('aiOllamaVisionModel').value = ollamaVisionModel;
         }
     }
 
+    ['analysis', 'poem'].forEach(role => {
+        document.getElementById(`${role}_api_key`).addEventListener('input', (e) => {
+            if (e.target.value.trim()) {
+                document.getElementById(`${role}_clear_api_key`).checked = false;
+            }
+        });
+        document.getElementById(`${role}_provider`).addEventListener('change', () => syncEndpointKeyGuard(role));
+        document.getElementById(`${role}_base_url`).addEventListener('input', () => syncEndpointKeyGuard(role));
+    });
+
     function copyAnalysisToPoem() {
-        document.getElementById('poem_provider').value = document.getElementById('analysis_provider').value;
+        const nextProv = document.getElementById('analysis_provider').value;
+        const nextBase = document.getElementById('analysis_base_url').value;
+        const poemProvEl = document.getElementById('poem_provider');
+        const poemBaseEl = document.getElementById('poem_base_url');
+        const endpointChanged = (poemProvEl.value !== nextProv) || (_normEndpointUrl(poemProvEl.value, poemBaseEl.value) !== _normEndpointUrl(nextProv, nextBase));
+
+        poemProvEl.value = nextProv;
         document.getElementById('poem_model').value = document.getElementById('analysis_model').value;
-        document.getElementById('poem_base_url').value = document.getElementById('analysis_base_url').value;
+        poemBaseEl.value = nextBase;
         const analysisKey = document.getElementById('analysis_api_key').value;
         if (analysisKey) {
             document.getElementById('poem_api_key').value = analysisKey;
+            document.getElementById('poem_clear_api_key').checked = false;
+            document.getElementById('poem_api_key_status').textContent = '(Copied from Analysis — click Save to apply)';
+        } else if (endpointChanged) {
+            document.getElementById('poem_api_key').value = '';
+            syncEndpointKeyGuard('poem');
+            if ((nextProv !== loadedRoleEndpoints.poem.provider) || (_normEndpointUrl(nextProv, nextBase) !== _normEndpointUrl(loadedRoleEndpoints.poem.provider, loadedRoleEndpoints.poem.baseUrl))) {
+                document.getElementById('poem_clear_api_key').checked = true;
+                document.getElementById('poem_api_key_status').textContent = nextProv === 'ollama' ? '(Optional for Ollama)' : '(Enter API key or reuse shared key)';
+            }
         }
         document.getElementById('poem_test_result').innerHTML = '<span class="text-info">Copied provider &amp; model from Analysis — click Save Poem Model to apply.</span>';
     }
@@ -930,9 +1030,16 @@
             const data = await res.json();
             if (data.config) {
                 const c = data.config;
-                document.getElementById(`${role}_provider`).value = c.provider || 'ollama';
+                const prov = c.provider || 'ollama';
+                const baseUrl = c.base_url || '';
+                loadedRoleEndpoints[role] = {
+                    provider: prov,
+                    baseUrl: baseUrl,
+                    hasKey: !!c.has_api_key
+                };
+                document.getElementById(`${role}_provider`).value = prov;
                 document.getElementById(`${role}_model`).value = c.model || c.llm || '';
-                document.getElementById(`${role}_base_url`).value = c.base_url || '';
+                document.getElementById(`${role}_base_url`).value = baseUrl;
                 document.getElementById(`${role}_fallback_provider`).value = c.fallback_provider || 'auto';
                 document.getElementById(`${role}_fallback_model`).value = c.fallback_model || '';
                 document.getElementById(`${role}_name`).value = c.name || '';
@@ -964,6 +1071,8 @@
             const tts = await res.json();
             document.getElementById('ttsEnabledToggle').checked = !!tts.enabled;
             document.getElementById('ttsProviderSelect').value = tts.provider || 'elevenlabs';
+            document.getElementById('ttsVoice1Input').value = tts.voice_id_1 || '';
+            document.getElementById('ttsVoice2Input').value = tts.voice_id_2 || '';
         } catch (e) {
             console.error('Failed to load TTS config:', e);
         }
@@ -973,7 +1082,9 @@
         const badge = document.getElementById('ttsSaveBadge');
         const payload = {
             enabled: document.getElementById('ttsEnabledToggle').checked,
-            provider: document.getElementById('ttsProviderSelect').value
+            provider: document.getElementById('ttsProviderSelect').value,
+            voice_id_1: document.getElementById('ttsVoice1Input').value.trim(),
+            voice_id_2: document.getElementById('ttsVoice2Input').value.trim()
         };
         try {
             const res = await fetch('/api/settings/tts', {
@@ -1194,10 +1305,20 @@
     // --- 4. PRINTS & AUTO-PRINT ---
     async function loadPrintSettings() {
         try {
-            const res = await fetch('/api/settings/printing?t=' + Date.now());
-            const p = await res.json();
-            document.getElementById('printAutoToggle').checked = !!p.auto_print;
-            document.getElementById('printerNameInput').value = p.printer_name || 'default';
+            const [pRes, sRes] = await Promise.all([
+                fetch('/api/settings/printing?t=' + Date.now()),
+                fetch('/api/settings?t=' + Date.now())
+            ]);
+            if (pRes.ok) {
+                const p = await pRes.json();
+                document.getElementById('printAutoToggle').checked = !!p.auto_print;
+                document.getElementById('printerNameInput').value = p.printer_name || 'default';
+                document.getElementById('paperFormatSelect').value = p.paper_format || 'A4';
+            }
+            if (sRes.ok) {
+                const s = await sRes.json();
+                document.getElementById('remoteServerUrlInput').value = (s.server && s.server.remote_server_url) || '';
+            }
         } catch (e) {
             console.error(e);
         }
@@ -1206,7 +1327,8 @@
     async function savePrintSettings() {
         const payload = {
             auto_print: document.getElementById('printAutoToggle').checked,
-            printer_name: document.getElementById('printerNameInput').value.trim() || 'default'
+            printer_name: document.getElementById('printerNameInput').value.trim() || 'default',
+            paper_format: document.getElementById('paperFormatSelect').value || 'A4'
         };
         try {
             const res = await fetch('/api/settings/printing', {
@@ -1223,6 +1345,27 @@
             updateMonitor();
         } catch (e) {
             alert('Error saving print settings: ' + e);
+        }
+    }
+
+    async function saveServerUrlSetting() {
+        const remoteUrl = document.getElementById('remoteServerUrlInput').value.trim();
+        try {
+            const res = await fetch('/api/settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ server: { remote_server_url: remoteUrl } })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                alert('Error saving Public QR URL: ' + (data.error || res.statusText));
+                await loadPrintSettings();
+                return;
+            }
+            alert('Public QR Base URL saved.');
+            updateMonitor();
+        } catch (e) {
+            alert('Error saving Public QR URL: ' + e);
         }
     }
 

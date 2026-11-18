@@ -137,6 +137,12 @@ class GazeTrackingPainter:
                 self._reset_after_save()
                 return
 
+            if dwell_list is not None:
+                dwell_path = config_manager.SHARED_DIR / "dwell_grid.json"
+                dwell_tmp = config_manager.SHARED_DIR / "dwell_grid.tmp.json"
+                dwell_tmp.write_text(json.dumps(dwell_list), encoding="utf-8")
+                os.replace(str(dwell_tmp), str(dwell_path))
+
             tmp_path.write_bytes(png_bytes)
             os.replace(str(tmp_path), str(filepath))
             print(f"Drawing saved to {filepath} ({filepath.stat().st_size} bytes)")

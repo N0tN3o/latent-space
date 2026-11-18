@@ -286,6 +286,7 @@
         let faceLandmarker = null;
         let webcamRunning = false;
         let lastGazeTs = 0;
+        let lastPointerTs = 0;
         let faceStreak = 0;
         const CONSECUTIVE_FACE_FRAMES = 5;
         const GAZE_LOSS_TIMEOUT_MS = 2000;
@@ -367,6 +368,7 @@
                 centerSamples = [];
                 earSamples = [];
                 calibStartTs = 0;
+                lastPointerTs = 0;
                 resetVisitorTrackingState();
                 cursorCtx.clearRect(0, 0, W, H);
                 prevPoint = null;
@@ -379,6 +381,7 @@
                 calibTargets = [];
                 centerSamples = [];
                 earSamples = [];
+                lastPointerTs = 0;
                 resetVisitorTrackingState();
                 calibStartTs = performance.now();
                 prevPoint = null;
@@ -561,6 +564,11 @@
             };
         }
         function stopPointer() {
+            if (pointerDown) {
+                const nowTs = performance.now();
+                lastGazeTs = nowTs;
+                lastPointerTs = nowTs;
+            }
             pointerDown = false;
             prevPoint = null;
         }
@@ -571,14 +579,20 @@
                 setState(STATES.DRAWING);
                 statusBadge.textContent = 'Drawing (Mouse / Touch)';
             }
+            const nowTs = performance.now();
+            lastGazeTs = nowTs;
+            lastPointerTs = nowTs;
             pointerDown = true;
             prevPoint = null;
-            prevTime = performance.now();
+            prevTime = nowTs;
             const p = getNormFromEvent(e);
             updateStroke(p.x, p.y);
         });
         artCanvas.addEventListener('mousemove', (e) => {
             if (!pointerDown || gazeState !== STATES.DRAWING) return;
+            const nowTs = performance.now();
+            lastGazeTs = nowTs;
+            lastPointerTs = nowTs;
             const p = getNormFromEvent(e);
             updateStroke(p.x, p.y);
         });
@@ -591,15 +605,21 @@
                 setState(STATES.DRAWING);
                 statusBadge.textContent = 'Drawing (Mouse / Touch)';
             }
+            const nowTs = performance.now();
+            lastGazeTs = nowTs;
+            lastPointerTs = nowTs;
             pointerDown = true;
             prevPoint = null;
-            prevTime = performance.now();
+            prevTime = nowTs;
             const p = getNormFromEvent(e);
             updateStroke(p.x, p.y);
         }, { passive: false });
         artCanvas.addEventListener('touchmove', (e) => {
             e.preventDefault();
             if (!pointerDown || gazeState !== STATES.DRAWING) return;
+            const nowTs = performance.now();
+            lastGazeTs = nowTs;
+            lastPointerTs = nowTs;
             const p = getNormFromEvent(e);
             updateStroke(p.x, p.y);
         }, { passive: false });
@@ -615,17 +635,15 @@
             prevPoint = null;
             hasDrawn = false;
             cursorPos = [0.5, 0.5];
-            if (gazeState === STATES.SUBMITTING) {
+            if (gazeState === STATES.SUBMITTING || gazeState === STATES.IDLE) {
                 setState(webcamRunning ? STATES.SEARCHING : STATES.IDLE);
+                if (!webcamRunning) statusBadge.textContent = 'Canvas cleared';
             } else if (gazeState === STATES.CALIBRATING) {
                 setState(STATES.CALIBRATING);
             } else if (gazeState === STATES.SEARCHING) {
                 statusBadge.textContent = 'Canvas cleared — Searching for gaze';
             } else if (gazeState === STATES.DRAWING) {
                 setState(STATES.DRAWING);
-                statusBadge.textContent = 'Canvas cleared';
-            } else {
-                setState(STATES.IDLE);
                 statusBadge.textContent = 'Canvas cleared';
             }
         };
@@ -729,7 +747,7 @@
 
         async function pollPipelineUntilDone(submittedRunId, pollId) {
             const btn = document.getElementById('submitBtn');
-            for (let i = 0; i < 75; i++) {
+            for (let i = 0; i < 135; i++) {
                 await new Promise(r => setTimeout(r, 1200));
                 if (pollId !== activePollId) return;
                 try {
@@ -1024,15 +1042,15 @@
             ];
         }
 
-        function computeCanthusGazeAndBlink(lm) {
+        function computeCanthusGazeAndBlink(lm, frameW = 640, frameH = 480) {
             function pt(idx) {
-                return [1.0 - lm[idx].x, lm[idx].y];
+                return [(1.0 - lm[idx].x) * frameW, lm[idx].y * frameH];
             }
             function avgPts(indices) {
                 let sx = 0, sy = 0;
                 for (const i of indices) {
-                    sx += (1.0 - lm[i].x);
-                    sy += lm[i].y;
+                    sx += (1.0 - lm[i].x) * frameW;
+                    sy += lm[i].y * frameH;
                 }
                 return [sx / indices.length, sy / indices.length];
             }
@@ -1123,7 +1141,9 @@
                     }
 
                     const lm = res.faceLandmarks[0];
-                    const { norm, isBlinking, ear } = computeCanthusGazeAndBlink(lm);
+                    const frameW = video.videoWidth || 640;
+                    const frameH = video.videoHeight || 480;
+                    const { norm, isBlinking, ear } = computeCanthusGazeAndBlink(lm, frameW, frameH);
 
                     eyeCtx.fillStyle = isBlinking ? '#f59e0b' : '#10b981';
                     for (const idx of [468, 469, 470, 471, 473, 474, 475, 476]) {
@@ -1233,7 +1253,8 @@
                     }
                 } else {
                     faceStreak = 0;
-                    if (lastGazeTs > 0 && (now - lastGazeTs) > GAZE_LOSS_TIMEOUT_MS) {
+                    const pointerRecentlyUsed = lastPointerTs > 0 && (now - lastPointerTs) <= 10000;
+                    if (!pointerDown && !pointerRecentlyUsed && lastGazeTs > 0 && (now - lastGazeTs) > GAZE_LOSS_TIMEOUT_MS) {
                         if (gazeState === STATES.CALIBRATING) {
                             setState(STATES.SEARCHING);
                         } else if (gazeState === STATES.DRAWING) {

@@ -16,12 +16,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from config_manager import get_or_create_admin_password, load_settings
+from config_manager import get_or_create_admin_password, get_server_port, load_settings
 
 
 def main():
     settings = load_settings()
-    port = int(os.environ.get("PORT", settings.get("server", {}).get("port", 8000)))
+    port = get_server_port(settings)
     url = f"http://localhost:{port}/admin"
     _, auth_src = get_or_create_admin_password()
 

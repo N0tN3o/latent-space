@@ -21,7 +21,7 @@ PROJECT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_DIR))
 
 import config_manager
-from config_manager import ensure_directories, get_configured_ollama_host, load_settings
+from config_manager import ensure_directories, get_configured_ollama_host, get_lan_ip, get_server_port, load_settings
 
 
 def _is_ollama_running(host_url: str = None) -> bool:
@@ -172,14 +172,7 @@ class LatentSpaceStarter:
         sys.exit(0)
 
     def get_ip_address(self) -> str:
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except Exception:
-            return "localhost"
+        return get_lan_ip()
 
     def run_command(self, cmd, name, cwd=None, env=None):
         print(f"Starting {name}...")
@@ -322,7 +315,7 @@ class LatentSpaceStarter:
 
 def main():
     settings = load_settings()
-    default_port = int(os.environ.get("PORT", settings.get("server", {}).get("port", 8000)))
+    default_port = get_server_port(settings)
 
     parser = argparse.ArgumentParser(description="Start the Latent Space installation.")
     parser.add_argument(

@@ -16,6 +16,7 @@ import platform
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -166,6 +167,68 @@ def ensure_directories():
             pass
 
 
+def _try_lock_fd(fd: int) -> bool:
+    if platform.system() == "Windows":
+        import msvcrt
+        if os.fstat(fd).st_size == 0:
+            os.write(fd, b"\x00")
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    import fcntl
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
+        return False
+
+
+def _unlock_fd(fd: int):
+    try:
+        if platform.system() == "Windows":
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except Exception:
+        pass
+
+
+def try_acquire_nonblocking_lock(lock_path: Path):
+    """Attempt a non-blocking inter-process lock; returns an open fd on success or None if held."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = None
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        if _try_lock_fd(fd):
+            return fd
+        os.close(fd)
+        return None
+    except Exception:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+        return None
+
+
+def release_nonblocking_lock(fd):
+    """Release an advisory lock fd acquired via try_acquire_nonblocking_lock()."""
+    if fd is None:
+        return
+    _unlock_fd(fd)
+    try:
+        os.close(fd)
+    except Exception:
+        pass
+
+
 @contextmanager
 def _interprocess_file_lock(lock_path: Path, timeout_sec: float = 5.0):
     """Cross-platform advisory file lock for settings, print_history, and content.json."""
@@ -174,47 +237,18 @@ def _interprocess_file_lock(lock_path: Path, timeout_sec: float = 5.0):
     locked = False
     try:
         fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
-        if platform.system() == "Windows":
-            import msvcrt
-            # Ensure lock file has at least 1 byte for byte-range locking
-            if os.fstat(fd).st_size == 0:
-                os.write(fd, b"\x00")
-            deadline = time.monotonic() + timeout_sec
-            while True:
-                try:
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                    locked = True
-                    break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError(f"Timed out waiting for lock {lock_path}")
-                    time.sleep(0.01)
-        else:
-            import fcntl
-            deadline = time.monotonic() + timeout_sec
-            while True:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    locked = True
-                    break
-                except BlockingIOError:
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError(f"Timed out waiting for lock {lock_path}")
-                    time.sleep(0.01)
+        deadline = time.monotonic() + timeout_sec
+        while True:
+            if _try_lock_fd(fd):
+                locked = True
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Timed out waiting for lock {lock_path}")
+            time.sleep(0.01)
         yield
     finally:
         if locked and fd is not None:
-            try:
-                if platform.system() == "Windows":
-                    import msvcrt
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-            except Exception:
-                pass
+            _unlock_fd(fd)
         if fd is not None:
             try:
                 os.close(fd)
@@ -243,7 +277,7 @@ def atomic_write_text(target: Path, content: str, encoding: str = "utf-8"):
 
 
 def _sanitize_incoming_settings(data: dict, existing: dict = None) -> dict:
-    """Strip masked/transient API key fields before persisting settings."""
+    """Strip masked/transient API key fields and prevent stale keys crossing changed endpoints."""
     cleaned = deepcopy(data) if isinstance(data, dict) else {}
     ai = cleaned.get("ai")
     if isinstance(ai, dict):
@@ -252,12 +286,28 @@ def _sanitize_incoming_settings(data: dict, existing: dict = None) -> dict:
             role_cfg = ai.get(role)
             if isinstance(role_cfg, dict):
                 role_cfg.pop("has_api_key", None)
-                if role_cfg.get("api_key") == "***":
-                    prev_key = existing_ai.get(role, {}).get("api_key", "")
-                    if prev_key:
+                prev_cfg = existing_ai.get(role, {}) if isinstance(existing_ai, dict) else {}
+                prev_prov = (prev_cfg.get("provider") or "ollama").strip().lower()
+                next_prov = (role_cfg.get("provider") or prev_prov).strip().lower()
+                prev_url = (prev_cfg.get("base_url") or "").strip().rstrip("/")
+                raw_next_url = role_cfg.get("base_url") if "base_url" in role_cfg else prev_url
+                next_url = (raw_next_url or "").strip().rstrip("/")
+                endpoint_changed = (next_prov != prev_prov) or (
+                    next_prov in ("openai_compatible", "ollama")
+                    and "base_url" in role_cfg
+                    and next_url != prev_url
+                )
+                raw_key = role_cfg.get("api_key")
+                if raw_key == "***":
+                    prev_key = prev_cfg.get("api_key", "")
+                    if prev_key and not endpoint_changed:
                         role_cfg["api_key"] = prev_key
+                    elif endpoint_changed:
+                        role_cfg["api_key"] = ""
                     else:
                         role_cfg.pop("api_key", None)
+                elif "api_key" not in role_cfg and endpoint_changed:
+                    role_cfg["api_key"] = ""
     return cleaned
 
 
@@ -569,6 +619,80 @@ def get_configured_ollama_host(settings: dict = None) -> str:
     return "http://localhost:11434"
 
 
+def get_server_port(settings: dict = None) -> int:
+    """Resolve server HTTP port from env/.env PORT, then settings.server.port, defaulting to 8000."""
+    env = load_env_vars()
+    raw_env_port = (env.get("PORT") or "").strip()
+    if raw_env_port:
+        try:
+            p = int(raw_env_port)
+            if 1 <= p <= 65535:
+                return p
+        except (TypeError, ValueError):
+            pass
+    cfg = settings or load_settings()
+    raw_cfg_port = cfg.get("server", {}).get("port", 8000)
+    try:
+        p = int(raw_cfg_port)
+        if 1 <= p <= 65535:
+            return p
+    except (TypeError, ValueError):
+        pass
+    return 8000
+
+
+def get_server_host(settings: dict = None) -> str:
+    """Resolve server bind host from env/.env HOST, then settings.server.host, defaulting to 0.0.0.0."""
+    env = load_env_vars()
+    raw_env_host = (env.get("HOST") or "").strip()
+    if raw_env_host:
+        return raw_env_host
+    cfg = settings or load_settings()
+    raw_cfg_host = (cfg.get("server", {}).get("host") or "").strip()
+    return raw_cfg_host or "0.0.0.0"
+
+
+def get_lan_ip() -> str:
+    """Detect local LAN IPv4 address, falling back to hostname resolution on air-gapped networks."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            if ip and not ip.startswith("127."):
+                return ip
+        finally:
+            s.close()
+    except Exception:
+        pass
+    try:
+        infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+        fallback = ""
+        for info in infos:
+            addr = info[4][0]
+            if not addr or addr.startswith("127."):
+                continue
+            if not addr.startswith("169.254."):
+                return addr
+            if not fallback:
+                fallback = addr
+        if fallback:
+            return fallback
+    except Exception:
+        pass
+    return "localhost"
+
+
+def get_public_base_url(settings: dict = None, lan_ip: str = None) -> str:
+    """Resolve the canonical public/QR base URL (remote_server_url if configured, else LAN IP + port)."""
+    cfg = settings or load_settings()
+    remote_url = (cfg.get("server", {}).get("remote_server_url") or "").strip().rstrip("/")
+    if remote_url.startswith(("http://", "https://")):
+        return remote_url
+    host_ip = lan_ip or get_lan_ip()
+    return f"http://{host_ip}:{get_server_port(cfg)}"
+
+
 def mask_settings_secrets(settings: dict) -> dict:
     """Return a deep copy of settings with API keys replaced by '***'."""
     masked = deepcopy(settings)
@@ -810,15 +934,18 @@ def _print_windows_via_dotnet(pdf_path: Path, target_printer: str, is_custom_pri
             "}); "
             "$doc.Print()"
         )
-        subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_script],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=win_env,
-            timeout=45,
-        )
-        return True
+        try:
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=win_env,
+                timeout=45,
+            )
+            return True
+        except Exception:
+            return False
 
 
 def send_pdf_to_printer(pdf_path: str, printer_name: str = "default", extra_meta: dict = None) -> dict:

@@ -158,20 +158,24 @@ class TestServerLockdownHTTP(unittest.TestCase):
             monitoring_server._upload_timestamps.clear()
 
     def _req(self, method, path, body=None, headers=None, client_ip="127.0.0.1"):
-        hdrs = {"Host": "localhost"}
+        hdr_list = [("Host", "localhost")]
         if headers:
-            hdrs.update(headers)
+            if isinstance(headers, dict):
+                hdr_list.extend(headers.items())
+            else:
+                hdr_list.extend(headers)
         raw_body = b""
         if body is not None:
             if isinstance(body, (dict, list)):
                 raw_body = json.dumps(body).encode("utf-8")
-                hdrs.setdefault("Content-Type", "application/json")
+                if not any(k.lower() == "content-type" for k, _ in hdr_list):
+                    hdr_list.append(("Content-Type", "application/json"))
             else:
                 raw_body = body
-            if "Transfer-Encoding" not in hdrs:
-                hdrs.setdefault("Content-Length", str(len(raw_body)))
+            if not any(k.lower() in ("transfer-encoding", "content-length") for k, _ in hdr_list):
+                hdr_list.append(("Content-Length", str(len(raw_body))))
 
-        header_lines = [f"{method} {path} HTTP/1.1"] + [f"{k}: {v}" for k, v in hdrs.items()]
+        header_lines = [f"{method} {path} HTTP/1.1"] + [f"{k}: {v}" for k, v in hdr_list]
         raw_req = ("\r\n".join(header_lines) + "\r\n\r\n").encode("utf-8") + raw_body
         sock = _FakeSocket(raw_req)
         monitoring_server.LatentSpaceRequestHandler(sock, (client_ip, 54321), _DummyServer())
@@ -404,6 +408,150 @@ class TestServerLockdownHTTP(unittest.TestCase):
             st_q, _, body_q = self._req("POST", "/api/drawings", body={"image": img_b64}, client_ip="10.20.30.41")
             self.assertEqual(st_q, 429)
             self.assertEqual(json.loads(body_q)["error_code"], "ERR_QUEUE_FULL")
+
+    def test_bearer_rate_limit_proxy_rightmost_multipart_and_env_port(self):
+        # 1. Bearer brute-force attempts are rate limited with 429
+        for _ in range(monitoring_server.LOGIN_MAX_FAILURES):
+            st, _, _ = self._req(
+                "GET", "/api/status",
+                headers={"Authorization": "Bearer wrong-guess"},
+                client_ip="10.30.40.50",
+            )
+            self.assertEqual(st, 401)
+        st_blk, hdrs_blk, _ = self._req(
+            "GET", "/api/status",
+            headers={"Authorization": "Bearer TestLockdownPass!42"},
+            client_ip="10.30.40.50",
+        )
+        self.assertEqual(st_blk, 429)
+        self.assertIn("retry-after", {k.lower(): v for k, v in hdrs_blk})
+
+        # 2. X-Forwarded-For takes rightmost proxy-appended IP to resist spoofing
+        with mock.patch.dict(os.environ, {"LATENT_SPACE_TRUST_PROXY": "1"}):
+            for _ in range(monitoring_server.LOGIN_MAX_FAILURES):
+                self._req(
+                    "POST", "/api/auth/login",
+                    body={"password": "bad"},
+                    headers={"X-Forwarded-For": "198.51.100.1, 203.0.113.88"},
+                    client_ip="10.0.0.2",
+                )
+            st_spoof, _, _ = self._req(
+                "POST", "/api/auth/login",
+                body={"password": "TestLockdownPass!42"},
+                headers={"X-Forwarded-For": "198.51.100.99, 203.0.113.88"},
+                client_ip="10.0.0.2",
+            )
+            self.assertEqual(st_spoof, 429)
+
+        # 3. .env PORT & remote_server_url in /api/public/info + /api/qr.svg UTF-8 limit + null byte guard
+        with mock.patch("config_manager.load_env_vars", return_value={"PORT": "9123"}):
+            self.assertEqual(config_manager.get_server_port(), 9123)
+        with mock.patch("config_manager.load_env_vars", return_value={"PORT": ""}):
+            self.assertEqual(config_manager.get_server_port(), 8000)
+
+        config_manager.update_settings_section("server", {"remote_server_url": "https://art.example.org/"})
+        st_info, _, info_body = self._req("GET", "/api/public/info")
+        self.assertEqual(st_info, 200)
+        self.assertEqual(json.loads(info_body)["lan_url"], "https://art.example.org")
+
+        too_long = "https://art.example.org/" + ("é" * 110)
+        from urllib.parse import quote
+        st_qr_long, _, _ = self._req("GET", f"/api/qr.svg?url={quote(too_long)}")
+        self.assertEqual(st_qr_long, 400)
+
+        st_null, _, _ = self._req("GET", "/api/logs/installation%00.log")
+        self.assertEqual(st_null, 400)
+
+        # 4. POST /api/ai/test returns discovered _last_used_model
+        fake_m = mock.MagicMock()
+        fake_m._provider = "ollama"
+        fake_m._llm = "missing-tag"
+        fake_m._last_used_model = "qwen2.5:latest"
+        fake_m.chat.return_value = "Online."
+        with mock.patch.object(monitoring_server, "LLMModel", return_value=fake_m):
+            st_test, _, body_test = self._req(
+                "POST", "/api/ai/test",
+                body={"model_type": "analysis"},
+                headers={"Authorization": "Bearer TestLockdownPass!42"},
+            )
+        self.assertEqual(st_test, 200)
+        self.assertEqual(json.loads(body_test)["model"], "qwen2.5:latest")
+
+        # 5. Multipart upload parses PNG file + dwell_grid JSON
+        img = np.ones((24, 24), dtype=np.uint8) * 255
+        _, buf = cv2.imencode(".png", img)
+        boundary = "----TestBoundary123"
+        mp_body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="image.png"\r\n'
+            f"Content-Type: image/png\r\n\r\n"
+        ).encode("utf-8") + buf.tobytes() + (
+            f"\r\n--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="dwell_grid"; filename="dwell.json"\r\n'
+            f"Content-Type: application/json\r\n\r\n"
+            f"[[0, 1, 0], [0, 2, 0], [0, 0, 0]]"
+            f"\r\n--{boundary}--\r\n"
+        ).encode("utf-8")
+        with mock.patch.object(monitoring_server, "enqueue_pipeline_job", return_value=("r_mp", 1)) as enq_mock, \
+             mock.patch.object(monitoring_server, "write_live_image_and_mark_handled"):
+            st_mp, _, _ = self._req(
+                "POST", "/api/drawings",
+                body=mp_body,
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+                client_ip="10.30.40.60",
+            )
+        self.assertEqual(st_mp, 200)
+        self.assertEqual(enq_mock.call_args.kwargs["dwell_grid"][1][1], 2)
+
+    def test_duplicate_xff_headers_and_endpoint_change_clears_stale_api_key(self):
+        # 1. Duplicate X-Forwarded-For headers must read rightmost proxy-appended header, not client's first header
+        with mock.patch.dict(os.environ, {"LATENT_SPACE_TRUST_PROXY": "1"}):
+            for idx in range(monitoring_server.LOGIN_MAX_FAILURES):
+                self._req(
+                    "POST", "/api/auth/login",
+                    body={"password": "bad"},
+                    headers=[("X-Forwarded-For", f"198.51.100.{idx + 1}"), ("X-Forwarded-For", "203.0.113.77")],
+                    client_ip="10.0.0.2",
+                )
+            st_dup, _, _ = self._req(
+                "POST", "/api/auth/login",
+                body={"password": "TestLockdownPass!42"},
+                headers=[("X-Forwarded-For", "198.51.100.250"), ("X-Forwarded-For", "203.0.113.77")],
+                client_ip="10.0.0.2",
+            )
+            self.assertEqual(st_dup, 429)
+
+        # 2. Changing provider or base_url without supplying a new key automatically clears stale saved api_key
+        config_manager.update_settings_section("ai", {
+            "analysis": {
+                "provider": "openai_compatible",
+                "model": "gpt-4o-mini",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "sk-openai-secret",
+            }
+        })
+        # Same endpoint update keeps key
+        kept = config_manager.update_settings_section("ai", {"analysis": {"model": "gpt-4o"}})
+        self.assertEqual(kept["ai"]["analysis"]["api_key"], "sk-openai-secret")
+
+        # Switching base_url without api_key clears old key
+        cleared_url = config_manager.update_settings_section("ai", {
+            "analysis": {"provider": "openai_compatible", "base_url": "https://api.groq.com/openai/v1"}
+        })
+        self.assertEqual(cleared_url["ai"]["analysis"]["api_key"], "")
+
+        # Switching provider with explicit new key stores new key
+        config_manager.update_settings_section("ai", {
+            "analysis": {"provider": "gemini", "model": "gemini-2.0-flash", "api_key": "AIzaNewKey"}
+        })
+        switched_prov = config_manager.update_settings_section("ai", {
+            "analysis": {"provider": "anthropic", "model": "claude-3-5-haiku-latest"}
+        })
+        self.assertEqual(switched_prov["ai"]["analysis"]["api_key"], "")
+
+        # 3. Null-byte in POST path returns 400 cleanly
+        st_post_null, _, _ = self._req("POST", "/api/drawings%00", body={})
+        self.assertEqual(st_post_null, 400)
 
 
 if __name__ == "__main__":
