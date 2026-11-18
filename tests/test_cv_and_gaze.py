@@ -587,6 +587,38 @@ class TestTimeBasedAffineGazeCalibration(unittest.TestCase):
         with chat._OLLAMA_CAPS_LOCK:
             self.assertNotIn(("http://localhost:11434", "custom-model:latest"), chat._OLLAMA_VISION_CAPS)
 
+        # 4. openai_compatible in auto vision_mode skips image for text-only Groq model on first request
+        config_manager.update_settings_section("ai", {
+            "vision_mode": "auto",
+            "analysis": {
+                "provider": "openai_compatible",
+                "model": "llama-3.3-70b-versatile",
+                "base_url": "https://api.groq.com/openai/v1",
+                "api_key": "gsk-test",
+            },
+        })
+        groq_ok = mock.MagicMock(status_code=200, ok=True)
+        groq_ok.json.return_value = {"choices": [{"message": {"content": "Groq analysis."}}]}
+        with mock.patch("chat.requests.post", return_value=groq_ok) as groq_post:
+            m_groq = chat.LLMModel("analysis")
+            reply = m_groq.chat("Analyze", image_path=str(edge_sym_out), allow_failover=False)
+        self.assertEqual(reply, "Groq analysis.")
+        self.assertEqual(groq_post.call_count, 1)
+        self.assertIsInstance(groq_post.call_args.kwargs["json"]["messages"][-1]["content"], str)
+
+        # 5. EyeTracker falls back to loaded calibration if calibration ends with < 6 samples
+        tracker = self._make_fake_tracker()
+        tracker.load_calibration({
+            "center_norm": [0.05, -0.02],
+            "weights_x": [0.0, 11.5, 0.0],
+            "weights_y": [0.0, 0.0, 15.0],
+            "blink_ear_thr": 0.125,
+        })
+        tracker.start_auto_calibration()
+        tracker.finish_calibration()
+        self.assertAlmostEqual(float(tracker.weights_x[1]), 11.5, places=3)
+        self.assertAlmostEqual(float(tracker.weights_y[2]), 15.0, places=3)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

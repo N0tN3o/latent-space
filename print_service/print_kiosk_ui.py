@@ -75,6 +75,17 @@ class PrintRecord:
                 except Exception:
                     self.timestamp = datetime.now()
         self.printed = bool(printed) if printed is not None else self._check_if_printed()
+        self.archetype = ""
+        self.poem = ""
+        meta_path = self.path.with_suffix(".json")
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                if isinstance(meta, dict):
+                    self.archetype = str(meta.get("archetype") or "")
+                    self.poem = str(meta.get("poem") or "")
+            except Exception:
+                pass
 
     def _check_if_printed(self):
         return self.filename in _read_printed_set()
@@ -362,7 +373,15 @@ class EnhancedPrintKioskUI(QMainWindow):
                     self.filtered_records.append(record)
                 elif text == "yesterday" and record.timestamp.date() == (now - timedelta(days=1)).date():
                     self.filtered_records.append(record)
-                elif text in eng_date or text in iso_date or text in loc_date or text in loc_time:
+                elif (
+                    text in eng_date
+                    or text in iso_date
+                    or text in loc_date
+                    or text in loc_time
+                    or text in record.filename.lower()
+                    or text in record.archetype.lower()
+                    or text in record.poem.lower()
+                ):
                     self.filtered_records.append(record)
         self.update_queue_display()
 

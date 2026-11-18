@@ -207,6 +207,7 @@ class EyeTracker:
         self.center_norm = np.array([0.0, 0.0], dtype=np.float32)
         self.weights_x = np.array([0.0, 9.0, 0.0], dtype=np.float32)
         self.weights_y = np.array([0.0, 0.0, 13.0], dtype=np.float32)
+        self._loaded_calibration = None
 
         # Time-based Calibration state
         self.is_calibrating = False
@@ -300,18 +301,20 @@ class EyeTracker:
         return False
 
     def finish_calibration(self):
-        if not self.calibration_samples:
+        if len(self.calibration_samples) < 6:
+            if self._loaded_calibration is not None:
+                self.load_calibration(self._loaded_calibration)
             self.is_calibrating = False
             return
 
-        if self.ear_samples:
+        if len(self.ear_samples) > 3:
             baseline_ear = float(np.median(np.array(self.ear_samples, dtype=np.float32)))
             self.blink_ear_thr = float(np.clip(baseline_ear * 0.52, 0.10, 0.155))
 
         arr = np.array(self.calibration_samples, dtype=np.float32)
         t_arr = np.array(self.calibration_targets, dtype=np.float32) if self.calibration_targets else None
 
-        if self.center_samples:
+        if len(self.center_samples) > 3:
             self.center_norm = np.median(np.array(self.center_samples, dtype=np.float32), axis=0)
         else:
             self.center_norm = np.median(arr, axis=0)
@@ -336,6 +339,8 @@ class EyeTracker:
         save_calibration(self.get_calibration_data())
 
     def load_calibration(self, data):
+        if isinstance(data, dict):
+            self._loaded_calibration = dict(data)
         self.center_norm = np.array(data.get("center_norm", [0.0, 0.0]), dtype=np.float32)
         if "weights_x" in data and "weights_y" in data:
             self.weights_x = np.array(data["weights_x"], dtype=np.float32)

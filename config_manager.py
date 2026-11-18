@@ -430,8 +430,8 @@ def validate_safe_url(url: str, field_name: str = "url", allow_relative: bool = 
     val = url.strip()
     if not val:
         return ""
-    if any(ord(ch) < 32 for ch in val):
-        raise ValueError(f"{field_name} contains invalid control characters")
+    if any(ord(ch) <= 32 or ch in ('"', "'", "<", ">") for ch in val):
+        raise ValueError(f"{field_name} contains invalid whitespace, quote, or control characters")
     low = val.lower()
     if low.startswith(("http://", "https://")):
         if not urlparse(val).hostname:
@@ -463,9 +463,11 @@ def validate_attributions_data(data: dict) -> dict:
                 raise ValueError(f"attributions.{str_field} must be a string")
             else:
                 cleaned[str_field] = cleaned[str_field][:500]
-    for url_field in ("logo_path", "website_url", "company_linkedin_url"):
+    if "logo_path" in cleaned:
+        cleaned["logo_path"] = validate_safe_url(cleaned["logo_path"], "logo_path", allow_relative=True)
+    for url_field in ("website_url", "company_linkedin_url"):
         if url_field in cleaned:
-            cleaned[url_field] = validate_safe_url(cleaned[url_field], url_field)
+            cleaned[url_field] = validate_safe_url(cleaned[url_field], url_field, allow_relative=False)
     if "founders" in cleaned:
         if not isinstance(cleaned["founders"], list):
             raise ValueError("founders must be a list")
@@ -475,7 +477,7 @@ def validate_attributions_data(data: dict) -> dict:
                 raise ValueError(f"founders[{idx}] must be an object")
             safe_founders.append({
                 "name": str(f.get("name") or "")[:120],
-                "url": validate_safe_url(f.get("url", ""), f"founders[{idx}].url"),
+                "url": validate_safe_url(f.get("url", ""), f"founders[{idx}].url", allow_relative=False),
             })
         cleaned["founders"] = safe_founders
     return cleaned

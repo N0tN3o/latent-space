@@ -294,6 +294,8 @@
         const CALIB_STEP1_RATIO = 0.33;
         const CALIB_STEP2_SKIP_MS = 200;
         const DEFAULT_BLINK_EAR_THR = 0.135;
+        const ROLLING_BUFFER = 7;
+        const SMOOTH_ALPHA = 0.55;
         let calibStartTs = 0;
         let calibSamples = [];
         let calibTargets = [];
@@ -303,9 +305,17 @@
         let centerNorm = [0.0, 0.0];
         let weightsX = [0.0, 9.0, 0.0];
         let weightsY = [0.0, 0.0, 13.0];
+        let normBuffer = [];
         let smoothedNorm = null;
         let leftHist = [];
         let rightHist = [];
+
+        function median1D(values) {
+            if (!values || !values.length) return 0.0;
+            const sorted = [...values].sort((a, b) => a - b);
+            const mid = Math.floor(sorted.length / 2);
+            return (sorted.length % 2 === 1) ? sorted[mid] : 0.5 * (sorted[mid - 1] + sorted[mid]);
+        }
 
         function clearSessionTimer() {
             if (sessionTimerId !== null) {
@@ -340,6 +350,7 @@
 
         function resetVisitorTrackingState() {
             blinkEarThr = DEFAULT_BLINK_EAR_THR;
+            normBuffer = [];
             smoothedNorm = null;
             leftHist = [];
             rightHist = [];
@@ -1166,12 +1177,16 @@
                     }
 
                     if (!isBlinking) {
+                        normBuffer.push([norm[0], norm[1]]);
+                        if (normBuffer.length > ROLLING_BUFFER) normBuffer.shift();
+                        const medX = median1D(normBuffer.map(p => p[0]));
+                        const medY = median1D(normBuffer.map(p => p[1]));
                         if (!smoothedNorm) {
-                            smoothedNorm = norm;
+                            smoothedNorm = [medX, medY];
                         } else {
                             smoothedNorm = [
-                                0.60 * smoothedNorm[0] + 0.40 * norm[0],
-                                0.60 * smoothedNorm[1] + 0.40 * norm[1]
+                                SMOOTH_ALPHA * smoothedNorm[0] + (1.0 - SMOOTH_ALPHA) * medX,
+                                SMOOTH_ALPHA * smoothedNorm[1] + (1.0 - SMOOTH_ALPHA) * medY
                             ];
                         }
                     }
@@ -1202,21 +1217,20 @@
 
                         if (elapsedMs >= CALIB_DURATION_MS) {
                             if (earSamples.length > 3) {
-                                const sortedEar = [...earSamples].sort((a, b) => a - b);
-                                const baseEar = sortedEar[Math.floor(sortedEar.length / 2)];
+                                const baseEar = median1D(earSamples);
                                 blinkEarThr = Math.max(0.10, Math.min(0.155, baseEar * 0.52));
                             }
 
                             if (centerSamples.length > 3) {
-                                const cxs = centerSamples.map(s => s[0]).sort((a, b) => a - b);
-                                const cys = centerSamples.map(s => s[1]).sort((a, b) => a - b);
-                                const cm = Math.floor(centerSamples.length / 2);
-                                centerNorm = [cxs[cm], cys[cm]];
+                                centerNorm = [
+                                    median1D(centerSamples.map(s => s[0])),
+                                    median1D(centerSamples.map(s => s[1]))
+                                ];
                             } else if (calibSamples.length > 0) {
-                                const xs = calibSamples.map(s => s[0]).sort((a, b) => a - b);
-                                const ys = calibSamples.map(s => s[1]).sort((a, b) => a - b);
-                                const m = Math.floor(xs.length / 2);
-                                centerNorm = [xs[m], ys[m]];
+                                centerNorm = [
+                                    median1D(calibSamples.map(s => s[0])),
+                                    median1D(calibSamples.map(s => s[1]))
+                                ];
                             }
 
                             const dx = calibSamples.map(s => s[0] - centerNorm[0]);
@@ -1262,6 +1276,11 @@
                     }
                 } else {
                     faceStreak = 0;
+                    if (!pointerDown) {
+                        prevPoint = null;
+                        dwellTime = 0;
+                        prevTime = now;
+                    }
                     const pointerRecentlyUsed = lastPointerTs > 0 && (now - lastPointerTs) <= 10000;
                     if (!pointerDown && !pointerRecentlyUsed && lastGazeTs > 0 && (now - lastGazeTs) > GAZE_LOSS_TIMEOUT_MS) {
                         if (gazeState === STATES.CALIBRATING) {

@@ -80,7 +80,7 @@ class GazeTrackingPainter:
         calibration = load_calibration()
         if calibration:
             self.tracker.load_calibration(calibration)
-        self.has_calibration = False
+        self.has_calibration = bool(calibration)
 
     def get_calibration_percentage(self) -> int:
         return int(round(self.tracker.get_calibration_progress()))

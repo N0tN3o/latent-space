@@ -2,7 +2,7 @@
 
 **Date:** November 18, 2026  
 **Branch Audited:** `feat/portable-multi-ai`  
-**Status:** All 21 identified findings have been fixed and verified across the 46-test suite (`python -m unittest discover -s tests -v`).  
+**Status:** All 21 initial audit findings and all flagged cross-codebase dissymmetries in Section 5 have been fixed and verified across the test suite (`python -m unittest discover -s tests -v`).  
 **Scope:** Full-stack review of `config_manager.py`, `monitoring_server.py`, `start_everything.py`, `qr_utils.py`, `analysis_watcher/*`, `gaze_painter/*`, `print_service/*`, `index.html`, `web_ui/*`, `Dockerfile`, and `tests/*`.
 
 ---
@@ -388,3 +388,95 @@ However, a deep line-by-line audit uncovered **21 remaining bugs, race condition
 | **3.2** | **Low** | `run_analysis_watcher.py` / `monitoring_server.py` | Orphaned `docs/print_{rid}.png` cannot be deleted via UI if PDF rendering fails |
 | **3.3** | **Low** | `analysis_watcher/chat.py` | `has_api_key` stays `True` after clearing saved key if `.env` or other role has a key |
 | **3.4–3.7** | **Low** | Multiple files | BUas `__chat_key` reset on HTTP error, `--mode full` exit coupling, prompt/QR URL length caps |
+
+---
+
+## 5. Second-Pass Audit: Cross-Codebase Dissymmetry & Counterpart Analysis
+
+A systematic comparison of all paired/counterpart implementations across the codebase was performed to identify places where a feature, safeguard, mathematical formula, or validation rule is implemented in one module/UI but missing or implemented differently in its counterpart.
+
+Each finding below is classified as either:
+* **FLAGGED (Problematic Dissymmetry):** The discrepancy causes divergent outputs, subtle bugs, or a security gap and should be aligned.
+* **VALID (Intentional / Use-Case Appropriate Dissymmetry):** The difference is justified by the runtime context and does not produce conflicting behavior.
+
+---
+
+### 5.1. HTML Escaping & `safeUrl()`: `index.html` vs. `web_ui/admin.html` & `web_ui/kiosk.html`
+* **Classification:** **FLAGGED — Security / Implementation Dissymmetry**
+* **Locations:**
+  * [index.html](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/index.html#L417-L427) (`escapeHtml` / `safeUrl`)
+  * [admin.html](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/web_ui/admin.html#L714-L727) & [kiosk.html](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/web_ui/kiosk.html#L383-L396) (`escapeHtml` / `safeUrl`)
+  * [config_manager.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/config_manager.py#L418-L444) (`validate_safe_url`)
+* **Comparison:**
+  * In `admin.html` and `kiosk.html`, `escapeHtml()` explicitly replaces `&`, `<`, `>`, `"`, and `'` with HTML entities (`&quot;`, `&#39;`), making `safeUrl(u)` safe inside double-quoted HTML attributes (`<a href="${safeUrl(u)}">`).
+  * In `index.html`, `escapeHtml()` is implemented via DOM serialization:
+    ```javascript
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str || '';
+        return div.innerHTML;
+    }
+    ```
+    Per the HTML specification, `Element.innerHTML` escapes `&`, `<`, and `>`, **but does not escape `"` or `'`**. Because `renderAttribution()` in `index.html:520-533` interpolates `safeUrl()` into double-quoted `href="..."` attributes via `innerHTML`, and `validate_safe_url()` in `config_manager.py` only rejects control characters (`ord(ch) < 32`), a URL containing `"` breaks out of the `href` attribute in `index.html` while being safely escaped in `admin.html` and `kiosk.html`.
+* **Recommendation:** Align `escapeHtml()` in `index.html` with the 5-character replacement used in `admin.html`/`kiosk.html`, and reject whitespace and quote/angle-bracket characters (`["'<> \t]`) inside `validate_safe_url()` in `config_manager.py`.
+
+---
+
+### 5.2. Gaze Tracking Pipeline: Desktop (`gaze_painter/`) vs. Browser (`web_ui/draw.html`)
+
+| Aspect | Desktop (`gaze_painter/`) | Browser (`web_ui/draw.html`) | Verdict |
+| :--- | :--- | :--- | :--- |
+| **Temporal Filtering** | 7-frame rolling median (`self.buffer = deque(maxlen=7)`) followed by EMA (`SMOOTH_ALPHA = 0.55`) in [eye_tracking.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/gaze_painter/eye_tracking.py#L199) and [eye_tracking.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/gaze_painter/eye_tracking.py#L453-L463) | EMA only (`0.60 * smoothedNorm + 0.40 * norm`), **no rolling median buffer** in [draw.html](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/web_ui/draw.html#L1164-L1173) | **FLAGGED:** Single-frame landmark spikes are completely rejected by the 7-frame median on Desktop, but pull the cursor by 40% of the spike in the Browser. |
+| **Brief Face-Loss (< 2s) Stroke Continuity** | Passes `norm_gaze = None` into `painter.update(None, dt)`, which resets `self.prev_point = None` and `self.dwell_time = 0.0` ([drawing.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/gaze_painter/drawing.py#L28-L31)) | Does **not** reset `prevPoint` or update `prevTime` in the no-face `else` branch ([draw.html](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/web_ui/draw.html#L1258-L1273)) | **FLAGGED:** If face tracking drops for ~1.2s and recovers on Browser, `dt` spikes to `1.2s` and draws a straight line from the stale `prevPoint` (or inflates `dwellTime` into a large blob). |
+| **Calibration Minimum Sample Thresholds** | Accepts `ear_samples` and `center_samples` if non-empty (`>= 1` sample) ([eye_tracking.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/gaze_painter/eye_tracking.py#L307-L317)) | Requires `earSamples.length > 3` and `centerSamples.length > 3` ([draw.html](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/web_ui/draw.html#L1200-L1206)) | **FLAGGED (Minor):** On very low-FPS cameras during Step 1, Desktop uses 1–3 samples while Browser falls back to full-orbit median. Requiring `>= 3` samples in both is safer. |
+| **Brush Themes & Max Stroke Width** | Only default black/dark-red stroke; max width `40px` ([drawing.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/gaze_painter/drawing.py#L60-L67)) | 3 themes (`classic`, `ember`, `indigo`); max width `36px`; `classic` max red `55` vs `85` ([draw.html](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/web_ui/draw.html#L409-L422)) | **FLAGGED (Minor):** `preprocess_image.py` and `_render_pdf_fallback` explicitly support Ember/Indigo RGB strokes, which only `draw.html` can produce. |
+| **Calibration File Persistence** | Saves/loads `calibrations/calibration.json`, but `STATE_SEARCHING -> STATE_CALIBRATING` immediately resets it ([run_gaze_painter.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/gaze_painter/run_gaze_painter.py#L80-L83)) | Per-visitor in-memory calibration | **FLAGGED:** `load_calibration()` in `run_gaze_painter.py` is dead code unless preserved as the fallback baseline when calibration has too few samples. |
+| **Binocular Glare Fusion & Ridge Regression** | `fuse_binocular_eyes()` & `fit_ridge_affine_axis()` ([eye_tracking.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/gaze_painter/eye_tracking.py#L46-L180)) | Identical port in JS ([draw.html](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/web_ui/draw.html#L847-L872), [draw.html](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/web_ui/draw.html#L995-L1048)) | **VALID / SYMMETRIC:** Math, regularization $\lambda$, gain bounds, and glare thresholds match 1:1. |
+
+---
+
+### 5.3. Vision Capability Detection: `analysis.py` vs. `chat.py` (`ollama` vs. `openai_compatible`)
+* **Classification:** **FLAGGED — Provider Behavior Dissymmetry**
+* **Locations:**
+  * [analysis.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/analysis_watcher/analysis.py#L489-L518) (`_OPENAI_COMPAT_VISION_HINTS`, `_analysis_llm_handles_vision_natively`)
+  * [chat.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/analysis_watcher/chat.py#L27-L31) (`_VISION_NAME_HINTS`) and [chat.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/analysis_watcher/chat.py#L604-L608) (`_chat_openai_or_ollama`)
+* **Comparison:**
+  1. **Skipping image payload in `auto` mode for text-only models:**
+     * In `chat.py:605-607`, when `self._vision_mode == "auto"` and `prov == "ollama"`, `chat.py` checks `self._ollama_supports_vision(clean_base, mod)` and sets `send_img_b64 = None` upfront so text-only Ollama models (like `llama3.1:8b` or `llama3.2`) are called once with text only.
+     * However, when `self._vision_mode == "auto"` and `prov == "openai_compatible"` with a text-only model (such as Groq's `llama-3.3-70b-versatile`, which is a built-in preset in `/admin`), `chat.py` **always sends the base64 image first**, receives an `HTTP 400/422` error from Groq, and then retries without the image (`chat.py:632-634`)—doubling latency on every analysis request!
+     * Meanwhile, `analysis.py:506-510` *already* has the helper check for whether an `openai_compatible` model supports vision (`_OPENAI_COMPAT_VISION_HINTS`).
+  2. **Hint list mismatch:**
+     * `chat.py:_VISION_NAME_HINTS` includes `"moondream"`, `"minicpm-v"`, `"bakllava"`, `"qwen3-vl"`, `"mistral-small3.1"`, `"gemma3:latest"`, `"gemma3:4b"`, `"gemma3:12b"`, `"gemma3:27b"`, which are absent from `analysis.py:_OPENAI_COMPAT_VISION_HINTS`.
+     * `analysis.py:512` falls back to hardcoded `"http://localhost:11434/v1"` when `base_url` is blank, whereas `chat.py:590` uses `f"{get_configured_ollama_host()}/v1"` (which respects `OLLAMA_HOST` in `.env`).
+
+---
+
+### 5.4. PDF Renderers: Playwright HTML (`index.html?print_render=1`) vs. Matplotlib Fallback (`_render_pdf_fallback`)
+
+| Aspect | Playwright HTML Renderer ([index.html](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/index.html#L286-L289), [run_analysis_watcher.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/analysis_watcher/run_analysis_watcher.py#L442-L447)) | Matplotlib Fallback ([run_analysis_watcher.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/analysis_watcher/run_analysis_watcher.py#L249-L398)) | Verdict |
+| :--- | :--- | :--- | :--- |
+| **Paper Format (`A4`, `A3`, `A5`, `Letter`, `Legal`)** | `index.html:286` hardcodes `@page { size: A4; margin: 12mm; }`. In Chromium, CSS `@page { size: A4 }` overrides `page.pdf(format=paper_format)` unless `prefer_css_page_size=False` is set or `@page` omits `size: A4`. | Uses `PAPER_SIZES_INCHES[paper_format]` for figure dimensions and scales text wrapping accordingly. | **FLAGGED:** Playwright/browser printing ignores non-A4 `paper_format` settings because of hardcoded `@page { size: A4; }` in `index.html`. |
+| **Empty Attribution URLs (`website_url` / `company_linkedin_url`)** | Checks `if (linksHtml.length > 0)` before rendering `"To learn more, visit ..."` ([index.html](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/index.html#L541-L543)) | Unconditionally formats `f"{learn_more_text} {website_url} \| {company_linkedin_url}"` ([run_analysis_watcher.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/analysis_watcher/run_analysis_watcher.py#L366-L369)) | **FLAGGED:** If both URLs are blank in settings, the fallback PDF renders a dangling `"To learn more, visit  \|"` string. |
+| **Attribution Links Format** | Renders clickable `<a href="...">Label</a>` links | Prints `Name (URL)` plain text | **VALID:** Matplotlib image-based PDF text does not support clickable HTML anchor tags, so printing the URL in text is appropriate for paper mementos. |
+
+---
+
+### 5.5. Print Kiosks & File Listing: Web Kiosk (`web_ui/kiosk.html` + `monitoring_server.py`) vs. Desktop Kiosk (`print_service/print_kiosk_ui.py`)
+
+| Aspect | Web Kiosk & Server (`kiosk.html` / `monitoring_server.py`) | Desktop Kiosk (`print_service/print_kiosk_ui.py`) | Verdict |
+| :--- | :--- | :--- | :--- |
+| **Timestamp & "Today" Resolution** |1. `api_get_status()` ([monitoring_server.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/monitoring_server.py#L675-L676)): uses **filename prefix** `print_YYYYMMDD`.<br>2. `api_files_delete` ([monitoring_server.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/monitoring_server.py#L1580)): uses **filename date** `int(f.name.split("_")[1])`.<br>3. `api_list_prints()` ([monitoring_server.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/monitoring_server.py#L767-L780)): uses **filesystem `st_mtime`** (`dt.date() == today_date`). | `PrintRecord` ([print_kiosk_ui.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/print_service/print_kiosk_ui.py#L60-L71)) parses the **filename timestamp** `print_YYYYMMDD_HHMMSS` first, falling back to `st_mtime` only if filename parsing fails. | **FLAGGED:** If a print file is copied/touched or has a modified `st_mtime`, `api_get_status()` ("Prints Today" KPI), `/api/files/delete` ("Prune Older Than Today"), and `/kiosk` ("Today" filter) disagree with each other and with the Desktop Kiosk! |
+| **Search Filter Keywords** | Supports `"today"`, date, time, `archetype`, and `poem`, but **not `"yesterday"`** ([kiosk.html](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/web_ui/kiosk.html#L560-L565)) | Supports `"today"` and `"yesterday"`, date, and time, but **not `archetype` or `poem`** ([print_kiosk_ui.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/print_service/print_kiosk_ui.py#L345-L361)) | **FLAGGED:** Typing `"yesterday"` works on the Desktop Kiosk (where the placeholder explicitly suggests it) but returns 0 results on `/kiosk`. |
+| **Inactivity Reset** | No inactivity reset for search filter or staff unlock session ([kiosk.html](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/web_ui/kiosk.html)) | Resets search filter after 60s of inactivity (`INACTIVITY_TIMEOUT_SEC = 60`, [print_kiosk_ui.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/print_service/print_kiosk_ui.py#L36)) | **FLAGGED (Minor):** On a shared tablet kiosk (`/kiosk`), a visitor's search query stays active indefinitely for the next visitor. |
+
+---
+
+### 5.6. Settings & API Validation Counterparts (`config_manager.py` & `monitoring_server.py`)
+
+| Aspect | Counterpart A | Counterpart B | Verdict |
+| :--- | :--- | :--- | :--- |
+| **Unknown Key Rejection** | `POST /api/ai/config` ([monitoring_server.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/monitoring_server.py#L1469-L1474)) rejects unknown keys in `config` with `HTTP 400`. | `POST /api/settings` ([monitoring_server.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/monitoring_server.py#L1438-L1442)) and `POST /api/settings/{attributions,printing,tts}` do **not** reject unknown keys, despite the comment in [config_manager.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/config_manager.py#L769). | **FLAGGED:** `POST /api/settings` accepts arbitrary unknown top-level keys and persists them to `settings.json`. |
+| **Attribution URL `allow_relative`** | `validate_ai_data` and `validate_server_data` pass `allow_relative=False` to `validate_safe_url()`. | `validate_attributions_data` ([config_manager.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/config_manager.py#L466-L480)) uses `allow_relative=True` for `website_url`, `company_linkedin_url`, and `founders[i].url`, even though `admin.html` uses `<input type="url">` (requiring `http(s)://`) for all three. | **FLAGGED (Minor):** Only `logo_path` is a local path (`/kasboek-logo.jpg`); external website/LinkedIn URLs should require `allow_relative=False`. |
+| **Startup Temp File Cleanup** | `monitoring_server.py:run_server()` ([monitoring_server.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/monitoring_server.py#L1596-L1598)) calls `cleanup_orphaned_temp_files()` at startup. | Standalone `run_analysis_watcher.py` (`if __name__ == "__main__":`, [run_analysis_watcher.py](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/analysis_watcher/run_analysis_watcher.py#L971-L985)) does **not** call `cleanup_orphaned_temp_files()` at startup. | **FLAGGED (Minor):** Running the watcher standalone leaves orphaned temp files from prior crashes uncleaned. |
+| **Live vs. Archive Audio Player (`index.html`)** | Live mode (`isHistorical = false`) shows `<audio id="poemAudio" controls>` and auto-plays ([index.html](file:///C:/Users/nemev/Documents/GitHub/LatentSpace/index.html#L653-L668)). | Archive mode (`isHistorical = true`) hides `<audio>` completely (and `api_list_prints()` omits `poemAudio` from print items). | **VALID / UX CHOICE:** Suppressing auto-play in Archive view prevents audio overlap while browsing past prints, though exposing `poemAudio` without `.play()` would allow visitors to replay archived audio on demand. |
+

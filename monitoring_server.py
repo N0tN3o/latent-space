@@ -14,7 +14,7 @@ Serves:
 """
 
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.parser import BytesParser
 from email.policy import default as email_default_policy
 import hmac
@@ -672,8 +672,8 @@ def api_get_status() -> dict:
 
     try:
         all_pdfs = list(config_manager.DOCS_DIR.glob("print_*.pdf"))
-        today_prefix = f"print_{datetime.now().strftime('%Y%m%d')}"
-        today_files = sum(1 for f in all_pdfs if f.name.startswith(today_prefix))
+        today_date = datetime.now().date()
+        today_files = sum(1 for f in all_pdfs if _resolve_print_datetime(f).date() == today_date)
         printed_count = len(_get_printed_set())
     except Exception:
         all_pdfs = []
@@ -742,6 +742,27 @@ def _read_cached_meta(meta_file: Path) -> dict:
     return meta
 
 
+def _resolve_print_datetime(pdf_file: Path, mtime: float = None, meta: dict = None) -> datetime:
+    """Resolve print creation datetime consistently across status, kiosk list, and delete."""
+    parts = pdf_file.stem.split("_")
+    if len(parts) >= 3 and len(parts[1]) == 8 and len(parts[2]) == 6:
+        try:
+            return datetime.strptime(f"{parts[1]}_{parts[2]}", "%Y%m%d_%H%M%S")
+        except ValueError:
+            pass
+    if isinstance(meta, dict) and meta.get("timestamp"):
+        try:
+            return datetime.fromisoformat(str(meta["timestamp"]).replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            pass
+    if mtime is not None:
+        return datetime.fromtimestamp(mtime)
+    try:
+        return datetime.fromtimestamp(pdf_file.stat().st_mtime)
+    except Exception:
+        return datetime.now()
+
+
 def api_list_prints() -> list:
     docs_dir = config_manager.DOCS_DIR
     if not docs_dir.exists():
@@ -760,11 +781,12 @@ def api_list_prints() -> list:
     entries.sort(key=lambda item: item[0], reverse=True)
     files = []
     today_date = datetime.now().date()
+    yesterday_date = today_date - timedelta(days=1)
     for mtime, size_bytes, f in entries:
         thumb_file = f.with_suffix(".png")
         heatmap_file = f.with_name(f"{f.stem}.heatmap.png")
         meta = _read_cached_meta(f.with_suffix(".json"))
-        dt = datetime.fromtimestamp(mtime)
+        dt = _resolve_print_datetime(f, mtime=mtime, meta=meta)
         files.append({
             "name": f.name,
             "run_id": meta.get("runId", f.stem.replace("print_", "")),
@@ -777,6 +799,7 @@ def api_list_prints() -> list:
             "display_date": dt.strftime("%B %d, %Y"),
             "display_time": dt.strftime("%I:%M %p"),
             "is_today": dt.date() == today_date,
+            "is_yesterday": dt.date() == yesterday_date,
             "printed": f.name in printed_set,
             "archetype": meta.get("archetype", ""),
             "fractalDimension": meta.get("fractalDimension"),
@@ -1437,6 +1460,9 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/settings":
             data = self._read_json_body()
+            unknown_sections = set(data.keys()) - set(config_manager.SETTINGS_SECTIONS)
+            if unknown_sections:
+                raise ValueError(f"Unknown settings sections: {sorted(unknown_sections)}")
             updated = save_settings(data)
             _sync_attributions_to_content_json(updated.get("attributions", {}))
             return self._send_json({"status": "success", "settings": mask_settings_secrets(updated)})
@@ -1576,11 +1602,10 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                 if _delete_print_artifacts(target_pdf):
                     deleted_names.append(target_pdf.name)
             elif action == "all":
-                today_int = int(datetime.now().strftime("%Y%m%d"))
+                today_date = datetime.now().date()
                 for f in docs_dir.glob("print_*.pdf"):
                     try:
-                        f_date = int(f.name.split("_")[1])
-                        if f_date < today_int and _delete_print_artifacts(f):
+                        if _resolve_print_datetime(f).date() < today_date and _delete_print_artifacts(f):
                             deleted_names.append(f.name)
                     except Exception:
                         pass

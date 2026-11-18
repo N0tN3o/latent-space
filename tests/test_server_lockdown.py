@@ -595,6 +595,29 @@ class TestServerLockdownHTTP(unittest.TestCase):
         )
         self.assertEqual(st_416, 416)
 
+        # 5. Quote/angle-bracket characters in URLs and unknown top-level settings sections rejected
+        for unsafe_u in ('https://example.org/"onclick="alert(1)', "https://example.org/<script>", "https://example.org/ a"):
+            with self.assertRaises(ValueError):
+                config_manager.validate_safe_url(unsafe_u)
+
+        st_unk, _, _ = self._req(
+            "POST", "/api/settings",
+            body={"bogus_section": {"foo": "bar"}},
+            headers={"Authorization": "Bearer TestLockdownPass!42"},
+        )
+        self.assertEqual(st_unk, 400)
+
+        # 6. _resolve_print_datetime uses filename date consistently even if st_mtime differs
+        from datetime import datetime, timedelta
+        yday_dt = datetime.now() - timedelta(days=1)
+        yday_pdf = config_manager.DOCS_DIR / f"print_{yday_dt.strftime('%Y%m%d_%H%M%S')}_001.pdf"
+        yday_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+        st_pr, _, pr_body = self._req("GET", "/api/files/prints")
+        self.assertEqual(st_pr, 200)
+        yday_item = [p for p in json.loads(pr_body) if p["name"] == yday_pdf.name][0]
+        self.assertFalse(yday_item["is_today"])
+        self.assertTrue(yday_item["is_yesterday"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

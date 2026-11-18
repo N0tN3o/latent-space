@@ -29,6 +29,10 @@ _VISION_NAME_HINTS = (
     "qwen2-vl", "qwen2.5-vl", "qwen2.5vl", "qwen3-vl", "pixtral",
     "mistral-small3.1", "gemma3:latest", "gemma3:4b", "gemma3:12b", "gemma3:27b",
 )
+_OPENAI_COMPAT_VISION_HINTS = _VISION_NAME_HINTS + (
+    "gpt-4o", "gpt-4-turbo", "gpt-4.1", "gpt-4.5", "chatgpt-4o",
+    "llama-3.2-11b-vision", "llama-3.2-90b-vision", "llama-4-",
+)
 
 ASSISTANT_KEY_TO_ROLE = {
     "8a79f5ec-c5dd-448c-9611-99610792a04b": "analysis",
@@ -575,6 +579,14 @@ class LLMModel:
 
         return any(hint in low for hint in _VISION_NAME_HINTS)
 
+    @staticmethod
+    def _openai_compatible_supports_vision(model_name: str) -> bool:
+        """Return True when an OpenAI-compatible model name is known to support multimodal vision."""
+        low = (model_name or "").strip().lower()
+        if not low or low.startswith("gemma3:1b"):
+            return False
+        return any(h in low for h in _OPENAI_COMPAT_VISION_HINTS) or low.startswith(("o1", "o3", "o4"))
+
     def _chat_openai_or_ollama(
         self,
         message: str,
@@ -603,8 +615,10 @@ class LLMModel:
             headers["Authorization"] = f"Bearer {key}"
 
         send_img_b64 = img_b64
-        if send_img_b64 and prov == "ollama" and self._vision_mode == "auto":
-            if not self._ollama_supports_vision(clean_base, mod):
+        if send_img_b64 and self._vision_mode == "auto":
+            if prov == "ollama" and not self._ollama_supports_vision(clean_base, mod):
+                send_img_b64 = None
+            elif prov == "openai_compatible" and not self._openai_compatible_supports_vision(mod):
                 send_img_b64 = None
 
         def build_messages(include_img: bool) -> list:

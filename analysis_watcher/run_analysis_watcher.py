@@ -398,11 +398,13 @@ def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> 
             for f in attr.get("founders", [])
             if f.get("name")
         )
-        attr_line = (
-            f"{attr.get('intro_text', 'Made possible by Kasboek.')} "
-            f"{attr.get('learn_more_text', 'To learn more, visit')} {attr.get('website_url', '')} | "
-            f"{attr.get('company_linkedin_url', '')}"
-        ).strip()
+        intro_str = (attr.get("intro_text") or "Made possible by Kasboek.").strip()
+        url_parts = [u.strip() for u in (attr.get("website_url") or "", attr.get("company_linkedin_url") or "") if u and u.strip()]
+        if url_parts:
+            learn_more = (attr.get("learn_more_text") or "To learn more, visit").strip()
+            attr_line = f"{intro_str} {learn_more} {' | '.join(url_parts)}".strip()
+        else:
+            attr_line = intro_str
         if founders_str:
             attr_line += f"\n{attr.get('thanks_text', 'Thank you for letting us use this:')} {founders_str}"
         if attr.get("custom_footer_note") and str(attr.get("custom_footer_note")).strip():
@@ -983,6 +985,7 @@ if __name__ == "__main__":
         print("[analysis_watcher] Another watcher instance is already running; exiting.")
         sys.exit(0)
     try:
+        cleanup_orphaned_temp_files()
         watch_loop()
     except KeyboardInterrupt:
         print("\nStopping file watch...")

@@ -338,7 +338,7 @@
 
     <div class="toolbar">
         <div class="search-box">
-            <input type="text" id="searchInput" placeholder="Search by time, date, or 'today'..." oninput="renderGrid()">
+            <input type="text" id="searchInput" placeholder="Search by time, date, 'today', 'yesterday'..." oninput="renderGrid()">
             <button class="btn" onclick="setFilter('today')">Today</button>
             <button class="btn" onclick="setFilter('')">All</button>
             <button class="btn" onclick="loadPrints()">Refresh</button>
@@ -560,6 +560,7 @@
             const filtered = allPrints.filter(item => {
                 if (!query) return true;
                 if (query === 'today') return !!item.is_today;
+                if (query === 'yesterday') return !!item.is_yesterday;
                 const hay = `${item.name} ${item.date} ${item.display_date} ${item.display_time} ${item.archetype || ''} ${item.poem || ''}`.toLowerCase();
                 return hay.includes(query);
             });
@@ -670,6 +671,23 @@
                 alert('Connection error: ' + e);
             }
         }
+
+        const INACTIVITY_TIMEOUT_MS = 60000;
+        let inactivityTimer = null;
+        function resetInactivityTimer() {
+            if (inactivityTimer) clearTimeout(inactivityTimer);
+            inactivityTimer = setTimeout(() => {
+                const input = document.getElementById('searchInput');
+                if (input && input.value) {
+                    input.value = '';
+                    renderGrid();
+                }
+            }, INACTIVITY_TIMEOUT_MS);
+        }
+        ['mousedown', 'keydown', 'touchstart', 'wheel'].forEach(evt => {
+            window.addEventListener(evt, resetInactivityTimer, { passive: true });
+        });
+        resetInactivityTimer();
 
         refreshAuthStatus();
         loadSettings();
