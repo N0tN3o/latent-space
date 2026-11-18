@@ -22,5 +22,8 @@ analysis_watcher/*.csv
 # NFS Share - Do not commit runtime data
 shared_output/
 
+# Optional downloaded offline web assets (populated via download_offline_assets.py)
+web_ui/vendor/
+
 # User-specific
 .DS_Store

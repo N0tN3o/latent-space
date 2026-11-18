@@ -996,14 +996,20 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                 pass
             return
 
-        ctype, _ = mimetypes.guess_type(str(file_path))
-        if not ctype:
-            if file_path.suffix == ".otf":
-                ctype = "font/otf"
-            elif file_path.suffix == ".svg":
-                ctype = "image/svg+xml"
-            else:
-                ctype = "application/octet-stream"
+        suffix = file_path.suffix.lower()
+        if suffix in (".mjs", ".js"):
+            ctype = "text/javascript; charset=utf-8"
+        elif suffix == ".wasm":
+            ctype = "application/wasm"
+        else:
+            ctype, _ = mimetypes.guess_type(str(file_path))
+            if not ctype:
+                if suffix == ".otf":
+                    ctype = "font/otf"
+                elif suffix == ".svg":
+                    ctype = "image/svg+xml"
+                else:
+                    ctype = "application/octet-stream"
 
         range_hdr = (self.headers.get("Range") or "").strip()
         start_byte = 0

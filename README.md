@@ -25,25 +25,33 @@ An interactive art installation that transforms human gaze into AI-interpreted a
 
 ## Quick Start (Local / On-Prem / Laptop)
 
+> For a full step-by-step setup and exhibition checklist, see [STARTUP_GUIDE.md](STARTUP_GUIDE.md).
+
 1. **Install dependencies**
    ```bash
    pip install -r requirements.txt
    ```
    *(If running the native Desktop Gaze Painter in `gaze_painter/`, install `gaze_painter/requirements.txt` in a separate virtual environment so `opencv-python` does not conflict with `opencv-python-headless`.)*
 
-2. **Start the Unified Server & Web Suite**
+2. **(Optional) Pre-download MediaPipe assets for 100% offline Browser Gaze Tracking (`/draw`)**
+   The Gallery (`/`), QR generator (`/api/qr.svg`), and Kiosk (`/kiosk`) work offline out of the box. If you plan to run the Browser Gaze Painter (`/draw`) on an air-gapped network without internet access, run this once while online to bundle MediaPipe locally into `web_ui/vendor/mediapipe/`:
+   ```bash
+   python download_offline_assets.py
+   ```
+
+3. **Start the Unified Server & Web Suite**
    ```bash
    python start_everything.py
    ```
    *(Or run `python monitoring_server.py` directly)*
 
-3. **Open the Web Interfaces** (default port `8000`):
+4. **Open the Web Interfaces** (default port `8000`):
    - **Live Gallery**: `http://localhost:8000/`
    - **Browser Gaze Painter**: `http://localhost:8000/draw`
    - **Web Print Kiosk**: `http://localhost:8000/kiosk`
    - **Admin Command Center**: `http://localhost:8000/admin` (protected by admin passcode—set `LATENT_SPACE_ADMIN_PASSWORD` / `ADMIN_PASSWORD` in `.env`, or use the auto-generated passcode printed on startup and saved in `config/admin_pin.txt`)
 
-4. **Run the Test Suite**
+5. **Run the Test Suite**
    ```bash
    python -m unittest discover -s tests -v
    ```
