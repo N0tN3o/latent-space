@@ -100,20 +100,42 @@ def _compute_image_sig(image_path: Path):
         return None
 
 
+def _persist_handled_digest(digest: str):
+    if not digest:
+        return
+    try:
+        atomic_write_text(config_manager.SHARED_DIR / ".image_handled.sig", f"{digest}\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _read_persisted_handled_digest() -> str:
+    sig_file = config_manager.SHARED_DIR / ".image_handled.sig"
+    if not sig_file.exists():
+        return ""
+    try:
+        return sig_file.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
 def mark_image_handled(image_path: Path = None):
-    """Record current image.png signature so the watcher skips an already-queued upload."""
+    """Record current image.png signature (in memory and on disk) so watchers skip an already-queued upload."""
     global _handled_image_sig
     target = image_path or (config_manager.SHARED_DIR / "image.png")
     with _watcher_sig_lock:
         sig = _compute_image_sig(target)
         if sig is not None:
             _handled_image_sig = sig
+            _persist_handled_digest(sig[2])
 
 
 def write_live_image_and_mark_handled(target_path: Path, data: bytes):
-    """Atomically write live image.png and mark its signature handled under the watcher lock."""
+    """Atomically write live image.png and mark its signature handled across threads and external processes."""
     global _handled_image_sig
+    digest = hashlib.sha256(data).hexdigest()
     with _watcher_sig_lock:
+        _persist_handled_digest(digest)
         atomic_write_bytes(target_path, data)
         sig = _compute_image_sig(target_path)
         if sig is not None:
@@ -209,22 +231,36 @@ def _format_pdf_timestamp(ts_raw: str = None) -> str:
     return datetime.now().strftime("%B %d, %Y %H:%M")
 
 
-def _fit_text_block(text: str, base_width: int, base_fontsize: float, max_height_frac: float,
-                    linespacing: float = 1.42, min_fontsize: float = 6.2) -> tuple:
+def _fit_text_block(
+    text: str,
+    base_width: int,
+    base_fontsize: float,
+    max_height_frac: float,
+    linespacing: float = 1.42,
+    min_fontsize: float = 6.2,
+    page_height_pt: float = 780.0,
+) -> tuple:
     """Adjust wrap width & font size so text fits inside max_height_frac of the page height."""
     fontsize = base_fontsize
-    width = base_width
+    width = max(24, base_width)
     wrapped = _wrap_preserving_lines(text, width=width)
+    eff_height_pt = max(400.0, float(page_height_pt))
     while fontsize > min_fontsize:
         line_count = max(1, wrapped.count("\n") + 1)
-        # Approximate line height in A4 figure fraction (~fontsize * linespacing / 842pt)
-        est_height = line_count * (fontsize * linespacing / 780.0)
+        est_height = line_count * (fontsize * linespacing / eff_height_pt)
         if est_height <= max_height_frac:
             break
-        fontsize = round(fontsize - 0.5, 1)
+        fontsize = max(min_fontsize, round(fontsize - 0.5, 1))
         scale = base_fontsize / fontsize
         width = max(base_width, int(round(base_width * min(scale, 1.35))))
         wrapped = _wrap_preserving_lines(text, width=width)
+
+    max_lines = max(2, int((max_height_frac * eff_height_pt) / (fontsize * linespacing)))
+    lines = wrapped.splitlines()
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = lines[-1].rstrip(". ") + "..."
+        wrapped = "\n".join(lines)
     return wrapped, fontsize
 
 
@@ -282,10 +318,19 @@ def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> 
         )
 
     # 2. Analysis on bottom-left (bounded vertically above footer at y=0.11)
+    page_height_pt = figsize[1] * 66.7
+    width_scale = figsize[0] / PAPER_SIZES_INCHES["A4"][0]
+    analysis_base_w = max(32, int(round(48 * width_scale)))
+    poem_base_w = max(28, int(round(42 * width_scale)))
+
     fig.text(0.07, 0.48, "ANALYSIS", fontsize=9, fontweight="bold", color="#666666")
     analysis_wrapped, analysis_fs = _fit_text_block(
         website_data.get("psychoanalysis", ""),
-        base_width=48, base_fontsize=8.5, max_height_frac=0.35, linespacing=1.42,
+        base_width=analysis_base_w,
+        base_fontsize=8.5,
+        max_height_frac=0.35,
+        linespacing=1.42,
+        page_height_pt=page_height_pt,
     )
     fig.text(
         0.07, 0.46, analysis_wrapped,
@@ -296,7 +341,11 @@ def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> 
     fig.text(0.54, 0.48, "POEM", fontsize=9, fontweight="bold", color="#666666")
     poem_wrapped, poem_fs = _fit_text_block(
         website_data.get("poem", ""),
-        base_width=42, base_fontsize=8.5, max_height_frac=0.195, linespacing=1.45,
+        base_width=poem_base_w,
+        base_fontsize=8.5,
+        max_height_frac=0.195,
+        linespacing=1.45,
+        page_height_pt=page_height_pt,
     )
     fig.text(
         0.54, 0.46, poem_wrapped,
@@ -492,12 +541,19 @@ def _run_optional_tts(poem: str, settings: dict, run_id: str = None) -> str:
             from tts_el import run_el_tts
 
             client = ElevenLabs(api_key=api_key)
-            v1 = tts_cfg.get("voice_id_1", "45QiOxkuEAY6ckHqLMe8")
-            v2 = tts_cfg.get("voice_id_2", "tJHJUEHzOkMoPmJJ5jo2")
+            v1 = (tts_cfg.get("voice_id_1") or "").strip() or "45QiOxkuEAY6ckHqLMe8"
+            v2 = (tts_cfg.get("voice_id_2") or "").strip()
             run_el_tts(client=client, voice_id=v1, output=str(rae_file), text=poem, speed=1.2)
-            run_el_tts(client=client, voice_id=v2, output=str(ryan_file), text=poem, speed=1.3)
-            decrease_volume(str(ryan_file), dB=-10)
-            overlay_audio(str(ryan_file), str(rae_file), output_name=str(output_mp3))
+            if v2:
+                try:
+                    run_el_tts(client=client, voice_id=v2, output=str(ryan_file), text=poem, speed=1.3)
+                    decrease_volume(str(ryan_file), dB=-10)
+                    overlay_audio(str(ryan_file), str(rae_file), output_name=str(output_mp3))
+                except Exception as overlay_err:
+                    main_logger.warning(f"Secondary voice / pydub overlay unavailable ({overlay_err}); using primary voice.")
+                    os.replace(str(rae_file), str(output_mp3))
+            else:
+                os.replace(str(rae_file), str(output_mp3))
             return audio_filename
         except Exception as e:
             main_logger.warning(f"ElevenLabs TTS failed (non-critical, skipping audio): {e}")
@@ -563,7 +619,17 @@ def cleanup_orphaned_temp_files():
                     p.unlink()
             except Exception:
                 pass
+    active_audio = ""
+    content_file = shared / "content.json"
+    if content_file.exists():
+        try:
+            active_audio = Path(json.loads(content_file.read_text(encoding="utf-8")).get("poemAudio") or "").name
+        except Exception:
+            active_audio = ""
+
     for mp3 in shared.glob("output_*.mp3"):
+        if mp3.name == active_audio:
+            continue
         rid = mp3.stem[len("output_"):]
         if not (docs / f"print_{rid}.pdf").exists():
             try:
@@ -796,6 +862,14 @@ def run_analysis_pipeline(
                 else:
                     main_logger.error(f"[{rid}] Auto-print failed: {res.get('error')}")
         else:
+            for orphan_doc in (archived_thumb, archived_heatmap):
+                try:
+                    if orphan_doc.exists():
+                        orphan_doc.unlink()
+                except Exception:
+                    pass
+            website_data["scribblePath"] = "image_processed.png"
+            website_data["heatmapPath"] = "heatmap.png"
             website_data["printPDF"] = ""
             write_content_json(website_data)
 
@@ -878,8 +952,11 @@ def watch_loop(stop_event=None, runner_fn=None):
                 if image_path.exists():
                     sig = _compute_image_sig(image_path)
                     if sig is not None and sig != _handled_image_sig:
+                        persisted = _read_persisted_handled_digest()
                         _handled_image_sig = sig
-                        should_trigger = True
+                        if sig[2] != persisted:
+                            _persist_handled_digest(sig[2])
+                            should_trigger = True
 
             if should_trigger:
                 local_dwell = _consume_local_dwell_grid()

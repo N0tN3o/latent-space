@@ -1241,7 +1241,10 @@
             .map(f => f.url ? `<a href="${safeUrl(f.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(f.name.trim())}</a>` : `<span>${escapeHtml(f.name.trim())}</span>`);
 
         const previewLogo = safeUrl(attr.logo_path || '/kasboek-logo.jpg');
-        const previewLogoSrc = previewLogo === '/kasboek-logo.jpg' ? '/kasboek-logo.jpg?preview=1' : previewLogo;
+        const isDefaultLogo = /^\/kasboek-logo\.jpg(\?.*)?$/i.test(previewLogo);
+        const previewLogoSrc = isDefaultLogo
+            ? (previewLogo.includes('?') ? `${previewLogo}&preview=1` : `${previewLogo}?preview=1`)
+            : previewLogo;
 
         box.innerHTML = `
             <div class="d-flex flex-column align-items-center gap-2">

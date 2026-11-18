@@ -929,11 +929,13 @@
         }
 
         window.startWebcamGaze = async function() {
+            if (webcamRunning) return;
             const camBtn = document.getElementById('camBtn');
             camBtn.disabled = true;
             camBtn.textContent = 'Loading Eye Tracker...';
             statusBadge.textContent = 'Loading MediaPipe FaceLandmarker...';
 
+            let stream = null;
             try {
                 const { vision, fileset, modelAssetPath } = await loadMediaPipeVision();
                 try {
@@ -952,7 +954,7 @@
                 }
 
                 const video = document.getElementById('webcamVideo');
-                const stream = await navigator.mediaDevices.getUserMedia({
+                stream = await navigator.mediaDevices.getUserMedia({
                     video: { width: 640, height: 480, facingMode: 'user' }
                 });
                 video.srcObject = stream;
@@ -966,6 +968,9 @@
                 setState(STATES.SEARCHING);
                 requestAnimationFrame(processVideoFrame);
             } catch (err) {
+                if (stream) {
+                    try { stream.getTracks().forEach(t => t.stop()); } catch (_) {}
+                }
                 console.error(err);
                 showDrawError('ERR_WEBCAM_UNAVAILABLE', 'Webcam eye tracker could not load (check camera permissions or internet / local /vendor/mediapipe/ bundle). Mouse and touch drawing are ready.');
                 camBtn.disabled = false;
@@ -1116,21 +1121,25 @@
         }
 
         let lastFrameTs = performance.now();
+        let lastDetectTs = 0;
         function processVideoFrame() {
             if (!webcamRunning) return;
-            const video = document.getElementById('webcamVideo');
-            const eyeCanvas = document.getElementById('eyeOverlayCanvas');
-            const eyeCtx = eyeCanvas.getContext('2d');
+            try {
+                const video = document.getElementById('webcamVideo');
+                const eyeCanvas = document.getElementById('eyeOverlayCanvas');
+                const eyeCtx = eyeCanvas.getContext('2d');
 
-            const now = performance.now();
-            const dt = Math.max(0.005, Math.min(0.1, (now - lastFrameTs) / 1000.0));
-            const fps = Math.round(1.0 / dt);
-            lastFrameTs = now;
-            document.getElementById('fpsCounter').textContent = `${fps} FPS`;
+                const now = performance.now();
+                const dt = Math.max(0.005, Math.min(0.1, (now - lastFrameTs) / 1000.0));
+                const fps = Math.round(1.0 / dt);
+                lastFrameTs = now;
+                document.getElementById('fpsCounter').textContent = `${fps} FPS`;
 
-            if (video.readyState >= 2 && faceLandmarker) {
-                const res = faceLandmarker.detectForVideo(video, now);
-                eyeCtx.clearRect(0, 0, eyeCanvas.width, eyeCanvas.height);
+                if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0 && faceLandmarker) {
+                    const detectTs = Math.max(now, lastDetectTs + 0.01);
+                    lastDetectTs = detectTs;
+                    const res = faceLandmarker.detectForVideo(video, detectTs);
+                    eyeCtx.clearRect(0, 0, eyeCanvas.width, eyeCanvas.height);
 
                 if (res.faceLandmarks && res.faceLandmarks.length > 0) {
                     lastGazeTs = now;
@@ -1266,9 +1275,13 @@
                         }
                     }
                 }
+            } catch (frameErr) {
+                console.warn('Transient video frame error:', frameErr);
+            } finally {
+                if (webcamRunning) {
+                    requestAnimationFrame(processVideoFrame);
+                }
             }
-
-            requestAnimationFrame(processVideoFrame);
         }
     </script>
 </body>

@@ -553,6 +553,48 @@ class TestServerLockdownHTTP(unittest.TestCase):
         st_post_null, _, _ = self._req("POST", "/api/drawings%00", body={})
         self.assertEqual(st_post_null, 400)
 
+    def test_hash_in_env_secret_relative_url_guard_section_type_and_http_range(self):
+        # 1. Unquoted '#' without preceding space is preserved in .env secrets
+        self.assertEqual(
+            config_manager._parse_env_line("LATENT_SPACE_ADMIN_PASSWORD=Admin#2026!"),
+            ("LATENT_SPACE_ADMIN_PASSWORD", "Admin#2026!"),
+        )
+        self.assertEqual(
+            config_manager._parse_env_line("PORT=8080 # inline comment"),
+            ("PORT", "8080"),
+        )
+
+        # 2. Relative URLs rejected on base_url and remote_server_url; oversized remote_server_url rejected
+        with self.assertRaises(ValueError):
+            config_manager.update_settings_section("ai", {"analysis": {"base_url": "/v1"}})
+        with self.assertRaises(ValueError):
+            config_manager.update_settings_section("server", {"remote_server_url": "/relative"})
+        with self.assertRaises(ValueError):
+            config_manager.update_settings_section("server", {"remote_server_url": "https://example.org/" + ("a" * 160)})
+
+        # 3. Non-dict top-level section in save_settings raises ValueError instead of corrupting settings
+        with self.assertRaises(ValueError):
+            config_manager.save_settings({"ai": "invalid-string"})
+
+        # 4. HTTP Range request returns 206 Partial Content and 416 on out-of-range
+        sample_mp3 = config_manager.SHARED_DIR / "output_range_test.mp3"
+        sample_mp3.write_bytes(b"0123456789ABCDEF")
+        st_206, hdrs_206, body_206 = self._req(
+            "GET", "/shared_output/output_range_test.mp3",
+            headers={"Range": "bytes=4-9"},
+        )
+        self.assertEqual(st_206, 206)
+        self.assertEqual(body_206, b"456789")
+        lower_206 = {k.lower(): v for k, v in hdrs_206}
+        self.assertEqual(lower_206.get("accept-ranges"), "bytes")
+        self.assertEqual(lower_206.get("content-range"), "bytes 4-9/16")
+
+        st_416, _, _ = self._req(
+            "GET", "/shared_output/output_range_test.mp3",
+            headers={"Range": "bytes=100-200"},
+        )
+        self.assertEqual(st_416, 416)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

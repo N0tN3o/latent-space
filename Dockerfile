@@ -6,10 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# System libraries for OpenCV headless and CUPS printing
+# System libraries for OpenCV headless, audio post-processing, and CUPS printing
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgl1 \
+    ffmpeg \
     cups-client \
     && rm -rf /var/lib/apt/lists/*
 

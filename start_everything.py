@@ -159,6 +159,7 @@ class LatentSpaceStarter:
         self.port = port
         self.processes = []
         self.ollama_proc = None
+        self.server_proc = None
         self.running = True
         self._stopped = False
 
@@ -212,7 +213,7 @@ class LatentSpaceStarter:
         self.ensure_ollama_if_configured()
         py = find_python_executable("analysis_watcher")
         server_script = PROJECT_DIR / "monitoring_server.py"
-        self.run_command(
+        self.server_proc = self.run_command(
             [py, str(server_script)],
             f"Unified Server & Analysis Pipeline (Port {self.port})",
             cwd=PROJECT_DIR,
@@ -261,7 +262,7 @@ class LatentSpaceStarter:
                 if proc.poll() is not None:
                     print(f"\n⚠️  {name} exited with code {proc.poll()}")
                     self.processes.remove((name, proc))
-                    if proc is not self.ollama_proc and self.mode in ("server", "full"):
+                    if proc is self.server_proc:
                         print(f"{name} exited — shutting down remaining services...")
                         self.running = False
                         break

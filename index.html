@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Latent Space, Through the Eyes of the Algorithm</title>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
     <style>
         @font-face {
             font-family: 'Korolev Medium';
@@ -400,6 +399,8 @@
 
         let historyList = [];
         let historyIdx = -1;
+        let isSteppingHistory = false;
+        let isLoadingContent = false;
 
         function buildPath(path) {
             if (!path) return '';
@@ -450,17 +451,6 @@
             const fullUrl = targetPath.startsWith('http')
                 ? targetPath
                 : `${lanBaseUrl}${buildPath(targetPath)}`;
-            if (typeof qrcode !== 'undefined') {
-                try {
-                    const qr = qrcode(0, 'M');
-                    qr.addData(fullUrl);
-                    qr.make();
-                    qrBox.innerHTML = qr.createSvgTag({ cellSize: 3, margin: 1 });
-                    qrCard.style.display = 'flex';
-                    return;
-                } catch (_) {}
-            }
-            // Offline fallback: server-generated SVG QR code
             qrBox.innerHTML = `<img src="/api/qr.svg?url=${encodeURIComponent(fullUrl)}" alt="Digital print QR code">`;
             qrCard.style.display = 'flex';
         }
@@ -685,41 +675,48 @@
         }
 
         async function stepHistory(delta) {
+            if (isSteppingHistory) return;
+            isSteppingHistory = true;
             const wasLive = (historyIdx === -1);
             try {
-                const res = await fetch(CONFIG.printsApi + '?t=' + Date.now());
-                if (res.ok) {
-                    const prints = await res.json();
-                    historyList = prints.filter(p => p.poem || p.psychoanalysis || p.thumb_url);
+                try {
+                    const res = await fetch(CONFIG.printsApi + '?t=' + Date.now());
+                    if (res.ok) {
+                        const prints = await res.json();
+                        historyList = prints.filter(p => p.poem || p.psychoanalysis || p.thumb_url);
+                    }
+                } catch (_) {}
+
+                if (!historyList.length) return;
+                let nextIdx = historyIdx + delta;
+                const firstIsLive = Boolean(liveRunId && historyList[0] && historyList[0].run_id === liveRunId);
+                if (wasLive && delta > 0 && firstIsLive && historyList.length > 1) {
+                    nextIdx = 1;
                 }
-            } catch (_) {}
+                if (nextIdx < 0 || (delta < 0 && nextIdx === 0 && firstIsLive)) {
+                    returnToLive();
+                    return;
+                }
+                historyIdx = Math.min(historyList.length - 1, nextIdx);
+                document.getElementById('liveModeBtn').classList.remove('live-active');
 
-            if (!historyList.length) return;
-            let nextIdx = historyIdx + delta;
-            if (wasLive && delta > 0 && liveRunId && historyList[0] && historyList[0].run_id === liveRunId && historyList.length > 1) {
-                nextIdx = 1;
+                const item = historyList[historyIdx];
+                const itemTs = item.timestamp ? new Date(item.timestamp * 1000).toISOString() : item.date;
+                applyViewData({
+                    scribblePath: item.thumb_url,
+                    heatmapPath: item.heatmap_url || '',
+                    archetype: item.archetype,
+                    fractalDimension: item.fractalDimension,
+                    spatialEntropy: item.spatialEntropy,
+                    psychoanalysis: item.psychoanalysis || 'Archived gaze drawing memento.',
+                    poem: item.poem || '',
+                    printPDF: item.pdf_url,
+                    pdfRendering: false,
+                    timestamp: itemTs,
+                }, true);
+            } finally {
+                isSteppingHistory = false;
             }
-            if (nextIdx < 0) {
-                returnToLive();
-                return;
-            }
-            historyIdx = Math.min(historyList.length - 1, nextIdx);
-            document.getElementById('liveModeBtn').classList.remove('live-active');
-
-            const item = historyList[historyIdx];
-            const itemTs = item.timestamp ? new Date(item.timestamp * 1000).toISOString() : item.date;
-            applyViewData({
-                scribblePath: item.thumb_url,
-                heatmapPath: item.heatmap_url || '',
-                archetype: item.archetype,
-                fractalDimension: item.fractalDimension,
-                spatialEntropy: item.spatialEntropy,
-                psychoanalysis: item.psychoanalysis || 'Archived gaze drawing memento.',
-                poem: item.poem || '',
-                printPDF: item.pdf_url,
-                pdfRendering: false,
-                timestamp: itemTs,
-            }, true);
         }
 
         function returnToLive() {
@@ -730,9 +727,11 @@
         }
 
         async function loadContent() {
-            await refreshAttributions();
-            if (historyIdx !== -1) return;
+            if (isLoadingContent) return;
+            isLoadingContent = true;
             try {
+                await refreshAttributions();
+                if (historyIdx !== -1) return;
                 const nowMs = Date.now();
                 if (!lastPublicInfoTs || (nowMs - lastPublicInfoTs) >= 30000) {
                     try {
@@ -777,6 +776,8 @@
                 }
             } catch (error) {
                 console.log('Waiting for content update:', error.message);
+            } finally {
+                isLoadingContent = false;
             }
         }
 

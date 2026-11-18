@@ -555,6 +555,38 @@ class TestTimeBasedAffineGazeCalibration(unittest.TestCase):
         self.assertGreater(painter.dwell_grid[1, 2], 0.5)
         self.assertEqual(float(painter.dwell_grid[0, 0]), 0.0)
 
+    def test_edge_symmetric_crop_centering_and_right_eye_landmarks_and_vision_cache(self):
+        # 1. Tall symmetrical drawing near left edge of 1280x720 canvas stays centered in 512x512 output
+        edge_sym_in = TEST_TMP / "edge_sym_in.png"
+        edge_sym_out = TEST_TMP / "edge_sym_out.png"
+        canvas = np.ones((720, 1280), dtype=np.uint8) * 255
+        # Symmetric vertical diamond/axis centered at (cx=80, cy=360), height=640, width=120
+        cv2.line(canvas, (80, 40), (80, 680), 0, 5)
+        cv2.line(canvas, (20, 360), (140, 360), 0, 5)
+        cv2.circle(canvas, (80, 360), 50, 0, 5)
+        cv2.imwrite(str(edge_sym_in), canvas)
+
+        preprocess_image(str(edge_sym_in), str(edge_sym_out))
+        geom = analysis.analyze_stroke_geometry(str(edge_sym_out), canvas_filename=str(edge_sym_in))
+        self.assertGreater(geom["horiz_symmetry"], 0.85)
+        self.assertGreater(geom["vert_symmetry"], 0.85)
+        self.assertIn("strikingly symmetrical", geom["description"])
+
+        # 2. Right-eye outer landmark is 263 (lateral) and inner is 362 (medial)
+        self.assertEqual(eye_tracking.FACEMESH_LANDMARKS["right_eye_outer"], 263)
+        self.assertEqual(eye_tracking.FACEMESH_LANDMARKS["right_eye_inner"], 362)
+
+        # 3. _ollama_supports_vision does not permanently cache False on /api/show timeout
+        with chat._OLLAMA_CAPS_LOCK:
+            chat._OLLAMA_VISION_CAPS.clear()
+        with mock.patch("chat.requests.post", side_effect=chat.requests.exceptions.Timeout("timeout")):
+            # Transient timeout falls back to name hints without poisoning cache
+            self.assertFalse(chat.LLMModel._ollama_supports_vision("http://localhost:11434/v1", "custom-model:latest"))
+            self.assertTrue(chat.LLMModel._ollama_supports_vision("http://localhost:11434/v1", "qwen2.5-vl:7b"))
+            self.assertTrue(chat.LLMModel._ollama_supports_vision("http://localhost:11434/v1", "gemma3:latest"))
+        with chat._OLLAMA_CAPS_LOCK:
+            self.assertNotIn(("http://localhost:11434", "custom-model:latest"), chat._OLLAMA_VISION_CAPS)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

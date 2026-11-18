@@ -503,6 +503,56 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
             self.assertEqual(content_empty["scribblePath"], "")
             self.assertEqual(content_empty["printPDF"], "")
 
+    def test_cross_process_watcher_sig_and_elevenlabs_single_voice_and_pdf_fit(self):
+        # 1. Persisted .image_handled.sig prevents external watcher double-trigger
+        target_img = config_manager.SHARED_DIR / "image.png"
+        run_analysis_watcher.write_live_image_and_mark_handled(target_img, b"\x89PNG\r\n\x1a\n" + b"test1234")
+        persisted = run_analysis_watcher._read_persisted_handled_digest()
+        sig = run_analysis_watcher._compute_image_sig(target_img)
+        self.assertEqual(persisted, sig[2])
+
+        # 2. ElevenLabs TTS works when voice_id_2 is blank or when pydub/ffmpeg raises FileNotFoundError
+        import types
+        fake_el_client_mod = types.ModuleType("elevenlabs.client")
+        fake_el_instance = mock.MagicMock()
+        fake_el_instance.text_to_speech.convert.return_value = [b"ID3", b"-fake-mp3-bytes"]
+        fake_el_client_mod.ElevenLabs = mock.MagicMock(return_value=fake_el_instance)
+        fake_el_pkg = types.ModuleType("elevenlabs")
+        fake_el_pkg.client = fake_el_client_mod
+        fake_pydub = types.ModuleType("pydub")
+        fake_pydub.AudioSegment = mock.MagicMock()
+        fake_pydub.AudioSegment.from_file.side_effect = FileNotFoundError("ffmpeg not found")
+
+        settings_single = config_manager.load_settings()
+        settings_single["tts"] = {
+            "enabled": True,
+            "provider": "elevenlabs",
+            "voice_id_1": "voice-primary",
+            "voice_id_2": "",
+        }
+        with mock.patch.dict(sys.modules, {"elevenlabs": fake_el_pkg, "elevenlabs.client": fake_el_client_mod, "pydub": fake_pydub}), \
+             mock.patch("run_analysis_watcher.load_env_vars", return_value={"API_KEY": "el-test-key"}):
+            sys.modules.pop("postprocess_audio", None)
+            audio_single = run_analysis_watcher._run_optional_tts("Short poem", settings_single, run_id="tts_single")
+            self.assertEqual(audio_single, "output_tts_single.mp3")
+            self.assertTrue((config_manager.SHARED_DIR / audio_single).exists())
+
+            # With voice_id_2 set but ffmpeg missing, falls back to primary voice MP3
+            settings_dual = dict(settings_single)
+            settings_dual["tts"] = dict(settings_single["tts"], voice_id_2="voice-secondary")
+            audio_fallback = run_analysis_watcher._run_optional_tts("Short poem", settings_dual, run_id="tts_fallback")
+            self.assertEqual(audio_fallback, "output_tts_fallback.mp3")
+            self.assertTrue((config_manager.SHARED_DIR / audio_fallback).exists())
+
+        # 3. _fit_text_block truncates extreme multi-line overflow cleanly with ellipsis
+        huge_poem = "\n".join([f"Verse line {i} wandering through the latent space" for i in range(60)])
+        fitted, fs = run_analysis_watcher._fit_text_block(
+            huge_poem, base_width=30, base_fontsize=8.5, max_height_frac=0.195, page_height_pt=550.0,
+        )
+        self.assertEqual(fs, 6.2)
+        self.assertTrue(fitted.endswith("..."))
+        self.assertLessEqual(len(fitted.splitlines()), 15)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

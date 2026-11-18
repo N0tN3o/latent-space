@@ -96,15 +96,19 @@ def preprocess_image(input_filename="image.png", output_filename="image_processe
     side = max(x_dim, y_dim)
     pad = max(10, int(side * 0.05))
     target_side = side + 2 * pad
+    if target_side % 2 == 1:
+        target_side += 1
 
     cx = (upper_x + lower_x) // 2
     cy = (upper_y + lower_y) // 2
 
     half = target_side // 2
-    src_x1 = max(0, cx - half)
-    src_y1 = max(0, cy - half)
-    src_x2 = min(w, cx + half)
-    src_y2 = min(h, cy + half)
+    raw_x1 = cx - half
+    raw_y1 = cy - half
+    src_x1 = max(0, raw_x1)
+    src_y1 = max(0, raw_y1)
+    src_x2 = min(w, raw_x1 + target_side)
+    src_y2 = min(h, raw_y1 + target_side)
 
     # Crop from the original image to preserve anti-aliasing and Ember/Indigo RGB shading
     cropped = src_img[src_y1:src_y2, src_x1:src_x2].copy()
@@ -119,8 +123,8 @@ def preprocess_image(input_filename="image.png", output_filename="image_processe
     else:
         square = np.full((target_side, target_side), fill_val, dtype=np.uint8)
 
-    dst_y1 = max(0, (target_side - cropped.shape[0]) // 2)
-    dst_x1 = max(0, (target_side - cropped.shape[1]) // 2)
+    dst_y1 = max(0, src_y1 - raw_y1)
+    dst_x1 = max(0, src_x1 - raw_x1)
     square[dst_y1:dst_y1 + cropped.shape[0], dst_x1:dst_x1 + cropped.shape[1]] = cropped
 
     img_resized = cv2.resize(square, (512, 512), interpolation=cv2.INTER_AREA)

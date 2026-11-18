@@ -16,18 +16,30 @@ def ensure_directories():
 
 
 def save_calibration(data, path=None):
-    """Save calibration data to JSON file."""
+    """Save calibration data atomically to JSON file without mutating caller dict."""
     ensure_directories()
     if path is None:
         path = CALIBRATION_JSON
 
+    serializable = {}
     if isinstance(data, dict):
         for key, value in data.items():
-            if isinstance(value, np.ndarray):
-                data[key] = value.tolist()
+            serializable[key] = value.tolist() if isinstance(value, np.ndarray) else value
+    else:
+        serializable = data
 
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    target = Path(path)
+    tmp_path = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(serializable, f, indent=2)
+        os.replace(str(tmp_path), str(target))
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
     print(f"Calibration saved to {path}")
 
 
@@ -41,7 +53,7 @@ def load_calibration(path=None):
         return None
 
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         print(f"Calibration loaded from {path}")
         return data

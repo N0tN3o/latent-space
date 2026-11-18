@@ -398,7 +398,8 @@ def _run_zero_shot_hf_model(filename: str, model_id: str, cache_dict: dict, is_s
 
         processor = cache_dict["processor"]
         model = cache_dict["model"]
-        pil_img = Image.open(filename).convert("RGB")
+        with Image.open(filename) as im:
+            pil_img = im.convert("RGB")
 
         def top_match(prompt_pairs):
             texts = [p[0] for p in prompt_pairs]

@@ -21,6 +21,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from urllib.parse import urlparse
 
 PROJECT_DIR = Path(__file__).resolve().parent
 WEB_UI_DIR = PROJECT_DIR / "web_ui"
@@ -39,6 +40,11 @@ ALLOWED_AI_PROVIDERS = {"ollama", "gemini", "anthropic", "openai_compatible", "b
 ALLOWED_FALLBACK_PROVIDERS = {"auto", "none"} | ALLOWED_AI_PROVIDERS
 ALLOWED_TTS_PROVIDERS = {"elevenlabs", "google_cloud", "none"}
 _PRINTER_NAME_RE = re.compile(r"^[A-Za-z0-9 _.\-:()/\\]{1,128}$")
+SETTINGS_SECTIONS = ("ai", "tts", "printing", "attributions", "server")
+MAX_PROMPT_FIELD_CHARS = 8000
+MAX_API_KEY_CHARS = 512
+# QR capacity is 213 bytes; "/shared_output/docs/print_YYYYMMDD_HHMMSS_mmm.pdf" adds 49 bytes.
+MAX_REMOTE_URL_BYTES = 160
 
 _lock = threading.Lock()
 _history_lock = threading.Lock()
@@ -170,8 +176,9 @@ def ensure_directories():
 def _try_lock_fd(fd: int) -> bool:
     if platform.system() == "Windows":
         import msvcrt
-        if os.fstat(fd).st_size == 0:
-            os.write(fd, b"\x00")
+        # msvcrt.locking takes a mandatory byte-range lock that may extend past EOF,
+        # so no padding write is needed (a write into a region locked by another
+        # process would raise PermissionError instead of reporting "busy").
         try:
             os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
@@ -337,9 +344,11 @@ def _parse_env_line(raw_line: str):
     if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
         val = val[1:-1]
     else:
-        # Strip inline comments in unquoted values (e.g., PORT=8000 # default)
-        if "#" in val:
-            val = val.split("#", 1)[0].strip()
+        # Strip inline comments in unquoted values (e.g., PORT=8000 # default), but only when
+        # '#' is preceded by whitespace so secrets like "Pass#2026" are preserved.
+        val = re.split(r"\s+#", val, maxsplit=1)[0].strip()
+        if val.startswith("#"):
+            val = ""
     return key, val
 
 
@@ -412,8 +421,8 @@ def load_settings() -> dict:
             return deepcopy(_memory_settings or DEFAULT_SETTINGS)
 
 
-def validate_safe_url(url: str, field_name: str = "url") -> str:
-    """Allow only empty strings, relative root paths ('/...'), or http(s):// URLs."""
+def validate_safe_url(url: str, field_name: str = "url", allow_relative: bool = True) -> str:
+    """Allow only empty strings, relative root paths ('/...', if allow_relative), or http(s):// URLs."""
     if url is None:
         return ""
     if not isinstance(url, str):
@@ -424,8 +433,14 @@ def validate_safe_url(url: str, field_name: str = "url") -> str:
     if any(ord(ch) < 32 for ch in val):
         raise ValueError(f"{field_name} contains invalid control characters")
     low = val.lower()
-    if low.startswith(("http://", "https://")) or (val.startswith("/") and not val.startswith("//")):
+    if low.startswith(("http://", "https://")):
+        if not urlparse(val).hostname:
+            raise ValueError(f"{field_name} is missing a host")
         return val
+    if allow_relative and val.startswith("/") and not val.startswith("//"):
+        return val
+    if not allow_relative:
+        raise ValueError(f"{field_name} must be an absolute http:// or https:// URL")
     raise ValueError(f"{field_name} must start with http://, https://, or /")
 
 
@@ -536,7 +551,7 @@ def validate_ai_data(data: dict) -> dict:
                 raise ValueError(f"ai.{role}.temperature must be between 0.0 and 2.0")
             rc["temperature"] = t_val
         if "base_url" in rc:
-            rc["base_url"] = validate_safe_url(rc["base_url"], f"ai.{role}.base_url")
+            rc["base_url"] = validate_safe_url(rc["base_url"], f"ai.{role}.base_url", allow_relative=False)
         for s_field in (
             "model", "fallback_model", "api_key", "name", "description",
             "purpose", "expertise", "capabilities", "restrictions", "additional", "assistant_key",
@@ -548,6 +563,12 @@ def validate_ai_data(data: dict) -> dict:
                     raise ValueError(f"ai.{role}.{s_field} must be a string")
                 elif s_field in ("model", "fallback_model", "name", "assistant_key"):
                     rc[s_field] = rc[s_field].strip()[:200]
+                elif s_field == "api_key":
+                    if len(rc[s_field]) > MAX_API_KEY_CHARS:
+                        raise ValueError(f"ai.{role}.api_key exceeds {MAX_API_KEY_CHARS} characters")
+                    rc[s_field] = rc[s_field].strip()
+                elif len(rc[s_field]) > MAX_PROMPT_FIELD_CHARS:
+                    raise ValueError(f"ai.{role}.{s_field} exceeds {MAX_PROMPT_FIELD_CHARS} characters")
     return cleaned
 
 
@@ -592,7 +613,14 @@ def validate_server_data(data: dict) -> dict:
             raise ValueError("server.port must be between 1 and 65535")
         cleaned["port"] = port_num
     if "remote_server_url" in cleaned:
-        cleaned["remote_server_url"] = validate_safe_url(cleaned["remote_server_url"], "server.remote_server_url")
+        remote = validate_safe_url(cleaned["remote_server_url"], "server.remote_server_url", allow_relative=False)
+        remote = remote.rstrip("/")
+        if len(remote.encode("utf-8")) > MAX_REMOTE_URL_BYTES:
+            raise ValueError(
+                f"server.remote_server_url must be at most {MAX_REMOTE_URL_BYTES} bytes "
+                "so printed QR codes still fit"
+            )
+        cleaned["remote_server_url"] = remote
     return cleaned
 
 
@@ -735,16 +763,23 @@ def get_or_create_admin_password() -> tuple:
 
 
 def _validate_settings_sections(data: dict) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError("settings payload must be an object")
     cleaned = deepcopy(data)
-    if isinstance(cleaned.get("ai"), dict):
+    # Unknown top-level keys are not validated here (they are rejected at the API layer);
+    # keys already present on disk are preserved by the merge in save_settings_unlocked.
+    for section in SETTINGS_SECTIONS:
+        if section in cleaned and not isinstance(cleaned[section], dict):
+            raise ValueError(f"settings.{section} must be an object")
+    if "ai" in cleaned:
         cleaned["ai"] = validate_ai_data(cleaned["ai"])
-    if isinstance(cleaned.get("tts"), dict):
+    if "tts" in cleaned:
         cleaned["tts"] = validate_tts_data(cleaned["tts"])
-    if isinstance(cleaned.get("attributions"), dict):
+    if "attributions" in cleaned:
         cleaned["attributions"] = validate_attributions_data(cleaned["attributions"])
-    if isinstance(cleaned.get("printing"), dict):
+    if "printing" in cleaned:
         cleaned["printing"] = validate_printing_data(cleaned["printing"])
-    if isinstance(cleaned.get("server"), dict):
+    if "server" in cleaned:
         cleaned["server"] = validate_server_data(cleaned["server"])
     return cleaned
 
@@ -752,12 +787,15 @@ def _validate_settings_sections(data: dict) -> dict:
 def save_settings_unlocked(settings: dict) -> dict:
     global _memory_settings
     ensure_directories()
-    existing = _memory_settings
-    if existing is None and SETTINGS_FILE.exists():
+    if SETTINGS_FILE.exists():
+        # Always merge onto the on-disk state (another process may have written it) and
+        # never silently replace an unreadable file with defaults.
         try:
             existing = _read_existing_settings_raw()
-        except Exception:
-            existing = None
+        except Exception as e:
+            raise RuntimeError(f"Refusing to overwrite unreadable settings.json: {e}") from e
+    else:
+        existing = _memory_settings
     base = _deep_merge(DEFAULT_SETTINGS, existing or {})
     sanitized = _sanitize_incoming_settings(settings, existing=base)
     sanitized = _validate_settings_sections(sanitized)

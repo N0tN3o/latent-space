@@ -1,10 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
+import threading
 
 # --- PyQt6 Imports ---
 from PyQt6.QtCore import QEvent, Qt, QTimer, pyqtSignal
@@ -43,10 +45,21 @@ def _format_english_date(dt: datetime) -> str:
     return f"{_ENGLISH_MONTHS[dt.month]} {dt.day:02d}, {dt.year}"
 
 
+def _read_printed_set() -> set:
+    print_log = config_manager.DOCS_DIR / "print_history.json"
+    if not print_log.exists():
+        return set()
+    try:
+        history = json.loads(print_log.read_text(encoding="utf-8"))
+        return set(history.get("printed", []))
+    except Exception:
+        return set()
+
+
 class PrintRecord:
     """Represents a single print/drawing."""
 
-    def __init__(self, pdf_path, mtime: float = None):
+    def __init__(self, pdf_path, mtime: float = None, printed: bool = None):
         self.path = Path(pdf_path)
         self.filename = self.path.name
         try:
@@ -61,66 +74,71 @@ class PrintRecord:
                     self.timestamp = datetime.fromtimestamp(self.path.stat().st_mtime)
                 except Exception:
                     self.timestamp = datetime.now()
-        self.printed = self._check_if_printed()
+        self.printed = bool(printed) if printed is not None else self._check_if_printed()
 
     def _check_if_printed(self):
-        print_log = config_manager.DOCS_DIR / "print_history.json"
-        if not print_log.exists():
-            return False
-        try:
-            history = json.loads(print_log.read_text(encoding="utf-8"))
-            return self.filename in history.get("printed", [])
-        except Exception:
-            return False
+        return self.filename in _read_printed_set()
 
     def mark_as_printed(self):
         mark_file_printed(self.filename, extra_meta={"user_timestamp": self.timestamp.isoformat()})
         self.printed = True
 
     def ensure_thumbnail_file(self) -> Path | None:
-        """Return path to sidecar PNG thumbnail, generating it off the UI thread if missing."""
+        """Return path to sidecar PNG thumbnail, generating it atomically off the UI thread if missing."""
         png_path = self.path.with_suffix(".png")
         if png_path.exists():
             return png_path
         if not self.path.exists():
             return None
-        try:
-            import fitz
-            doc = fitz.open(str(self.path))
-            try:
-                if len(doc) > 0:
-                    pix = doc[0].get_pixmap(dpi=120)
-                    pix.save(str(png_path))
-                    if png_path.exists():
-                        return png_path
-            finally:
-                doc.close()
-        except Exception:
-            pass
 
+        tmp_png = png_path.with_name(f".{png_path.name}.{os.getpid()}.{threading.get_ident()}.tmp.png")
         try:
-            if shutil.which("pdftoppm"):
-                root = str(png_path.with_suffix(""))
-                subprocess.run(
-                    ["pdftoppm", "-png", "-singlefile", str(self.path), root],
-                    check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                )
-                if png_path.exists():
-                    return png_path
-        except Exception:
-            pass
-
-        im_bin = shutil.which("magick") or (shutil.which("convert") if sys.platform != "win32" else None)
-        if im_bin:
             try:
-                subprocess.run(
-                    [im_bin, f"{str(self.path)}[0]", str(png_path)],
-                    check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                )
-                if png_path.exists():
-                    return png_path
+                import fitz
+                doc = fitz.open(str(self.path))
+                try:
+                    if len(doc) > 0:
+                        pix = doc[0].get_pixmap(dpi=120)
+                        pix.save(str(tmp_png))
+                        if tmp_png.exists():
+                            os.replace(str(tmp_png), str(png_path))
+                            return png_path
+                finally:
+                    doc.close()
             except Exception:
                 pass
+
+            try:
+                if shutil.which("pdftoppm"):
+                    root = str(tmp_png.with_suffix(""))
+                    subprocess.run(
+                        ["pdftoppm", "-png", "-singlefile", str(self.path), root],
+                        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    )
+                    if tmp_png.exists():
+                        os.replace(str(tmp_png), str(png_path))
+                        return png_path
+            except Exception:
+                pass
+
+            im_bin = shutil.which("magick") or (shutil.which("convert") if sys.platform != "win32" else None)
+            if im_bin:
+                try:
+                    subprocess.run(
+                        [im_bin, f"{str(self.path)}[0]", str(tmp_png)],
+                        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    )
+                    if tmp_png.exists():
+                        os.replace(str(tmp_png), str(png_path))
+                        return png_path
+                except Exception:
+                    pass
+        finally:
+            if tmp_png.exists():
+                try:
+                    tmp_png.unlink()
+                except Exception:
+                    pass
         return None
 
 
@@ -201,6 +219,7 @@ class PrintQueueItem(QWidget):
 class EnhancedPrintKioskUI(QMainWindow):
     file_event_signal = pyqtSignal(str)
     thumbnail_ready_signal = pyqtSignal(str, str)
+    print_finished_signal = pyqtSignal(object, object)
 
     def __init__(self):
         super().__init__()
@@ -209,11 +228,13 @@ class EnhancedPrintKioskUI(QMainWindow):
         self.records = []
         self.filtered_records = []
         self._items_by_name = {}
+        self._in_flight_thumbs = set()
         self._display_sig = None
         self._thumb_pool = ThreadPoolExecutor(max_workers=2)
 
         self.file_event_signal.connect(self.on_new_pdf)
         self.thumbnail_ready_signal.connect(self._on_thumbnail_ready)
+        self.print_finished_signal.connect(self._on_print_finished)
 
         self.inactivity_timer = QTimer(self)
         self.inactivity_timer.setInterval(INACTIVITY_TIMEOUT_SEC * 1000)
@@ -317,7 +338,8 @@ class EnhancedPrintKioskUI(QMainWindow):
             except Exception:
                 continue
         entries.sort(key=lambda item: item[0], reverse=True)
-        self.records = [PrintRecord(pdf, mtime=mtime) for mtime, pdf in entries]
+        printed_set = _read_printed_set()
+        self.records = [PrintRecord(pdf, mtime=mtime, printed=(pdf.name in printed_set)) for mtime, pdf in entries]
         if self.search_input.text():
             self.on_search_changed(self.search_input.text())
         else:
@@ -345,17 +367,18 @@ class EnhancedPrintKioskUI(QMainWindow):
         self.update_queue_display()
 
     def _on_thumbnail_ready(self, filename: str, png_path: str):
+        self._in_flight_thumbs.discard(filename)
         item = self._items_by_name.get(filename)
-        if item is not None:
+        if png_path and item is not None:
             item.set_thumbnail_file(png_path)
 
     def _schedule_thumbnail(self, record: PrintRecord):
-        if record.path.with_suffix(".png").exists():
+        if record.filename in self._in_flight_thumbs or record.path.with_suffix(".png").exists():
             return
+        self._in_flight_thumbs.add(record.filename)
         def _worker():
             png = record.ensure_thumbnail_file()
-            if png is not None:
-                self.thumbnail_ready_signal.emit(record.filename, str(png))
+            self.thumbnail_ready_signal.emit(record.filename, str(png) if png is not None else "")
         self._thumb_pool.submit(_worker)
 
     def update_queue_display(self):
@@ -404,17 +427,24 @@ class EnhancedPrintKioskUI(QMainWindow):
             QMessageBox.critical(self, "Error", f"Invalid printer configuration: {e}")
             return
 
-        res = send_pdf_to_printer(
-            str(record.path),
-            printer_name=printer_name,
-            extra_meta={"user_timestamp": record.timestamp.isoformat()},
-        )
-        if res.get("status") == "success":
+        def _print_worker():
+            res = send_pdf_to_printer(
+                str(record.path),
+                printer_name=printer_name,
+                extra_meta={"user_timestamp": record.timestamp.isoformat()},
+            )
+            self.print_finished_signal.emit(record, res)
+
+        self._thumb_pool.submit(_print_worker)
+
+    def _on_print_finished(self, record, res):
+        if isinstance(res, dict) and res.get("status") == "success":
             record.printed = True
             QMessageBox.information(self, "Success", "Print job sent!")
             self.update_queue_display()
         else:
-            QMessageBox.critical(self, "Error", f"Print failed: {res.get('error', 'Unknown error')}")
+            err_msg = res.get("error", "Unknown error") if isinstance(res, dict) else str(res)
+            QMessageBox.critical(self, "Error", f"Print failed: {err_msg}")
 
     def closeEvent(self, event):
         if hasattr(self, "observer"):

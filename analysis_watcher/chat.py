@@ -26,7 +26,8 @@ _OLLAMA_CAPS_LOCK = threading.Lock()
 _OLLAMA_VISION_CAPS = {}
 _VISION_NAME_HINTS = (
     "vision", "llava", "bakllava", "moondream", "minicpm-v",
-    "qwen2-vl", "qwen2.5vl", "pixtral", "gemma3:4b", "gemma3:12b", "gemma3:27b",
+    "qwen2-vl", "qwen2.5-vl", "qwen2.5vl", "qwen3-vl", "pixtral",
+    "mistral-small3.1", "gemma3:latest", "gemma3:4b", "gemma3:12b", "gemma3:27b",
 )
 
 ASSISTANT_KEY_TO_ROLE = {
@@ -567,12 +568,12 @@ class LLMModel:
             except Exception:
                 supported = None
 
-        if supported is None:
-            supported = any(hint in low for hint in _VISION_NAME_HINTS)
+        if supported is not None:
+            with _OLLAMA_CAPS_LOCK:
+                _OLLAMA_VISION_CAPS[cache_key] = bool(supported)
+            return bool(supported)
 
-        with _OLLAMA_CAPS_LOCK:
-            _OLLAMA_VISION_CAPS[cache_key] = bool(supported)
-        return bool(supported)
+        return any(hint in low for hint in _VISION_NAME_HINTS)
 
     def _chat_openai_or_ollama(
         self,
@@ -769,6 +770,8 @@ class LLMModel:
             "user_key": self._user_key,
         }
         resp = requests.post(self.__ask_endpoint_url, json=chat_data, headers=self.__headers, timeout=req_timeout)
+        if not resp.ok:
+            self.__chat_key = None
         resp.raise_for_status()
         text = resp.text.strip()
         if text.startswith("{") and '"status": "Failed"' in text:
@@ -855,13 +858,15 @@ class LLMModel:
     def get_config_dict(self) -> dict:
         self._load_local_config()
         settings = load_settings()
+        saved_role_key = bool(settings.get("ai", {}).get(self.role, {}).get("api_key"))
         return {
             "role": self.role,
             "provider": self._provider,
             "model": self._llm,
             "llm": self._llm,
             "base_url": self._base_url,
-            "has_api_key": bool(self._api_key),
+            "has_api_key": saved_role_key,
+            "has_effective_api_key": bool(self._api_key),
             "fallback_provider": self._fallback_provider,
             "fallback_model": self._fallback_model,
             "name": self._name,

@@ -267,17 +267,15 @@ def _is_valid_image_bytes(data: bytes) -> bool:
 
     try:
         from PIL import Image
-        orig_limit = Image.MAX_IMAGE_PIXELS
-        Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
-        try:
-            with Image.open(io.BytesIO(data)) as im:
-                w, h = im.size
-                if w <= 0 or h <= 0 or w > MAX_IMAGE_WIDTH or h > MAX_IMAGE_HEIGHT or (w * h) > MAX_IMAGE_PIXELS:
-                    return False
-                im.verify()
-            return True
-        finally:
-            Image.MAX_IMAGE_PIXELS = orig_limit
+        # Image.open() is lazy and only parses the header, so the dimension check below runs
+        # before any pixel decoding. Pillow's process-global MAX_IMAGE_PIXELS is deliberately
+        # not mutated here: doing so per request is racy across ThreadingHTTPServer threads.
+        with Image.open(io.BytesIO(data)) as im:
+            w, h = im.size
+            if w <= 0 or h <= 0 or w > MAX_IMAGE_WIDTH or h > MAX_IMAGE_HEIGHT or (w * h) > MAX_IMAGE_PIXELS:
+                return False
+            im.verify()
+        return True
     except ImportError:
         # Minimal fallback header dimension check when Pillow is unavailable
         if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24 and data[12:16] == b"IHDR":
@@ -927,25 +925,31 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, data, status=200, extra_headers: list = None):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        if extra_headers:
-            for k, v in extra_headers:
-                self.send_header(k, v)
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            if extra_headers:
+                for k, v in extra_headers:
+                    self.send_header(k, v)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def _send_text(self, text: str, status=200, content_type="text/plain; charset=utf-8"):
         body = text.encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def _send_file(self, file_path: Path, cacheable: bool = False):
         if not file_path.exists() or not file_path.is_file():
@@ -957,12 +961,16 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             self._send_text("File not found", status=404)
             return
 
-        etag = f'W/"{stat.st_mtime_ns}-{stat.st_size}"'
+        file_size = stat.st_size
+        etag = f'W/"{stat.st_mtime_ns}-{file_size}"'
         if cacheable and self.headers.get("If-None-Match") == etag:
-            self.send_response(304)
-            self.send_header("ETag", etag)
-            self.send_header("Cache-Control", "public, max-age=300")
-            self.end_headers()
+            try:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "public, max-age=300")
+                self.end_headers()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
             return
 
         ctype, _ = mimetypes.guess_type(str(file_path))
@@ -974,23 +982,65 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             else:
                 ctype = "application/octet-stream"
 
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(stat.st_size))
-        self.send_header("ETag", etag)
-        if cacheable:
-            self.send_header("Cache-Control", "public, max-age=300")
-        else:
-            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-        self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
-        self.end_headers()
-        if self.command != "HEAD":
-            with file_path.open("rb") as f:
-                while True:
-                    chunk = f.read(65536)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
+        range_hdr = (self.headers.get("Range") or "").strip()
+        start_byte = 0
+        end_byte = max(0, file_size - 1)
+        is_partial = False
+
+        if range_hdr.startswith("bytes=") and file_size > 0:
+            spec = range_hdr[len("bytes="):].split(",", 1)[0].strip()
+            if "-" in spec:
+                s_part, e_part = spec.split("-", 1)
+                try:
+                    if s_part == "":
+                        suffix_len = int(e_part)
+                        if suffix_len > 0:
+                            start_byte = max(0, file_size - suffix_len)
+                            end_byte = file_size - 1
+                            is_partial = True
+                    else:
+                        start_byte = int(s_part)
+                        end_byte = int(e_part) if e_part else (file_size - 1)
+                        end_byte = min(end_byte, file_size - 1)
+                        if 0 <= start_byte <= end_byte < file_size:
+                            is_partial = True
+                        else:
+                            self.send_response(416)
+                            self.send_header("Content-Range", f"bytes */{file_size}")
+                            self.send_header("Content-Length", "0")
+                            self.end_headers()
+                            return
+                except ValueError:
+                    is_partial = False
+
+        content_len = (end_byte - start_byte + 1) if (is_partial or file_size > 0) else 0
+        try:
+            self.send_response(206 if is_partial else 200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Accept-Ranges", "bytes")
+            if is_partial:
+                self.send_header("Content-Range", f"bytes {start_byte}-{end_byte}/{file_size}")
+            self.send_header("Content-Length", str(content_len))
+            self.send_header("ETag", etag)
+            if cacheable:
+                self.send_header("Cache-Control", "public, max-age=300")
+            else:
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Last-Modified", self.date_time_string(stat.st_mtime))
+            self.end_headers()
+            if self.command != "HEAD" and content_len > 0:
+                with file_path.open("rb") as f:
+                    if start_byte > 0:
+                        f.seek(start_byte)
+                    remaining = content_len
+                    while remaining > 0:
+                        chunk = f.read(min(65536, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def _read_chunked_body(self, max_bytes: int) -> bytes:
         chunks = []
@@ -1218,6 +1268,8 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             self._handle_post()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
         except PayloadTooLargeError as e:
             self._send_json({"status": "error", "error": str(e)}, status=413)
         except QueueFullError as e:
