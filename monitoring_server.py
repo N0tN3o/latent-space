@@ -708,6 +708,7 @@ def api_get_status() -> dict:
         "attributions": {
             "enabled": settings.get("attributions", {}).get("enabled", False),
             "show_logo": settings.get("attributions", {}).get("show_logo", True),
+            "veszprem_vibe_enabled": settings.get("attributions", {}).get("veszprem_vibe", {}).get("enabled", False),
         },
         "statistics": {
             "prints_today": today_files,
@@ -1001,13 +1002,13 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             ctype = "text/javascript; charset=utf-8"
         elif suffix == ".wasm":
             ctype = "application/wasm"
+        elif suffix == ".svg":
+            ctype = "image/svg+xml"
         else:
             ctype, _ = mimetypes.guess_type(str(file_path))
             if not ctype:
                 if suffix == ".otf":
                     ctype = "font/otf"
-                elif suffix == ".svg":
-                    ctype = "image/svg+xml"
                 else:
                     ctype = "application/octet-stream"
 
@@ -1169,7 +1170,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             return self._send_file(config_manager.WEB_UI_DIR / "draw.html")
         if path in ("/kiosk", "/kiosk.html"):
             return self._send_file(config_manager.WEB_UI_DIR / "kiosk.html")
-        if path == "/kasboek-logo.jpg":
+        if path in ("/kasboek-logo.jpg", "/assets/kasboek/kasboek-logo.jpg"):
             is_preview = (query.get("preview") or [""])[0] == "1"
             attr_cfg = load_settings().get("attributions", {})
             if not is_preview and not (attr_cfg.get("enabled", False) and attr_cfg.get("show_logo", True)):
@@ -1177,9 +1178,23 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 return
-            return self._send_file(PROJECT_DIR / "kasboek-logo.jpg", cacheable=True)
+            kasboek_logo = PROJECT_DIR / "assets" / "kasboek" / "kasboek-logo.jpg"
+            if not kasboek_logo.exists():
+                kasboek_logo = PROJECT_DIR / "kasboek-logo.jpg"
+            return self._send_file(kasboek_logo, cacheable=True)
         if path == "/korolev-medium.otf":
             return self._send_file(PROJECT_DIR / "korolev-medium.otf", cacheable=True)
+
+        if path.startswith("/assets/"):
+            rel = path[len("/assets/"):]
+            rel_parts = Path(rel).parts
+            assets_root = (PROJECT_DIR / "assets").resolve()
+            if not rel or any(part.startswith(".") for part in rel_parts):
+                return self._send_text("Forbidden", status=403)
+            target = (assets_root / rel).resolve()
+            if not target.is_relative_to(assets_root):
+                return self._send_text("Forbidden", status=403)
+            return self._send_file(target, cacheable=True)
 
         if path.startswith("/vendor/"):
             rel = path[len("/vendor/"):]

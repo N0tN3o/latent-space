@@ -51,7 +51,7 @@
   "attributions": {
     "enabled": false,
     "show_logo": true,
-    "logo_path": "/kasboek-logo.jpg",
+    "logo_path": "/assets/kasboek/kasboek-logo.jpg",
     "company_name": "Kasboek",
     "intro_text": "Made possible by Kasboek.",
     "learn_more_text": "To learn more, visit",
@@ -74,7 +74,22 @@
         "url": "https://www.linkedin.com/"
       }
     ],
-    "custom_footer_note": ""
+    "custom_footer_note": "",
+    "veszprem_vibe": {
+      "enabled": false,
+      "show_logo": true,
+      "logo_path": "/assets/veszprem-vibe/vv-skyline-on-paper.svg",
+      "community_name": "Veszprém Vibe",
+      "intro_text": "Created for the Veszprém Vibe community.",
+      "learn_more_text": "Connect with us:",
+      "website_label": "veszpremvibe.hu",
+      "website_url": "https://veszpremvibe.hu",
+      "linkedin_label": "LinkedIn",
+      "linkedin_url": "",
+      "facebook_label": "Facebook",
+      "facebook_url": "",
+      "custom_note": ""
+    }
   },
   "server": {
     "host": "0.0.0.0",

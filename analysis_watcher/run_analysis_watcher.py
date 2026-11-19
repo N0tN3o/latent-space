@@ -29,7 +29,6 @@ from config_manager import (
     atomic_write_bytes,
     atomic_write_text,
     ensure_directories,
-    get_public_base_url,
     get_server_port,
     load_env_vars,
     load_settings,
@@ -42,7 +41,6 @@ from analysis import analyze_drawing
 from chat import AIGenerationError, LLMModel
 from heatmap import draw_heatmap
 from preprocess_image import DrawingValidationError, preprocess_image
-from qr_utils import generate_qr_matrix
 
 ensure_directories()
 
@@ -209,11 +207,13 @@ def _wrap_preserving_lines(text: str, width: int) -> str:
 
 def _resolve_local_logo_path(logo_path: str) -> Path:
     """Resolve an attribution logo path safely within PROJECT_DIR or SHARED_DIR."""
-    default_logo = PROJECT_ROOT / "kasboek-logo.jpg"
+    default_logo = PROJECT_ROOT / "assets" / "kasboek" / "kasboek-logo.jpg"
     raw = (logo_path or "").strip()
     if not raw or raw.startswith(("http://", "https://")):
         return default_logo
     rel = raw.lstrip("/")
+    if rel == "kasboek-logo.jpg" and default_logo.is_file():
+        return default_logo
     for base in (PROJECT_ROOT, config_manager.SHARED_DIR):
         candidate = (base / rel).resolve()
         if candidate.is_relative_to(base.resolve()) and candidate.is_file():
@@ -264,14 +264,34 @@ def _fit_text_block(
     return wrapped, fontsize
 
 
-def _get_qr_base_url(settings: dict) -> str:
-    return get_public_base_url(settings)
+def _count_pdf_pages(pdf_file: Path) -> int:
+    """Return the number of pages in a generated PDF (using PyMuPDF if available)."""
+    try:
+        try:
+            import pymupdf as fitz_mod
+        except ImportError:
+            import fitz as fitz_mod
+        if hasattr(fitz_mod, "open"):
+            doc = fitz_mod.open(str(pdf_file))
+            try:
+                return len(doc)
+            finally:
+                doc.close()
+    except Exception:
+        pass
+    try:
+        import re
+        raw = pdf_file.read_bytes()
+        # Count individual page dictionaries (/Type /Page, excluding /Type /Pages)
+        return len(re.findall(rb"/Type\s*/Page\b(?!s)", raw)) or 1
+    except Exception:
+        return 1
 
 
 def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> str:
     """
     Fallback PDF renderer using thread-safe Matplotlib Figure API if Playwright/Chrome is unavailable.
-    Honors paper_format, logo_path, timestamp, custom_footer_note, renders QR code, and avoids overlaps.
+    Honors paper_format, logo_path, timestamp, custom_footer_note, strictly single-page, no QR code.
     """
     from matplotlib.backends.backend_pdf import FigureCanvasPdf
     from matplotlib.figure import Figure
@@ -352,7 +372,7 @@ def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> 
         ha="left", va="top", fontsize=poem_fs, linespacing=1.45, style="italic", color="#2a2a2a",
     )
 
-    # 4. Heatmap & QR Code below poem (y=0.12..0.24)
+    # 4. Heatmap below poem (y=0.12..0.24); QR code is intentionally omitted from printed PDFs
     heatmap_file = config_manager.SHARED_DIR / website_data.get("heatmapPath", "heatmap.png")
     if heatmap_file.exists():
         hm = cv2.imread(str(heatmap_file), cv2.IMREAD_GRAYSCALE)
@@ -362,58 +382,110 @@ def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> 
             ax_hm.imshow(hm, cmap="gray", vmin=0, vmax=255)
             ax_hm.axis("off")
 
-    pdf_rel = website_data.get("printPDF") or f"docs/{pdf_path.name}"
-    qr_target = f"{_get_qr_base_url(settings)}/shared_output/{pdf_rel.lstrip('/')}"
-    try:
-        qr_mat = generate_qr_matrix(qr_target, quiet=2)
-        import numpy as np
-        qr_img = np.where(np.array(qr_mat, dtype=bool), 0, 255).astype(np.uint8)
-        ax_qr = fig.add_axes([0.75, 0.13, 0.13, 0.098])
-        ax_qr.imshow(qr_img, cmap="gray", interpolation="nearest", vmin=0, vmax=255)
-        ax_qr.axis("off")
-        fig.text(0.815, 0.118, "Scan for digital print", ha="center", va="top", fontsize=6.5, color="#666666")
-    except Exception:
-        pass
-
-    # 5. Attribution footer if enabled (text shifted right when logo is visible so they never overlap)
+    # 5. Attribution footer if enabled (supports Veszprém Vibe and/or Kasboek without overlaps)
     attr = settings.get("attributions", {})
-    if attr.get("enabled"):
-        logo_shown = False
-        if attr.get("show_logo", True):
-            logo_file = _resolve_local_logo_path(attr.get("logo_path", "/kasboek-logo.jpg"))
-            if logo_file.exists():
-                try:
-                    logo_bgr = cv2.imread(str(logo_file))
-                    if logo_bgr is not None:
-                        logo_rgb = cv2.cvtColor(logo_bgr, cv2.COLOR_BGR2RGB)
-                        ax_logo = fig.add_axes([0.07, 0.036, 0.10, 0.045])
-                        ax_logo.imshow(logo_rgb)
-                        ax_logo.axis("off")
-                        logo_shown = True
-                except Exception:
-                    pass
+    vv_attr = attr.get("veszprem_vibe") if isinstance(attr.get("veszprem_vibe"), dict) else {}
+    kasboek_on = bool(attr.get("enabled"))
+    vv_on = bool(vv_attr.get("enabled"))
 
-        founders_str = ", ".join(
-            f"{f.get('name')} ({f.get('url')})" if f.get("url") else f"{f.get('name')}"
-            for f in attr.get("founders", [])
-            if f.get("name")
-        )
-        intro_str = (attr.get("intro_text") or "Made possible by Kasboek.").strip()
-        url_parts = [u.strip() for u in (attr.get("website_url") or "", attr.get("company_linkedin_url") or "") if u and u.strip()]
-        if url_parts:
-            learn_more = (attr.get("learn_more_text") or "To learn more, visit").strip()
-            attr_line = f"{intro_str} {learn_more} {' | '.join(url_parts)}".strip()
+    if kasboek_on or vv_on:
+        logo_shown_left = False
+        logo_shown_right = False
+        footer_parts = []
+
+        if vv_on:
+            if vv_attr.get("show_logo", True):
+                vv_logo_raw = str(vv_attr.get("logo_path") or "/assets/veszprem-vibe/vv-skyline-on-paper.svg").strip()
+                vv_logo_file = _resolve_local_logo_path(vv_logo_raw) if not vv_logo_raw.lower().endswith(".svg") else None
+                drawn_vv_raster = False
+                if vv_logo_file and vv_logo_file.exists() and vv_logo_file.suffix.lower() != ".svg":
+                    try:
+                        vv_bgr = cv2.imread(str(vv_logo_file))
+                        if vv_bgr is not None:
+                            ax_vv = fig.add_axes([0.07, 0.036, 0.09, 0.045])
+                            ax_vv.imshow(cv2.cvtColor(vv_bgr, cv2.COLOR_BGR2RGB))
+                            ax_vv.axis("off")
+                            logo_shown_left = True
+                            drawn_vv_raster = True
+                    except Exception:
+                        pass
+                if not drawn_vv_raster:
+                    # Crisp vector VV monogram mark matching vv-mark.svg for Matplotlib PDF fallback
+                    ax_vv = fig.add_axes([0.07, 0.038, 0.055, 0.042])
+                    ax_vv.plot([14, 50, 86], [22, 80, 22], color="#1A2638", linewidth=2.6, solid_joinstyle="miter")
+                    ax_vv.plot([32, 50, 68], [22, 50, 22], color="#E6995A", linewidth=2.0, solid_joinstyle="miter")
+                    ax_vv.set_xlim(0, 100)
+                    ax_vv.set_ylim(100, 0)
+                    ax_vv.set_aspect("equal")
+                    ax_vv.axis("off")
+                    logo_shown_left = True
+
+            vv_intro = (vv_attr.get("intro_text") or "Created for the Veszprém Vibe community.").strip()
+            vv_urls = [
+                u.strip()
+                for u in (
+                    vv_attr.get("website_url") or "",
+                    vv_attr.get("linkedin_url") or "",
+                    vv_attr.get("facebook_url") or "",
+                )
+                if u and u.strip()
+            ]
+            if vv_urls:
+                vv_prefix = (vv_attr.get("learn_more_text") or "Connect with us:").strip()
+                vv_line = f"{vv_intro} {vv_prefix} {' | '.join(vv_urls)}".strip()
+            else:
+                vv_line = vv_intro
+            if vv_attr.get("custom_note") and str(vv_attr["custom_note"]).strip():
+                vv_line += f" — {str(vv_attr['custom_note']).strip()}"
+            footer_parts.append(vv_line)
+
+        if kasboek_on:
+            if attr.get("show_logo", True):
+                logo_file = _resolve_local_logo_path(attr.get("logo_path", "/assets/kasboek/kasboek-logo.jpg"))
+                if logo_file.exists():
+                    try:
+                        logo_bgr = cv2.imread(str(logo_file))
+                        if logo_bgr is not None:
+                            logo_rgb = cv2.cvtColor(logo_bgr, cv2.COLOR_BGR2RGB)
+                            if logo_shown_left:
+                                ax_logo = fig.add_axes([0.84, 0.036, 0.09, 0.045])
+                                logo_shown_right = True
+                            else:
+                                ax_logo = fig.add_axes([0.07, 0.036, 0.10, 0.045])
+                                logo_shown_left = True
+                            ax_logo.imshow(logo_rgb)
+                            ax_logo.axis("off")
+                    except Exception:
+                        pass
+
+            founders_str = ", ".join(
+                f"{f.get('name')} ({f.get('url')})" if f.get("url") else f"{f.get('name')}"
+                for f in attr.get("founders", [])
+                if f.get("name")
+            )
+            intro_str = (attr.get("intro_text") or "Made possible by Kasboek.").strip()
+            url_parts = [u.strip() for u in (attr.get("website_url") or "", attr.get("company_linkedin_url") or "") if u and u.strip()]
+            if url_parts:
+                learn_more = (attr.get("learn_more_text") or "To learn more, visit").strip()
+                attr_line = f"{intro_str} {learn_more} {' | '.join(url_parts)}".strip()
+            else:
+                attr_line = intro_str
+            if founders_str:
+                attr_line += f"\n{attr.get('thanks_text', 'Thank you for letting us use this:')} {founders_str}"
+            if attr.get("custom_footer_note") and str(attr.get("custom_footer_note")).strip():
+                attr_line += f"\n{str(attr['custom_footer_note']).strip()}"
+            footer_parts.append(attr_line)
+
+        combined_footer = "\n".join(footer_parts)
+        if logo_shown_left and logo_shown_right:
+            text_x, wrap_w = 0.50, 68
+        elif logo_shown_left:
+            text_x, wrap_w = 0.55, 74
         else:
-            attr_line = intro_str
-        if founders_str:
-            attr_line += f"\n{attr.get('thanks_text', 'Thank you for letting us use this:')} {founders_str}"
-        if attr.get("custom_footer_note") and str(attr.get("custom_footer_note")).strip():
-            attr_line += f"\n{str(attr['custom_footer_note']).strip()}"
-
-        text_x = 0.56 if logo_shown else 0.5
-        wrap_w = 72 if logo_shown else 92
-        attr_wrapped = _wrap_preserving_lines(attr_line, width=wrap_w)
-        fig.text(text_x, 0.058, attr_wrapped, ha="center", va="center", fontsize=6.2, color="#444444")
+            text_x, wrap_w = 0.50, 92
+        fs_footer = 5.6 if (kasboek_on and vv_on) else 6.2
+        attr_wrapped = _wrap_preserving_lines(combined_footer, width=wrap_w)
+        fig.text(text_x, 0.058, attr_wrapped, ha="center", va="center", fontsize=fs_footer, color="#444444")
 
     ts_str = _format_pdf_timestamp(website_data.get("timestamp"))
     fig.text(0.5, 0.018, ts_str, ha="center", va="center", fontsize=7.5, style="italic", color="#666666")
@@ -472,7 +544,10 @@ def save_print_pdf(url=None, out_dir=None, website_data=None, run_id=None):
                 else p.chromium.launch(headless=True)
             )
             try:
-                page = browser.new_page()
+                paper_w_in, paper_h_in = PAPER_SIZES_INCHES.get(paper_format, PAPER_SIZES_INCHES["A4"])
+                printable_w_px = max(360, int(round((paper_w_in - (24.0 / 25.4)) * 96.0)))
+                printable_h_px = max(480, int(round((paper_h_in - (20.0 / 25.4)) * 96.0)))
+                page = browser.new_page(viewport={"width": printable_w_px, "height": printable_h_px})
                 page.goto(url, wait_until="networkidle", timeout=15000)
                 try:
                     page.wait_for_function(
@@ -488,14 +563,35 @@ def save_print_pdf(url=None, out_dir=None, website_data=None, run_id=None):
                     )
                 except Exception:
                     pass
+                page.emulate_media(media="print")
+                try:
+                    content_h = page.evaluate(
+                        """() => {
+                            const el = document.querySelector('.container') || document.body;
+                            return Math.ceil(el.getBoundingClientRect().height);
+                        }"""
+                    )
+                except Exception:
+                    content_h = 0
+
+                scale = 1.0
+                safe_h = printable_h_px - 16
+                if content_h and content_h > safe_h:
+                    scale = max(0.5, min(1.0, round(safe_h / float(content_h), 3)))
+
                 tmp_pdf = pdf_path.with_name(f".tmp_{os.getpid()}_{threading.get_ident()}_{pdf_path.name}")
                 try:
-                    page.pdf(
-                        path=str(tmp_pdf),
-                        format=paper_format,
-                        print_background=True,
-                        margin={"top": "0cm", "right": "0cm", "bottom": "0cm", "left": "0cm"},
-                    )
+                    for _attempt in range(4):
+                        page.pdf(
+                            path=str(tmp_pdf),
+                            format=paper_format,
+                            scale=scale,
+                            print_background=True,
+                            margin={"top": "0cm", "right": "0cm", "bottom": "0cm", "left": "0cm"},
+                        )
+                        if _count_pdf_pages(tmp_pdf) <= 1 or scale <= 0.5:
+                            break
+                        scale = max(0.5, round(scale * 0.92, 3))
                     os.replace(str(tmp_pdf), str(pdf_path))
                 finally:
                     if tmp_pdf.exists():

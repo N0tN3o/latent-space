@@ -158,14 +158,28 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
         settings["printing"]["paper_format"] = "Letter"
         settings["attributions"]["enabled"] = True
         settings["attributions"]["custom_footer_note"] = "Exhibition Archive Note"
+        settings["attributions"]["veszprem_vibe"]["enabled"] = True
+        settings["attributions"]["veszprem_vibe"]["linkedin_url"] = "https://www.linkedin.com/company/veszprem-vibe"
+        settings["attributions"]["veszprem_vibe"]["facebook_url"] = "https://www.facebook.com/veszpremvibe"
 
         res_path = run_analysis_watcher._render_pdf_fallback(pdf_out, website_data, settings)
         self.assertEqual(res_path, str(pdf_out))
         self.assertTrue(pdf_out.exists())
         self.assertTrue(pdf_out.read_bytes().startswith(b"%PDF-"))
+        self.assertEqual(run_analysis_watcher._count_pdf_pages(pdf_out), 1)
+        self.assertNotIn(b"Scan for digital print", pdf_out.read_bytes())
 
         wrapped = run_analysis_watcher._wrap_preserving_lines(website_data["psychoanalysis"], width=48)
         self.assertTrue(all(len(line) <= 48 for line in wrapped.splitlines()))
+
+    def test_print_layout_omits_qr_and_keeps_two_columns_for_single_page_pdf(self):
+        html = (PROJECT_ROOT / "index.html").read_text(encoding="utf-8")
+        # Responsive collapse must be screen-only so A4 printing (794px wide) keeps the 2-column layout
+        self.assertIn("@media screen and (max-width: 1024px)", html)
+        self.assertNotIn("@media (max-width: 1024px)", html)
+        # QR code must be hidden in print CSS and skipped during Playwright print_render=1
+        self.assertIn("audio, .floating-nav, .qr-card { display: none !important; }", html)
+        self.assertIn("if (isPrintRender || !targetPath)", html)
 
     def test_qr_utils_decodes_with_opencv(self):
         det = cv2.QRCodeDetector()

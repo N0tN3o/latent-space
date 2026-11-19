@@ -140,7 +140,7 @@ DEFAULT_SETTINGS = {
     "attributions": {
         "enabled": False,
         "show_logo": True,
-        "logo_path": "/kasboek-logo.jpg",
+        "logo_path": "/assets/kasboek/kasboek-logo.jpg",
         "company_name": "Kasboek",
         "intro_text": "Made possible by Kasboek.",
         "learn_more_text": "To learn more, visit",
@@ -155,6 +155,21 @@ DEFAULT_SETTINGS = {
             {"name": "Co-Founder 3", "url": "https://www.linkedin.com/"},
         ],
         "custom_footer_note": "",
+        "veszprem_vibe": {
+            "enabled": False,
+            "show_logo": True,
+            "logo_path": "/assets/veszprem-vibe/vv-skyline-on-paper.svg",
+            "community_name": "Veszprém Vibe",
+            "intro_text": "Created for the Veszprém Vibe community.",
+            "learn_more_text": "Connect with us:",
+            "website_label": "veszpremvibe.hu",
+            "website_url": "https://veszpremvibe.hu",
+            "linkedin_label": "LinkedIn",
+            "linkedin_url": "",
+            "facebook_label": "Facebook",
+            "facebook_url": "",
+            "custom_note": "",
+        },
     },
     "server": {
         "host": "0.0.0.0",
@@ -480,6 +495,31 @@ def validate_attributions_data(data: dict) -> dict:
                 "url": validate_safe_url(f.get("url", ""), f"founders[{idx}].url", allow_relative=False),
             })
         cleaned["founders"] = safe_founders
+    if "veszprem_vibe" in cleaned:
+        vv = cleaned["veszprem_vibe"]
+        if not isinstance(vv, dict):
+            raise ValueError("attributions.veszprem_vibe must be an object")
+        vv_clean = deepcopy(vv)
+        for bool_field in ("enabled", "show_logo"):
+            if bool_field in vv_clean and not isinstance(vv_clean[bool_field], bool):
+                vv_clean[bool_field] = bool(vv_clean[bool_field])
+        for str_field in (
+            "community_name", "intro_text", "learn_more_text",
+            "website_label", "linkedin_label", "facebook_label", "custom_note",
+        ):
+            if str_field in vv_clean:
+                if vv_clean[str_field] is None:
+                    vv_clean[str_field] = ""
+                elif not isinstance(vv_clean[str_field], str):
+                    raise ValueError(f"attributions.veszprem_vibe.{str_field} must be a string")
+                else:
+                    vv_clean[str_field] = vv_clean[str_field][:500]
+        if "logo_path" in vv_clean:
+            vv_clean["logo_path"] = validate_safe_url(vv_clean["logo_path"], "veszprem_vibe.logo_path", allow_relative=True)
+        for url_field in ("website_url", "linkedin_url", "facebook_url"):
+            if url_field in vv_clean:
+                vv_clean[url_field] = validate_safe_url(vv_clean[url_field], f"veszprem_vibe.{url_field}", allow_relative=False)
+        cleaned["veszprem_vibe"] = vv_clean
     return cleaned
 
 

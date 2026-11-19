@@ -190,7 +190,7 @@
     <ul class="nav nav-tabs mb-0" id="adminTabs">
         <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-monitor">Monitor</a></li>
         <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-ai">AI &amp; Vision</a></li>
-        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-attributions">Attributions (Kasboek)</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-attributions">Attributions</a></li>
         <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-files">Prints &amp; Auto-Print</a></li>
         <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-logs">Logs</a></li>
     </ul>
@@ -235,8 +235,8 @@
                     </div>
                     <div class="col-6 col-md-3">
                         <div class="metric-box">
-                            <div class="metric-lbl">Kasboek Attribution</div>
-                            <div class="metric-val" id="kpiAttribution">OFF</div>
+                            <div class="metric-lbl">Attributions</div>
+                            <div class="metric-val fs-5" id="kpiAttribution">OFF</div>
                             <div class="small text-muted">Switch in Attributions tab</div>
                         </div>
                     </div>
@@ -527,9 +527,9 @@
             <div class="tab-pane fade" id="tab-attributions">
                 <div class="d-flex justify-content-between align-items-center mb-3">
                     <div>
-                        <h5 class="mb-1">Kasboek Attributions &amp; Branding Switch</h5>
+                        <h5 class="mb-1">Attributions &amp; Community Branding</h5>
                         <p class="text-muted small mb-0">
-                            Toggle whether the Kasboek logo and attribution credits are shown on the Gallery, Print Kiosk, and PDF prints.
+                            Independently toggle Veszprém Vibe and/or Kasboek logos and attribution links on the Gallery, Print Kiosk, and PDF prints.
                         </p>
                     </div>
                     <button class="btn btn-success" onclick="saveAttributions()">Save Attribution Settings</button>
@@ -537,11 +537,101 @@
 
                 <div class="row g-4">
                     <div class="col-lg-7">
+                        <!-- VESZPRÉM VIBE COMMUNITY CARD -->
+                        <div class="p-3 rounded border border-secondary mb-4" style="background: #171c27;">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <div class="form-check form-switch mb-0">
+                                    <input class="form-check-input" type="checkbox" id="vvEnabled" onchange="updateAttrPreview()" style="transform: scale(1.3); margin-right: 12px;">
+                                    <label class="form-check-label fw-bold" for="vvEnabled">
+                                        Enable Veszprém Vibe Attribution
+                                    </label>
+                                </div>
+                                <span class="badge bg-info text-dark">Community</span>
+                            </div>
+
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="vvShowLogo" onchange="updateAttrPreview()" checked>
+                                <label class="form-check-label text-muted" for="vvShowLogo">
+                                    Display Veszprém Vibe SVG Logo alongside attribution text
+                                </label>
+                            </div>
+
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-6">
+                                    <label class="form-label small text-muted mb-1">Logo Variant Preset</label>
+                                    <select class="form-select form-select-sm" id="vvLogoPreset" onchange="applyVvLogoPreset()">
+                                        <option value="/assets/veszprem-vibe/vv-skyline-on-paper.svg">Skyline (Paper + Amber Accent)</option>
+                                        <option value="/assets/veszprem-vibe/vv-skyline-solid-navy.svg">Skyline (Solid Navy)</option>
+                                        <option value="/assets/veszprem-vibe/vv-mark.svg">VV Mark (Color Accent)</option>
+                                        <option value="/assets/veszprem-vibe/vv-mark-mono.svg">VV Mark (Monochrome)</option>
+                                        <option value="/assets/veszprem-vibe/vv-skyline-on-paper-animated.svg">Skyline (Animated on Paper)</option>
+                                        <option value="/assets/veszprem-vibe/vv-skyline-on-navy.svg">Skyline (Light for Dark BG)</option>
+                                        <option value="/assets/veszprem-vibe/vv-skyline.svg">Skyline (CurrentColor)</option>
+                                        <option value="custom">Custom Path / URL...</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small text-muted mb-1">Logo Path / URL</label>
+                                    <input type="text" class="form-control form-control-sm" id="vvLogoPath" value="/assets/veszprem-vibe/vv-skyline-on-paper.svg" oninput="syncVvLogoPreset(); updateAttrPreview()">
+                                </div>
+                            </div>
+
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-7">
+                                    <label class="form-label small">Intro Text</label>
+                                    <input type="text" class="form-control form-control-sm" id="vvIntro" value="Created for the Veszprém Vibe community." oninput="updateAttrPreview()">
+                                </div>
+                                <div class="col-md-5">
+                                    <label class="form-label small">Link Prefix</label>
+                                    <input type="text" class="form-control form-control-sm" id="vvLearnMore" value="Connect with us:" oninput="updateAttrPreview()">
+                                </div>
+                            </div>
+
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-5">
+                                    <label class="form-label small">Website Label</label>
+                                    <input type="text" class="form-control form-control-sm" id="vvWebLabel" value="veszpremvibe.hu" oninput="updateAttrPreview()">
+                                </div>
+                                <div class="col-md-7">
+                                    <label class="form-label small">Website URL</label>
+                                    <input type="url" class="form-control form-control-sm" id="vvWebUrl" value="https://veszpremvibe.hu" placeholder="https://veszpremvibe.hu" oninput="updateAttrPreview()">
+                                </div>
+                            </div>
+
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-5">
+                                    <label class="form-label small">LinkedIn Label</label>
+                                    <input type="text" class="form-control form-control-sm" id="vvLiLabel" value="LinkedIn" oninput="updateAttrPreview()">
+                                </div>
+                                <div class="col-md-7">
+                                    <label class="form-label small">LinkedIn URL</label>
+                                    <input type="url" class="form-control form-control-sm" id="vvLiUrl" placeholder="https://www.linkedin.com/company/..." oninput="updateAttrPreview()">
+                                </div>
+                            </div>
+
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-5">
+                                    <label class="form-label small">Facebook Label</label>
+                                    <input type="text" class="form-control form-control-sm" id="vvFbLabel" value="Facebook" oninput="updateAttrPreview()">
+                                </div>
+                                <div class="col-md-7">
+                                    <label class="form-label small">Facebook URL</label>
+                                    <input type="url" class="form-control form-control-sm" id="vvFbUrl" placeholder="https://www.facebook.com/..." oninput="updateAttrPreview()">
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="form-label small">Custom Note (Optional)</label>
+                                <input type="text" class="form-control form-control-sm" id="vvCustomNote" placeholder="e.g. Veszprém Vibe Build Day" oninput="updateAttrPreview()">
+                            </div>
+                        </div>
+
+                        <!-- KASBOEK PARTNER CARD -->
                         <div class="p-3 rounded border border-secondary mb-3" style="background: #1d222e;">
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" id="attrEnabled" onchange="updateAttrPreview()" style="transform: scale(1.3); margin-right: 12px;">
                                 <label class="form-check-label fw-bold" for="attrEnabled">
-                                    Enable Kasboek Attributions (Master Switch)
+                                    Enable Kasboek Attributions
                                 </label>
                             </div>
                             <div class="form-check form-switch mb-2">
@@ -552,7 +642,7 @@
                             </div>
                             <div>
                                 <label class="form-label small text-muted mb-1">Logo Path / URL</label>
-                                <input type="text" class="form-control form-control-sm" id="attrLogoPath" value="/kasboek-logo.jpg" oninput="updateAttrPreview()">
+                                <input type="text" class="form-control form-control-sm" id="attrLogoPath" value="/assets/kasboek/kasboek-logo.jpg" oninput="updateAttrPreview()">
                             </div>
                         </div>
 
@@ -842,10 +932,22 @@
             document.getElementById('kpiPrints').textContent = `${stats.prints_today || 0} / ${stats.total_prints || 0}`;
             document.getElementById('kpiAutoPrint').textContent = `Auto-Print: ${(data.printing && data.printing.auto_print) ? 'ON' : 'OFF'}`;
 
-            const attrOn = data.attributions && data.attributions.enabled;
+            const kasOn = !!(data.attributions && data.attributions.enabled);
+            const vvOn = !!(data.attributions && data.attributions.veszprem_vibe_enabled);
             const attrEl = document.getElementById('kpiAttribution');
-            attrEl.textContent = attrOn ? 'ON (Active)' : 'OFF (Hidden)';
-            attrEl.style.color = attrOn ? '#10b981' : '#9ca3af';
+            if (kasOn && vvOn) {
+                attrEl.textContent = 'Kasboek + Veszprém Vibe';
+                attrEl.style.color = '#10b981';
+            } else if (vvOn) {
+                attrEl.textContent = 'Veszprém Vibe';
+                attrEl.style.color = '#10b981';
+            } else if (kasOn) {
+                attrEl.textContent = 'Kasboek';
+                attrEl.style.color = '#10b981';
+            } else {
+                attrEl.textContent = 'OFF (Hidden)';
+                attrEl.style.color = '#9ca3af';
+            }
 
             let servicesHtml = '';
             for (const [svc, state] of Object.entries(data.services || {})) {
@@ -1203,11 +1305,26 @@
     }
 
     // --- 3. ATTRIBUTIONS ---
+    function applyVvLogoPreset() {
+        const sel = document.getElementById('vvLogoPreset');
+        if (sel.value && sel.value !== 'custom') {
+            document.getElementById('vvLogoPath').value = sel.value;
+            updateAttrPreview();
+        }
+    }
+
+    function syncVvLogoPreset() {
+        const sel = document.getElementById('vvLogoPreset');
+        const val = document.getElementById('vvLogoPath').value.trim();
+        const hasOption = Array.from(sel.options).some(opt => opt.value === val);
+        sel.value = hasOption ? val : 'custom';
+    }
+
     function gatherAttrForm() {
         return {
             enabled: document.getElementById('attrEnabled').checked,
             show_logo: document.getElementById('attrShowLogo').checked,
-            logo_path: document.getElementById('attrLogoPath').value.trim() || '/kasboek-logo.jpg',
+            logo_path: document.getElementById('attrLogoPath').value.trim() || '/assets/kasboek/kasboek-logo.jpg',
             intro_text: document.getElementById('attrIntro').value,
             learn_more_text: document.getElementById('attrLearnMore').value,
             website_label: document.getElementById('attrWebLabel').value,
@@ -1220,42 +1337,81 @@
                 { name: document.getElementById('founder2Name').value, url: document.getElementById('founder2Url').value },
                 { name: document.getElementById('founder3Name').value, url: document.getElementById('founder3Url').value }
             ],
-            custom_footer_note: document.getElementById('attrCustomNote').value
+            custom_footer_note: document.getElementById('attrCustomNote').value,
+            veszprem_vibe: {
+                enabled: document.getElementById('vvEnabled').checked,
+                show_logo: document.getElementById('vvShowLogo').checked,
+                logo_path: document.getElementById('vvLogoPath').value.trim() || '/assets/veszprem-vibe/vv-skyline-on-paper.svg',
+                community_name: 'Veszprém Vibe',
+                intro_text: document.getElementById('vvIntro').value,
+                learn_more_text: document.getElementById('vvLearnMore').value,
+                website_label: document.getElementById('vvWebLabel').value,
+                website_url: document.getElementById('vvWebUrl').value.trim(),
+                linkedin_label: document.getElementById('vvLiLabel').value,
+                linkedin_url: document.getElementById('vvLiUrl').value.trim(),
+                facebook_label: document.getElementById('vvFbLabel').value,
+                facebook_url: document.getElementById('vvFbUrl').value.trim(),
+                custom_note: document.getElementById('vvCustomNote').value
+            }
         };
     }
 
     function updateAttrPreview() {
         const attr = gatherAttrForm();
+        const vv = attr.veszprem_vibe || {};
         const box = document.getElementById('attrLivePreview');
-        if (!attr.enabled) {
-            box.innerHTML = `<div class="text-secondary py-4"><em>Attribution Switch is <strong>OFF</strong>.<br>No Kasboek logo or attribution text will be shown on the Gallery or Prints.</em></div>`;
+        if (!attr.enabled && !vv.enabled) {
+            box.innerHTML = `<div class="text-secondary py-4"><em>Both Attribution Switches are <strong>OFF</strong>.<br>No logos or attribution text will be shown on the Gallery or Prints.</em></div>`;
             return;
         }
 
-        let links = [];
-        if (attr.website_url) links.push(`<a href="${safeUrl(attr.website_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(attr.website_label || 'Website')}</a>`);
-        if (attr.company_linkedin_url) links.push(`<a href="${safeUrl(attr.company_linkedin_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(attr.company_linkedin_label || 'LinkedIn')}</a>`);
+        let blocks = [];
 
-        let founders = attr.founders
-            .filter(f => f.name && f.name.trim())
-            .map(f => f.url ? `<a href="${safeUrl(f.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(f.name.trim())}</a>` : `<span>${escapeHtml(f.name.trim())}</span>`);
-
-        const previewLogo = safeUrl(attr.logo_path || '/kasboek-logo.jpg');
-        const isDefaultLogo = /^\/kasboek-logo\.jpg(\?.*)?$/i.test(previewLogo);
-        const previewLogoSrc = isDefaultLogo
-            ? (previewLogo.includes('?') ? `${previewLogo}&preview=1` : `${previewLogo}?preview=1`)
-            : previewLogo;
-
-        box.innerHTML = `
-            <div class="d-flex flex-column align-items-center gap-2">
-                ${attr.show_logo ? `<img src="${previewLogoSrc}" alt="Attribution Logo" style="max-width: 110px; height: auto;">` : ''}
-                <div style="font-size: 0.88rem;">
-                    <div><strong>${escapeHtml(attr.intro_text)}</strong> ${links.length ? `${escapeHtml(attr.learn_more_text)} ${links.join(' &middot; ')}.` : ''}</div>
-                    ${founders.length ? `<div class="mt-1">${escapeHtml(attr.thanks_text)} ${founders.join(' &middot; ')}</div>` : ''}
-                    ${attr.custom_footer_note && attr.custom_footer_note.trim() ? `<div class="mt-1 fst-italic">${escapeHtml(attr.custom_footer_note.trim())}</div>` : ''}
+        if (vv.enabled) {
+            let vvLinks = [];
+            if (vv.website_url) vvLinks.push(`<a href="${safeUrl(vv.website_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(vv.website_label || 'veszpremvibe.hu')}</a>`);
+            if (vv.linkedin_url) vvLinks.push(`<a href="${safeUrl(vv.linkedin_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(vv.linkedin_label || 'LinkedIn')}</a>`);
+            if (vv.facebook_url) vvLinks.push(`<a href="${safeUrl(vv.facebook_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(vv.facebook_label || 'Facebook')}</a>`);
+            const vvLogoSrc = safeUrl(vv.logo_path || '/assets/veszprem-vibe/vv-skyline-on-paper.svg');
+            blocks.push(`
+                <div class="d-flex flex-column align-items-center gap-2">
+                    ${vv.show_logo ? `<img src="${vvLogoSrc}" alt="Veszprém Vibe Logo" style="max-width: 130px; max-height: 48px; height: auto;">` : ''}
+                    <div style="font-size: 0.88rem;">
+                        <div><strong>${escapeHtml(vv.intro_text)}</strong> ${vvLinks.length ? `${escapeHtml(vv.learn_more_text)} ${vvLinks.join(' &middot; ')}` : ''}</div>
+                        ${vv.custom_note && vv.custom_note.trim() ? `<div class="mt-1 fst-italic">${escapeHtml(vv.custom_note.trim())}</div>` : ''}
+                    </div>
                 </div>
-            </div>
-        `;
+            `);
+        }
+
+        if (attr.enabled) {
+            let links = [];
+            if (attr.website_url) links.push(`<a href="${safeUrl(attr.website_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(attr.website_label || 'Website')}</a>`);
+            if (attr.company_linkedin_url) links.push(`<a href="${safeUrl(attr.company_linkedin_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(attr.company_linkedin_label || 'LinkedIn')}</a>`);
+
+            let founders = attr.founders
+                .filter(f => f.name && f.name.trim())
+                .map(f => f.url ? `<a href="${safeUrl(f.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(f.name.trim())}</a>` : `<span>${escapeHtml(f.name.trim())}</span>`);
+
+            const previewLogo = safeUrl(attr.logo_path || '/assets/kasboek/kasboek-logo.jpg');
+            const isDefaultLogo = /^\/(assets\/kasboek\/)?kasboek-logo\.jpg(\?.*)?$/i.test(previewLogo);
+            const previewLogoSrc = isDefaultLogo
+                ? (previewLogo.includes('?') ? `${previewLogo}&preview=1` : `${previewLogo}?preview=1`)
+                : previewLogo;
+
+            blocks.push(`
+                <div class="d-flex flex-column align-items-center gap-2">
+                    ${attr.show_logo ? `<img src="${previewLogoSrc}" alt="Attribution Logo" style="max-width: 110px; max-height: 48px; height: auto;">` : ''}
+                    <div style="font-size: 0.88rem;">
+                        <div><strong>${escapeHtml(attr.intro_text)}</strong> ${links.length ? `${escapeHtml(attr.learn_more_text)} ${links.join(' &middot; ')}.` : ''}</div>
+                        ${founders.length ? `<div class="mt-1">${escapeHtml(attr.thanks_text)} ${founders.join(' &middot; ')}</div>` : ''}
+                        ${attr.custom_footer_note && attr.custom_footer_note.trim() ? `<div class="mt-1 fst-italic">${escapeHtml(attr.custom_footer_note.trim())}</div>` : ''}
+                    </div>
+                </div>
+            `);
+        }
+
+        box.innerHTML = blocks.join('<hr style="border-top: 1px dotted #ccc; margin: 12px 0;">');
     }
 
     async function loadAttributions() {
@@ -1264,7 +1420,7 @@
             const attr = await res.json();
             document.getElementById('attrEnabled').checked = !!attr.enabled;
             document.getElementById('attrShowLogo').checked = attr.show_logo !== false;
-            document.getElementById('attrLogoPath').value = attr.logo_path || '/kasboek-logo.jpg';
+            document.getElementById('attrLogoPath').value = attr.logo_path || '/assets/kasboek/kasboek-logo.jpg';
             document.getElementById('attrIntro').value = attr.intro_text || 'Made possible by Kasboek.';
             document.getElementById('attrLearnMore').value = attr.learn_more_text || 'To learn more, visit';
             document.getElementById('attrWebLabel').value = attr.website_label || 'Kasboek Website';
@@ -1279,6 +1435,22 @@
                 document.getElementById(`founder${i+1}Name`).value = (f[i] && f[i].name) || '';
                 document.getElementById(`founder${i+1}Url`).value = (f[i] && f[i].url) || '';
             }
+
+            const vv = attr.veszprem_vibe || {};
+            document.getElementById('vvEnabled').checked = !!vv.enabled;
+            document.getElementById('vvShowLogo').checked = vv.show_logo !== false;
+            document.getElementById('vvLogoPath').value = vv.logo_path || '/assets/veszprem-vibe/vv-skyline-on-paper.svg';
+            syncVvLogoPreset();
+            document.getElementById('vvIntro').value = vv.intro_text || 'Created for the Veszprém Vibe community.';
+            document.getElementById('vvLearnMore').value = vv.learn_more_text || 'Connect with us:';
+            document.getElementById('vvWebLabel').value = vv.website_label || 'veszpremvibe.hu';
+            document.getElementById('vvWebUrl').value = vv.website_url !== undefined ? vv.website_url : 'https://veszpremvibe.hu';
+            document.getElementById('vvLiLabel').value = vv.linkedin_label || 'LinkedIn';
+            document.getElementById('vvLiUrl').value = vv.linkedin_url || '';
+            document.getElementById('vvFbLabel').value = vv.facebook_label || 'Facebook';
+            document.getElementById('vvFbUrl').value = vv.facebook_url || '';
+            document.getElementById('vvCustomNote').value = vv.custom_note || '';
+
             updateAttrPreview();
         } catch (e) {
             console.error(e);

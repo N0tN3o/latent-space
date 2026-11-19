@@ -25,5 +25,11 @@ shared_output/
 # Optional downloaded offline web assets (populated via download_offline_assets.py)
 web_ui/vendor/
 
+# Local branding & attribution assets (untracked)
+assets/
+
+# Generated / exported PDFs
+*.pdf
+
 # User-specific
 .DS_Store

@@ -206,6 +206,25 @@ class TestServerLockdownHTTP(unittest.TestCase):
         self.assertEqual(qr_st, 200)
         self.assertIn(b"<svg", qr_body)
 
+        # Local branding assets under assets/ are served when present, and traversal is always blocked
+        vv_asset = PROJECT_ROOT / "assets" / "veszprem-vibe" / "vv-skyline-on-paper.svg"
+        if vv_asset.exists():
+            vv_st, vv_hdrs, vv_body = self._req("GET", "/assets/veszprem-vibe/vv-skyline-on-paper.svg")
+            self.assertEqual(vv_st, 200)
+            self.assertIn("image/svg+xml", {k.lower(): v for k, v in vv_hdrs}.get("content-type", ""))
+            self.assertIn(b"<svg", vv_body)
+
+        kas_asset = PROJECT_ROOT / "assets" / "kasboek" / "kasboek-logo.jpg"
+        if kas_asset.exists():
+            kas_hidden_st, _, _ = self._req("GET", "/assets/kasboek/kasboek-logo.jpg")
+            self.assertEqual(kas_hidden_st, 204)
+            kas_prev_st, _, kas_prev_body = self._req("GET", "/assets/kasboek/kasboek-logo.jpg?preview=1")
+            self.assertEqual(kas_prev_st, 200)
+            self.assertTrue(kas_prev_body.startswith(b"\xff\xd8\xff"))
+
+        vv_trav_st, _, _ = self._req("GET", "/assets/../config/settings.json")
+        self.assertEqual(vv_trav_st, 403)
+
     def test_printing_settings_hides_printer_name_when_unauthenticated(self):
         config_manager.update_settings_section("printing", {"auto_print": False, "printer_name": "SecretLobbyPrinter"})
         status, _, data = self._req("GET", "/api/settings/printing")
@@ -264,6 +283,41 @@ class TestServerLockdownHTTP(unittest.TestCase):
             headers={"Cookie": cookie_pair},
         )
         self.assertEqual(status, 400)
+
+        # Veszprem Vibe attribution toggle + website/linkedin/facebook validation
+        status, _, _ = self._req(
+            "POST",
+            "/api/settings/attributions",
+            body={"veszprem_vibe": {"enabled": True, "facebook_url": "javascript:alert(1)"}},
+            headers={"Cookie": cookie_pair},
+        )
+        self.assertEqual(status, 400)
+
+        status, _, vv_save_data = self._req(
+            "POST",
+            "/api/settings/attributions",
+            body={
+                "veszprem_vibe": {
+                    "enabled": True,
+                    "show_logo": True,
+                    "logo_path": "/assets/veszprem-vibe/vv-mark.svg",
+                    "website_url": "https://veszpremvibe.hu",
+                    "linkedin_url": "https://www.linkedin.com/company/veszprem-vibe",
+                    "facebook_url": "https://www.facebook.com/veszpremvibe",
+                }
+            },
+            headers={"Cookie": cookie_pair},
+        )
+        self.assertEqual(status, 200)
+        vv_saved = json.loads(vv_save_data)["attributions"]["veszprem_vibe"]
+        self.assertTrue(vv_saved["enabled"])
+        self.assertEqual(vv_saved["website_url"], "https://veszpremvibe.hu")
+        self.assertEqual(vv_saved["linkedin_url"], "https://www.linkedin.com/company/veszprem-vibe")
+        self.assertEqual(vv_saved["facebook_url"], "https://www.facebook.com/veszpremvibe")
+
+        status, _, status_after_vv = self._req("GET", "/api/status", headers={"Cookie": cookie_pair})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(status_after_vv)["attributions"]["veszprem_vibe_enabled"])
 
         status, _, _ = self._req(
             "POST",

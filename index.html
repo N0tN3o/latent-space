@@ -219,21 +219,42 @@
             line-height: 1.5;
         }
 
+        .attribution-blocks {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            max-width: 1050px;
+            margin: 0 auto;
+        }
+
         .attribution-inner {
             display: flex;
             flex-wrap: wrap;
             align-items: center;
             justify-content: center;
-            gap: 16px;
-            max-width: 1050px;
-            margin: 0 auto;
+            gap: 14px;
+            width: 100%;
+        }
+
+        .attribution-inner + .attribution-inner {
+            padding-top: 8px;
+            border-top: 1px dotted #e2e2e2;
         }
 
         .attribution-logo {
             display: none;
             max-width: 115px;
+            max-height: 52px;
+            width: auto;
             height: auto;
-            opacity: 0.9;
+            opacity: 0.92;
+            object-fit: contain;
+        }
+
+        .attribution-logo-vv {
+            max-width: 125px;
+            max-height: 46px;
         }
 
         .attribution-text {
@@ -251,7 +272,7 @@
             color: #0d6efd;
         }
 
-        @media (max-width: 1024px) {
+        @media screen and (max-width: 1024px) {
             .bottom-grid, .bottom-grid tbody, .bottom-grid tr, .bottom-grid td {
                 display: block;
                 width: 100% !important;
@@ -284,20 +305,98 @@
 
         @page {
             size: A4;
-            margin: 12mm;
+            margin: 10mm 12mm;
         }
 
         @media print {
-            audio, .floating-nav { display: none !important; }
-            .container { padding: 0 10px 8px; }
+            audio, .floating-nav, .qr-card { display: none !important; }
+            html, body {
+                margin: 0;
+                padding: 0;
+                background: #ffffff;
+            }
+            .container {
+                max-width: none;
+                width: 100%;
+                padding: 0;
+                margin: 0;
+            }
+            .scribble-section {
+                min-height: 0;
+                margin-bottom: 10px;
+            }
+            .scribble-container {
+                max-width: 460px;
+            }
+            .scribble-container img {
+                width: 90%;
+                max-height: 95mm;
+            }
+            .bottom-grid {
+                display: table !important;
+                width: 100% !important;
+                table-layout: fixed;
+                border-spacing: 8px 4px;
+                margin-top: 8px;
+                page-break-inside: avoid;
+                break-inside: avoid;
+            }
+            .bottom-grid tbody {
+                display: table-row-group !important;
+            }
+            .bottom-grid tr {
+                display: table-row !important;
+            }
+            .bottom-grid td {
+                display: table-cell !important;
+                padding: 12px 14px;
+                vertical-align: top;
+            }
+            .bottom-grid td:first-child {
+                width: 55% !important;
+            }
+            .bottom-grid td:last-child {
+                width: 45% !important;
+            }
+            .visual-metrics-row {
+                margin-top: 16px;
+                page-break-inside: avoid;
+                break-inside: avoid;
+            }
+            .heatmap-container img {
+                width: 125px;
+                height: 125px;
+            }
             .update-info { display: block; }
             .page-footer {
                 position: static;
-                margin-top: 14px;
-                padding: 10px 16px;
+                margin-top: 12px;
+                padding: 10px 12px 0;
                 background: white;
                 border-top: 1px solid #ddd;
                 page-break-inside: avoid;
+                break-inside: avoid;
+            }
+            .attribution-section {
+                margin-top: 8px;
+                padding-top: 8px;
+            }
+            .attribution-blocks {
+                gap: 6px;
+            }
+            .attribution-inner {
+                gap: 10px;
+            }
+            .attribution-inner + .attribution-inner {
+                padding-top: 6px;
+            }
+            .attribution-logo {
+                max-width: 90px;
+                max-height: 38px;
+            }
+            .attribution-logo-vv {
+                max-width: 105px;
+                max-height: 36px;
             }
             .attribution-text a {
                 text-decoration: none;
@@ -373,9 +472,15 @@
             </div>
 
             <div class="attribution-section" id="attributionSection" style="display: none;">
-                <div class="attribution-inner">
-                    <img id="attributionLogo" class="attribution-logo" alt="Kasboek Logo" style="display: none;">
-                    <div class="attribution-text" id="attributionText"></div>
+                <div class="attribution-blocks">
+                    <div class="attribution-inner" id="vvAttributionRow" style="display: none;">
+                        <img id="vvAttributionLogo" class="attribution-logo attribution-logo-vv" alt="Veszprém Vibe Logo" style="display: none;">
+                        <div class="attribution-text" id="vvAttributionText"></div>
+                    </div>
+                    <div class="attribution-inner" id="kasboekAttributionRow" style="display: none;">
+                        <img id="attributionLogo" class="attribution-logo" alt="Kasboek Logo" style="display: none;">
+                        <div class="attribution-text" id="attributionText"></div>
+                    </div>
                 </div>
             </div>
         </footer>
@@ -439,12 +544,12 @@
             const qrCard = document.getElementById('qrCard');
             const qrBox = document.getElementById('qrCodeBox');
             const qrCaption = document.getElementById('qrCaption');
-            if (!targetPath) {
+            if (isPrintRender || !targetPath) {
                 qrCard.style.display = 'none';
                 qrBox.innerHTML = '';
                 return;
             }
-            if (isPdfRendering && !isPrintRender) {
+            if (isPdfRendering) {
                 qrBox.innerHTML = '<div style="width:96px;height:96px;display:flex;align-items:center;justify-content:center;font-size:0.72em;color:#777;">Preparing PDF...</div>';
                 qrCaption.textContent = 'Generating digital print';
                 qrCard.style.display = 'flex';
@@ -475,75 +580,148 @@
 
         function renderAttribution(attr) {
             const section = document.getElementById('attributionSection');
+            const kasRow = document.getElementById('kasboekAttributionRow');
             const logo = document.getElementById('attributionLogo');
             const textEl = document.getElementById('attributionText');
+            const vvRow = document.getElementById('vvAttributionRow');
+            const vvLogo = document.getElementById('vvAttributionLogo');
+            const vvTextEl = document.getElementById('vvAttributionText');
 
-            if (!attr || !attr.enabled) {
+            const kasboekOn = !!(attr && attr.enabled);
+            const vv = (attr && attr.veszprem_vibe && typeof attr.veszprem_vibe === 'object') ? attr.veszprem_vibe : {};
+            const vvOn = !!vv.enabled;
+
+            if (!kasboekOn && !vvOn) {
                 section.style.display = 'none';
+                kasRow.style.display = 'none';
                 logo.style.display = 'none';
                 logo.removeAttribute('src');
                 textEl.innerHTML = '';
+                vvRow.style.display = 'none';
+                vvLogo.style.display = 'none';
+                vvLogo.removeAttribute('src');
+                vvTextEl.innerHTML = '';
                 return;
             }
 
             section.style.display = 'block';
-            if (attr.show_logo !== false) {
-                const rawLogo = String(attr.logo_path || '/kasboek-logo.jpg').trim();
-                const safeLogo = /^(https?:\/\/|\/(?!\/))/i.test(rawLogo) ? rawLogo : '/kasboek-logo.jpg';
-                const sep = safeLogo.includes('?') ? '&' : '?';
-                logo.src = safeLogo + sep + 't=' + Date.now();
-                logo.style.display = 'block';
+
+            // 1. Veszprém Vibe Community Attribution
+            if (vvOn) {
+                vvRow.style.display = 'flex';
+                if (vv.show_logo !== false) {
+                    const rawVvLogo = String(vv.logo_path || '/assets/veszprem-vibe/vv-skyline-on-paper.svg').trim();
+                    const safeVvLogo = /^(https?:\/\/|\/(?!\/))/i.test(rawVvLogo) ? rawVvLogo : '/assets/veszprem-vibe/vv-skyline-on-paper.svg';
+                    const sep = safeVvLogo.includes('?') ? '&' : '?';
+                    vvLogo.src = safeVvLogo + sep + 't=' + Date.now();
+                    vvLogo.style.display = 'block';
+                } else {
+                    vvLogo.style.display = 'none';
+                    vvLogo.removeAttribute('src');
+                }
+
+                const vvIntro = escapeHtml(vv.intro_text || 'Created for the Veszprém Vibe community.');
+                const vvLearnMore = escapeHtml(vv.learn_more_text || 'Connect with us:');
+                const vvWebLabel = escapeHtml(vv.website_label || 'veszpremvibe.hu');
+                const vvWebUrl = safeUrl(vv.website_url || '');
+                const vvLiLabel = escapeHtml(vv.linkedin_label || 'LinkedIn');
+                const vvLiUrl = safeUrl(vv.linkedin_url || '');
+                const vvFbLabel = escapeHtml(vv.facebook_label || 'Facebook');
+                const vvFbUrl = safeUrl(vv.facebook_url || '');
+
+                let vvLinks = [];
+                if (vvWebUrl) {
+                    vvLinks.push(`<a href="${vvWebUrl}" target="_blank" rel="noopener noreferrer">${vvWebLabel}</a>`);
+                }
+                if (vvLiUrl) {
+                    vvLinks.push(`<a href="${vvLiUrl}" target="_blank" rel="noopener noreferrer">${vvLiLabel}</a>`);
+                }
+                if (vvFbUrl) {
+                    vvLinks.push(`<a href="${vvFbUrl}" target="_blank" rel="noopener noreferrer">${vvFbLabel}</a>`);
+                }
+
+                let vvHtml = `<div><strong>${vvIntro}</strong>`;
+                if (vvLinks.length > 0) {
+                    vvHtml += ` ${vvLearnMore} ${vvLinks.join(' &middot; ')}`;
+                }
+                vvHtml += `</div>`;
+                if (vv.custom_note && vv.custom_note.trim()) {
+                    vvHtml += `<div style="margin-top: 3px; font-style: italic;">${escapeHtml(vv.custom_note.trim())}</div>`;
+                }
+                vvTextEl.innerHTML = vvHtml;
             } else {
-                logo.style.display = 'none';
-                logo.removeAttribute('src');
+                vvRow.style.display = 'none';
+                vvLogo.style.display = 'none';
+                vvLogo.removeAttribute('src');
+                vvTextEl.innerHTML = '';
             }
 
-            const intro = escapeHtml(attr.intro_text || 'Made possible by Kasboek.');
-            const learnMore = escapeHtml(attr.learn_more_text || 'To learn more, visit');
-            const webLabel = escapeHtml(attr.website_label || 'Kasboek Website');
-            const webUrl = safeUrl(attr.website_url || '');
-            const liLabel = escapeHtml(attr.company_linkedin_label || 'Kasboek LinkedIn');
-            const liUrl = safeUrl(attr.company_linkedin_url || '');
-            const thanksText = escapeHtml(attr.thanks_text || 'Thank you for letting us use this:');
+            // 2. Kasboek Attribution
+            if (kasboekOn) {
+                kasRow.style.display = 'flex';
+                if (attr.show_logo !== false) {
+                    const rawLogo = String(attr.logo_path || '/assets/kasboek/kasboek-logo.jpg').trim();
+                    const safeLogo = /^(https?:\/\/|\/(?!\/))/i.test(rawLogo) ? rawLogo : '/assets/kasboek/kasboek-logo.jpg';
+                    const sep = safeLogo.includes('?') ? '&' : '?';
+                    logo.src = safeLogo + sep + 't=' + Date.now();
+                    logo.style.display = 'block';
+                } else {
+                    logo.style.display = 'none';
+                    logo.removeAttribute('src');
+                }
 
-            let linksHtml = [];
-            if (webUrl) {
-                linksHtml.push(`<a href="${webUrl}" target="_blank" rel="noopener noreferrer">${webLabel}</a>`);
-            }
-            if (liUrl) {
-                linksHtml.push(`<a href="${liUrl}" target="_blank" rel="noopener noreferrer">${liLabel}</a>`);
-            }
+                const intro = escapeHtml(attr.intro_text || 'Made possible by Kasboek.');
+                const learnMore = escapeHtml(attr.learn_more_text || 'To learn more, visit');
+                const webLabel = escapeHtml(attr.website_label || 'Kasboek Website');
+                const webUrl = safeUrl(attr.website_url || '');
+                const liLabel = escapeHtml(attr.company_linkedin_label || 'Kasboek LinkedIn');
+                const liUrl = safeUrl(attr.company_linkedin_url || '');
+                const thanksText = escapeHtml(attr.thanks_text || 'Thank you for letting us use this:');
 
-            let foundersHtml = [];
-            if (Array.isArray(attr.founders)) {
-                for (const f of attr.founders) {
-                    if (f && f.name && f.name.trim()) {
-                        const fName = escapeHtml(f.name.trim());
-                        const fUrl = f.url ? safeUrl(f.url) : '';
-                        if (fUrl) {
-                            foundersHtml.push(`<a href="${fUrl}" target="_blank" rel="noopener noreferrer">${fName}</a>`);
-                        } else {
-                            foundersHtml.push(`<span>${fName}</span>`);
+                let linksHtml = [];
+                if (webUrl) {
+                    linksHtml.push(`<a href="${webUrl}" target="_blank" rel="noopener noreferrer">${webLabel}</a>`);
+                }
+                if (liUrl) {
+                    linksHtml.push(`<a href="${liUrl}" target="_blank" rel="noopener noreferrer">${liLabel}</a>`);
+                }
+
+                let foundersHtml = [];
+                if (Array.isArray(attr.founders)) {
+                    for (const f of attr.founders) {
+                        if (f && f.name && f.name.trim()) {
+                            const fName = escapeHtml(f.name.trim());
+                            const fUrl = f.url ? safeUrl(f.url) : '';
+                            if (fUrl) {
+                                foundersHtml.push(`<a href="${fUrl}" target="_blank" rel="noopener noreferrer">${fName}</a>`);
+                            } else {
+                                foundersHtml.push(`<span>${fName}</span>`);
+                            }
                         }
                     }
                 }
-            }
 
-            let html = `<div><strong>${intro}</strong>`;
-            if (linksHtml.length > 0) {
-                html += ` ${learnMore} ${linksHtml.join(' &middot; ')}.`;
-            }
-            html += `</div>`;
+                let html = `<div><strong>${intro}</strong>`;
+                if (linksHtml.length > 0) {
+                    html += ` ${learnMore} ${linksHtml.join(' &middot; ')}.`;
+                }
+                html += `</div>`;
 
-            if (foundersHtml.length > 0) {
-                html += `<div style="margin-top: 3px;">${thanksText} ${foundersHtml.join(' &middot; ')}</div>`;
-            }
+                if (foundersHtml.length > 0) {
+                    html += `<div style="margin-top: 3px;">${thanksText} ${foundersHtml.join(' &middot; ')}</div>`;
+                }
 
-            if (attr.custom_footer_note && attr.custom_footer_note.trim()) {
-                html += `<div style="margin-top: 3px; font-style: italic;">${escapeHtml(attr.custom_footer_note.trim())}</div>`;
-            }
+                if (attr.custom_footer_note && attr.custom_footer_note.trim()) {
+                    html += `<div style="margin-top: 3px; font-style: italic;">${escapeHtml(attr.custom_footer_note.trim())}</div>`;
+                }
 
-            textEl.innerHTML = html;
+                textEl.innerHTML = html;
+            } else {
+                kasRow.style.display = 'none';
+                logo.style.display = 'none';
+                logo.removeAttribute('src');
+                textEl.innerHTML = '';
+            }
         }
 
         async function refreshAttributions() {
