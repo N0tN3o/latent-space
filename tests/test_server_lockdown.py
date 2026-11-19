@@ -147,6 +147,17 @@ class TestConfigAndValidation(unittest.TestCase):
             with self.assertRaises(ValueError):
                 config_manager.validate_printer_name(bad)
 
+    def test_vision_error_secret_redaction(self):
+        sys.path.insert(0, str(PROJECT_ROOT / "analysis_watcher"))
+        import analysis as vision_analysis
+
+        raw = "Failed connecting to https://admin:supersecret@ollama.local/api/generate?api_key=sk-12345&token=tok999"
+        redacted = vision_analysis._redact_error_secrets(raw)
+        self.assertNotIn("supersecret", redacted)
+        self.assertNotIn("sk-12345", redacted)
+        self.assertNotIn("tok999", redacted)
+        self.assertIn("https://***@ollama.local", redacted)
+
 
 class TestServerLockdownHTTP(unittest.TestCase):
     def setUp(self):
@@ -211,13 +222,19 @@ class TestServerLockdownHTTP(unittest.TestCase):
         if vv_asset.exists():
             vv_st, vv_hdrs, vv_body = self._req("GET", "/assets/veszprem-vibe/vv-skyline-on-paper.svg")
             self.assertEqual(vv_st, 200)
-            self.assertIn("image/svg+xml", {k.lower(): v for k, v in vv_hdrs}.get("content-type", ""))
+            vv_lower = {k.lower(): v for k, v in vv_hdrs}
+            self.assertIn("image/svg+xml", vv_lower.get("content-type", ""))
+            self.assertIn("default-src 'none'", vv_lower.get("content-security-policy", ""))
+            self.assertIn("sandbox", vv_lower.get("content-security-policy", ""))
             self.assertIn(b"<svg", vv_body)
 
         kas_asset = PROJECT_ROOT / "assets" / "kasboek" / "kasboek-logo.jpg"
         if kas_asset.exists():
             kas_hidden_st, _, _ = self._req("GET", "/assets/kasboek/kasboek-logo.jpg")
             self.assertEqual(kas_hidden_st, 204)
+            # Case-variant bypass check for case-insensitive filesystems (Windows/macOS)
+            kas_upper_st, _, _ = self._req("GET", "/assets/KASBOEK/kasboek-logo.jpg")
+            self.assertEqual(kas_upper_st, 204)
             kas_prev_st, _, kas_prev_body = self._req("GET", "/assets/kasboek/kasboek-logo.jpg?preview=1")
             self.assertEqual(kas_prev_st, 200)
             self.assertTrue(kas_prev_body.startswith(b"\xff\xd8\xff"))
@@ -233,7 +250,7 @@ class TestServerLockdownHTTP(unittest.TestCase):
         self.assertNotIn("printer_name", parsed)
 
     def test_admin_endpoints_reject_unauthenticated(self):
-        for get_path in ("/api/status", "/api/monitoring", "/api/settings", "/api/settings/tts", "/api/ai/config", "/api/logs/installation"):
+        for get_path in ("/api/status", "/api/monitoring", "/api/settings", "/api/settings/tts", "/api/ai/config", "/api/ai/availability", "/api/ai/vision", "/api/logs/installation", "/api/logs/vision"):
             status, _, _ = self._req("GET", get_path)
             self.assertEqual(status, 401, f"GET {get_path} should return 401 when unauthenticated")
 
@@ -244,6 +261,8 @@ class TestServerLockdownHTTP(unittest.TestCase):
             ("/api/settings/printing", {"auto_print": True}),
             ("/api/settings/tts", {"enabled": False}),
             ("/api/ai/config", {"model_type": "analysis", "config": {}}),
+            ("/api/ai/vision", {"vision_mode": "auto"}),
+            ("/api/ai/vision/test", {}),
             ("/api/ai/test", {"model_type": "analysis"}),
             ("/api/ollama/stop", {}),
             ("/api/files/print", {"filename": "print_test.pdf", "mark_only": True}),
@@ -271,6 +290,49 @@ class TestServerLockdownHTTP(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("services", json.loads(status_data))
 
+        status, _, avail_data = self._req("GET", "/api/ai/availability", headers={"Cookie": cookie_pair})
+        self.assertEqual(status, 200)
+        avail = json.loads(avail_data)
+        self.assertIn("vision_modes", avail)
+        self.assertTrue(avail["vision_modes"]["stroke_metrics"]["available"])
+        self.assertTrue(avail["vision_modes"]["auto"]["available"])
+        self.assertIn("ollama", avail)
+        self.assertIn("env_keys", avail)
+        self.assertTrue(all(isinstance(v, bool) for v in avail["env_keys"].values()))
+        self.assertTrue(all(isinstance(v, bool) for v in avail["saved_keys"].values()))
+
+        # Vision settings GET / POST / test endpoints
+        st_v_save, _, v_save_body = self._req(
+            "POST",
+            "/api/ai/vision",
+            body={
+                "vision_mode": "stroke_metrics",
+                "ollama_vision_model": "moondream",
+                "vision": {"ollama_temperature": 0.3, "ollama_max_tokens": 64, "badge_style": "combined"},
+            },
+            headers={"Cookie": cookie_pair},
+        )
+        self.assertEqual(st_v_save, 200)
+        self.assertEqual(json.loads(v_save_body)["vision"]["badge_style"], "combined")
+
+        for bad_vision_payload in (
+            {"vision": {"ollama_temperature": 9.9}},
+            {"bogus_top_key": 1},
+            {"vision": {"bogus_nested_key": 1}},
+            {"ollama_vision_model": "moondream; rm -rf /"},
+        ):
+            st_v_bad, _, _ = self._req(
+                "POST",
+                "/api/ai/vision",
+                body=bad_vision_payload,
+                headers={"Cookie": cookie_pair},
+            )
+            self.assertEqual(st_v_bad, 400, f"Expected 400 for invalid vision payload {bad_vision_payload}")
+
+        st_v_test, _, v_test_body = self._req("POST", "/api/ai/vision/test", body={}, headers={"Cookie": cookie_pair})
+        self.assertEqual(st_v_test, 200)
+        self.assertEqual(json.loads(v_test_body)["status"], "success")
+
         status, _, print_data = self._req("GET", "/api/settings/printing", headers={"Cookie": cookie_pair})
         self.assertEqual(status, 200)
         self.assertIn("printer_name", json.loads(print_data))
@@ -289,6 +351,14 @@ class TestServerLockdownHTTP(unittest.TestCase):
             "POST",
             "/api/settings/attributions",
             body={"veszprem_vibe": {"enabled": True, "facebook_url": "javascript:alert(1)"}},
+            headers={"Cookie": cookie_pair},
+        )
+        self.assertEqual(status, 400)
+
+        status, _, _ = self._req(
+            "POST",
+            "/api/settings/attributions",
+            body={"veszprem_vibe": {"bogus_vv_key": "injected"}},
             headers={"Cookie": cookie_pair},
         )
         self.assertEqual(status, 400)

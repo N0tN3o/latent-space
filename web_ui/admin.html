@@ -252,28 +252,132 @@
 
             <!-- 2. AI & VISION CONFIG TAB -->
             <div class="tab-pane fade" id="tab-ai">
-                <div class="row g-3 mb-3 align-items-end">
-                    <div class="col-md-5">
-                        <label class="form-label text-muted">Self-Hosted Abstract Art Perception Mode</label>
-                        <select id="aiVisionMode" class="form-select">
-                            <option value="auto">Auto (Direct Vision LLM + Self-Hosted Fractal &amp; Rorschach Geometry)</option>
-                            <option value="ollama_vision">Self-Hosted Ollama Vision (moondream / llava) + Fractal Geometry</option>
-                            <option value="siglip">Self-Hosted Google SigLIP Zero-Shot Abstract Art + Fractal Geometry</option>
-                            <option value="clip">Self-Hosted OpenAI CLIP Zero-Shot Abstract Art + Fractal Geometry</option>
-                            <option value="stroke_metrics">Self-Hosted Fractal Dimension, Entropy &amp; Rorschach Geometry Only</option>
-                            <option value="vision">Direct Cloud/Local Vision LLM + Fractal Geometry</option>
-                            <option value="resnet50">Legacy ImageNet ResNet50 + Fractal Geometry</option>
-                        </select>
+                <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+                    <div>
+                        <h5 class="mb-0">Vision &amp; Language Model Configuration</h5>
+                        <div class="small text-muted">Configure your Vision perception model, Psychoanalyst LLM, and Poet LLM independently. Unavailable models can be selected to inspect requirements, but cannot be applied until installed or keyed.</div>
                     </div>
-                    <div class="col-md-3">
-                        <label class="form-label text-muted">Ollama Vision Model</label>
-                        <input type="text" id="aiOllamaVisionModel" class="form-control" placeholder="moondream">
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-sm btn-outline-light" onclick="loadAIConfig()">Reload Models</button>
+                        <button class="btn btn-sm btn-success" id="saveAllAIBtn" onclick="saveAllAIConfig()">Apply &amp; Save All</button>
                     </div>
-                    <div class="col-md-2">
-                        <button class="btn btn-outline-light w-100" onclick="loadAIConfig()">Reload Models</button>
+                </div>
+
+                <!-- 0. VISION & PERCEPTION MODEL CARD -->
+                <div class="p-3 rounded border border-secondary mb-4" style="background: #1a1e29;">
+                    <div class="d-flex flex-wrap justify-content-between align-items-center mb-2 gap-2">
+                        <h5 class="mb-0 text-warning">0. Vision &amp; Perception Model <span class="text-muted fs-6">(Drawing Interpreter)</span></h5>
+                        <span class="badge bg-dark border border-secondary">Stage: visual perception</span>
                     </div>
-                    <div class="col-md-2">
-                        <button class="btn btn-success w-100" onclick="saveAllAIConfig()">Save Both AI</button>
+
+                    <div class="row g-2 mb-2 align-items-end">
+                        <div class="col-md-7">
+                            <label class="form-label small text-muted mb-1">Vision Perception Mode</label>
+                            <select id="aiVisionMode" class="form-select form-select-sm">
+                                <option value="auto">Auto (Best Available Vision + Fractal &amp; Rorschach Geometry)</option>
+                                <option value="ollama_vision">Self-Hosted Ollama Vision (moondream / llava) + Fractal Geometry</option>
+                                <option value="siglip">Self-Hosted Google SigLIP Zero-Shot Abstract Art + Fractal Geometry</option>
+                                <option value="clip">Self-Hosted OpenAI CLIP Zero-Shot Abstract Art + Fractal Geometry</option>
+                                <option value="stroke_metrics">Self-Hosted Fractal Dimension, Entropy &amp; Rorschach Geometry Only</option>
+                                <option value="vision">Direct Cloud/Local Vision LLM + Fractal Geometry</option>
+                                <option value="resnet50">Legacy ImageNet ResNet50 + Fractal Geometry</option>
+                            </select>
+                        </div>
+                        <div class="col-md-5">
+                            <label class="form-label small text-muted mb-1">PDF &amp; Gallery Badge Style</label>
+                            <select id="visionBadgeStyle" class="form-select form-select-sm">
+                                <option value="vision_only">Vision Archetype Only (e.g. SNAKE)</option>
+                                <option value="combined">Combined: Vision · Geometry (e.g. SNAKE · ELECTRIC DRIFT)</option>
+                                <option value="geometry_only">Geometry Archetype Only (vision still guides LLM)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Live Vision & Local Environment Availability Banner -->
+                    <div id="visionAvailabilityBanner" class="p-2 px-3 rounded border border-secondary mb-3 small" style="background: #141822;">
+                        <span class="text-muted">Checking installed local models, Python ML packages, and API keys...</span>
+                    </div>
+
+                    <!-- Dynamic Engine Panel: Ollama Vision (moondream / llava / etc.) -->
+                    <div id="visionPanelOllama" class="mb-3">
+                        <div class="row g-2 mb-2 align-items-end">
+                            <div class="col-md-4">
+                                <label class="form-label small mb-1">Ollama Vision Model</label>
+                                <input type="text" id="aiOllamaVisionModel" class="form-control form-control-sm" placeholder="moondream">
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small mb-1">Temp (0-2)</label>
+                                <input type="number" step="0.05" min="0" max="2" id="visionOllamaTemp" class="form-control form-control-sm" value="0.4">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small mb-1">Max Tokens</label>
+                                <input type="number" step="8" min="16" max="1024" id="visionOllamaMaxTokens" class="form-control form-control-sm" value="96">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small mb-1">Timeout (sec)</label>
+                                <input type="number" step="5" min="5" max="180" id="visionOllamaTimeout" class="form-control form-control-sm" value="60">
+                            </div>
+                        </div>
+
+                        <div class="d-flex flex-wrap gap-4 mb-2">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="visionCleanLabel" checked>
+                                <label class="form-check-label small" for="visionCleanLabel" title="Strips conversational prefixes like '1) The lines resemble a snake.' down to 'Snake'">
+                                    Auto-clean &amp; filter archetype badge (strips numbering &amp; filler sentences)
+                                </label>
+                            </div>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="visionIncludeDesc" checked>
+                                <label class="form-check-label small" for="visionIncludeDesc" title="Runs a second short vision pass to give the Psychoanalyst LLM richer visual context">
+                                    Run 2nd pass for detailed visual description
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="row g-2">
+                            <div class="col-md-6">
+                                <label class="form-label small mb-1">Archetype / Pareidolia Prompt <span class="text-muted">(Pass 1 — short 1–3 word badge)</span></label>
+                                <textarea class="form-control form-control-sm" id="visionLabelPrompt" rows="2"></textarea>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label small mb-1">Visual Description Prompt <span class="text-muted">(Pass 2 — fed to Psychoanalyst LLM)</span></label>
+                                <textarea class="form-control form-control-sm" id="visionDescPrompt" rows="2"></textarea>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Dynamic Engine Panel: Zero-Shot CLIP / SigLIP -->
+                    <div id="visionPanelZeroShot" class="mb-3" style="display: none;">
+                        <div class="row g-2">
+                            <div class="col-md-6">
+                                <label class="form-label small mb-1">Custom Rorschach Archetype Concepts <span class="text-muted">(optional, comma or newline separated)</span></label>
+                                <textarea class="form-control form-control-sm" id="visionZeroShotArchetypes" rows="2" placeholder="Leave blank for built-in 8 Rorschach archetypes (Watching Eyes, Wings in Flight, Labyrinth...)"></textarea>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label small mb-1">Custom Emotional Tone Concepts <span class="text-muted">(optional, comma or newline separated)</span></label>
+                                <textarea class="form-control form-control-sm" id="visionZeroShotTones" rows="2" placeholder="Leave blank for built-in 6 emotional tones (Meditative Flow, Restless Urgency...)"></textarea>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Dynamic Engine Panel: ResNet50 -->
+                    <div id="visionPanelResnet" class="mb-3" style="display: none;">
+                        <div class="row g-2">
+                            <div class="col-md-4">
+                                <label class="form-label small mb-1">Top-K ImageNet Associations (1–5)</label>
+                                <input type="number" min="1" max="5" step="1" id="visionResnetTopK" class="form-control form-control-sm" value="1">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Dynamic Engine Panel: Info Note for stroke_metrics / direct vision LLM -->
+                    <div id="visionPanelInfo" class="small text-muted mb-3" style="display: none;"></div>
+
+                    <div class="d-flex flex-wrap gap-2 align-items-center">
+                        <button class="btn btn-sm btn-success" id="saveVisionBtn" onclick="saveVisionConfig()">Apply Vision Settings</button>
+                        <button class="btn btn-sm btn-outline-info" id="testVisionBtn" onclick="testVisionModel()">Test Vision on Latest Drawing</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="resetVisionDefaults()">Reset Prompts to Default</button>
+                        <span id="vision_test_result" class="ms-1 small"></span>
                     </div>
                 </div>
 
@@ -411,8 +515,9 @@
                                 </div>
                             </details>
 
+                            <div id="analysisAvailabilityNote" class="small mb-2"></div>
                             <div class="d-flex flex-wrap gap-2 align-items-center">
-                                <button class="btn btn-sm btn-success" onclick="saveRoleConfig('analysis')">Save Analysis Model</button>
+                                <button class="btn btn-sm btn-success" id="saveAnalysisBtn" onclick="saveRoleConfig('analysis')">Apply Analysis Model</button>
                                 <button class="btn btn-sm btn-outline-info" onclick="testRoleConnection('analysis')">Test Analysis Model</button>
                                 <span id="analysis_test_result" class="ms-1 small"></span>
                             </div>
@@ -513,8 +618,9 @@
                                 </div>
                             </details>
 
+                            <div id="poemAvailabilityNote" class="small mb-2"></div>
                             <div class="d-flex flex-wrap gap-2 align-items-center">
-                                <button class="btn btn-sm btn-success" onclick="saveRoleConfig('poem')">Save Poem Model</button>
+                                <button class="btn btn-sm btn-success" id="savePoemBtn" onclick="saveRoleConfig('poem')">Apply Poem Model</button>
                                 <button class="btn btn-sm btn-outline-info" onclick="testRoleConnection('poem')">Test Poem Model</button>
                                 <span id="poem_test_result" class="ms-1 small"></span>
                             </div>
@@ -785,8 +891,10 @@
             <div class="tab-pane fade" id="tab-logs">
                 <div class="mb-3 d-flex flex-wrap gap-2">
                     <button class="btn btn-sm btn-outline-light" onclick="loadLog('installation')">Pipeline Log (installation.log)</button>
+                    <button class="btn btn-sm btn-outline-info" onclick="loadLog('vision')">Vision Perception Log (vision.log)</button>
                     <button class="btn btn-sm btn-outline-light" onclick="loadLog('responses')">AI Responses Log</button>
                     <button class="btn btn-sm btn-outline-light" onclick="loadLog('predictions')">Archetype Predictions (CSV)</button>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('credits')">TTS Credits (credits.csv)</button>
                 </div>
                 <pre id="logViewer">Select a log file above to view detailed system output...</pre>
             </div>
@@ -1069,6 +1177,397 @@
         }
     }
 
+    let aiAvailability = null;
+
+    const VISION_MODE_BASE_LABELS = {
+        auto: 'Auto (Best Available Vision + Fractal & Rorschach Geometry)',
+        ollama_vision: 'Self-Hosted Ollama Vision (moondream / llava) + Fractal Geometry',
+        siglip: 'Self-Hosted Google SigLIP Zero-Shot Abstract Art + Fractal Geometry',
+        clip: 'Self-Hosted OpenAI CLIP Zero-Shot Abstract Art + Fractal Geometry',
+        stroke_metrics: 'Self-Hosted Fractal Dimension, Entropy & Rorschach Geometry Only',
+        vision: 'Direct Cloud/Local Vision LLM + Fractal Geometry',
+        resnet50: 'Legacy ImageNet ResNet50 + Fractal Geometry'
+    };
+
+    function _isOllamaModelInstalled(modelName, installedList) {
+        const target = (modelName || '').trim().toLowerCase();
+        if (!target || !Array.isArray(installedList)) return false;
+        return installedList.some(m => {
+            const ml = String(m || '').toLowerCase();
+            return ml === target || ml === `${target}:latest` || (!target.includes(':') && ml.startsWith(`${target}:`));
+        });
+    }
+
+    function _isVisionCapableModelName(provider, modelName) {
+        const p = (provider || 'ollama').toLowerCase();
+        const m = (modelName || '').trim().toLowerCase();
+        if (p === 'gemini' || p === 'anthropic') return true;
+        if (!m || m.startsWith('gemma3:1b')) return false;
+        const hints = ['vision', 'llava', 'moondream', 'bakllava', 'minicpm-v', 'qwen2-vl', 'qwen2.5-vl', 'qwen2.5vl', 'pixtral', 'internvl', 'granite3.2-vision', 'gemma3', 'gpt-4o', 'gpt-4-vision', 'gpt-4.1', 'gpt-5', 'claude-3', 'claude-4', 'gemini'];
+        return hints.some(h => m.includes(h));
+    }
+
+    function _isLocalUrl(urlStr) {
+        const u = (urlStr || '').trim().toLowerCase();
+        if (!u) return true;
+        return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(u);
+    }
+
+    function evaluateRoleAvailability(role) {
+        if (!aiAvailability) return { available: true, reason: 'Checking availability...' };
+        const prov = document.getElementById(`${role}_provider`).value;
+        const model = document.getElementById(`${role}_model`).value.trim();
+        const baseUrl = document.getElementById(`${role}_base_url`).value.trim();
+        const typedKey = document.getElementById(`${role}_api_key`).value.trim();
+        const clearKey = document.getElementById(`${role}_clear_api_key`).checked;
+        const loaded = loadedRoleEndpoints[role] || {};
+        const endpointUnchanged = (prov === loaded.provider) && (_normEndpointUrl(prov, baseUrl) === _normEndpointUrl(loaded.provider, loaded.baseUrl));
+        const hasSavedKey = !clearKey && endpointUnchanged && !!(loaded.hasKey || (aiAvailability.saved_keys && aiAvailability.saved_keys[role]));
+        const hasKeyInput = Boolean(typedKey) || hasSavedKey;
+        const envKeys = aiAvailability.env_keys || {};
+        const ollamaModels = (aiAvailability.ollama && aiAvailability.ollama.models) || [];
+
+        if (!model) {
+            return { available: false, reason: 'Enter a model name / ID.' };
+        }
+        if (prov === 'ollama') {
+            if (!ollamaModels.length) {
+                return { available: false, reason: 'No local Ollama models detected on this machine. Run: ollama pull ' + model };
+            }
+            if (!_isOllamaModelInstalled(model, ollamaModels)) {
+                return { available: false, reason: `Ollama model '${model}' is not installed locally. Installed: ${ollamaModels.join(', ')}. Run: ollama pull ${model}` };
+            }
+            return { available: true, reason: `Local Ollama model '${model}' is installed on this machine.` };
+        }
+        if (prov === 'gemini') {
+            if (hasKeyInput || envKeys.gemini) {
+                return { available: true, reason: 'Gemini API key is present.' };
+            }
+            return { available: false, reason: 'Missing GEMINI_API_KEY (set in .env or enter API key above).' };
+        }
+        if (prov === 'anthropic') {
+            if (hasKeyInput || envKeys.anthropic) {
+                return { available: true, reason: 'Anthropic API key is present.' };
+            }
+            return { available: false, reason: 'Missing ANTHROPIC_API_KEY (set in .env or enter API key above).' };
+        }
+        if (prov === 'buas') {
+            if (hasKeyInput || envKeys.buas) {
+                return { available: true, reason: 'BUas API key is present.' };
+            }
+            return { available: false, reason: 'Missing BUAS_API_KEY / API_KEY (set in .env or enter API key above).' };
+        }
+        if (prov === 'openai_compatible') {
+            if (_isLocalUrl(baseUrl)) {
+                return { available: true, reason: 'Local OpenAI-compatible endpoint (no API key required).' };
+            }
+            const lowUrl = baseUrl.toLowerCase();
+            if (lowUrl.includes('groq.com')) {
+                return (hasKeyInput || envKeys.groq)
+                    ? { available: true, reason: 'Groq API key is present.' }
+                    : { available: false, reason: 'Missing GROQ_API_KEY (set in .env or enter API key above).' };
+            }
+            if (lowUrl.includes('openrouter.ai')) {
+                return (hasKeyInput || envKeys.openrouter)
+                    ? { available: true, reason: 'OpenRouter API key is present.' }
+                    : { available: false, reason: 'Missing OPENROUTER_API_KEY (set in .env or enter API key above).' };
+            }
+            if (lowUrl.includes('openai.com')) {
+                return (hasKeyInput || envKeys.openai)
+                    ? { available: true, reason: 'OpenAI API key is present.' }
+                    : { available: false, reason: 'Missing OPENAI_API_KEY (set in .env or enter API key above).' };
+            }
+            return hasKeyInput
+                ? { available: true, reason: 'API key provided for remote endpoint.' }
+                : { available: false, reason: 'Remote OpenAI-compatible endpoint requires an API key.' };
+        }
+        return { available: true, reason: '' };
+    }
+
+    function evaluateVisionAvailability(mode, analysisEval) {
+        if (!aiAvailability) return { available: true, reason: 'Checking availability...' };
+        const pkgs = aiAvailability.packages || {};
+        const ollamaModels = (aiAvailability.ollama && aiAvailability.ollama.models) || [];
+        const ovm = document.getElementById('aiOllamaVisionModel').value.trim() || 'moondream';
+
+        if (mode === 'stroke_metrics') {
+            return { available: true, reason: 'Built-in OpenCV & NumPy geometric, fractal, symmetry & entropy analyzer — always available offline.' };
+        }
+        if (mode === 'auto') {
+            return { available: true, reason: 'Always available — uses an installed vision model when ready, otherwise falls back to built-in Geometric & Fractal analysis.' };
+        }
+        if (mode === 'ollama_vision') {
+            if (_isOllamaModelInstalled(ovm, ollamaModels)) {
+                return { available: true, reason: `Local Ollama vision model '${ovm}' is installed and ready.` };
+            }
+            return { available: false, reason: `Ollama vision model '${ovm}' is not installed on this machine. Run: ollama pull ${ovm}` };
+        }
+        if (mode === 'siglip' || mode === 'clip') {
+            const missing = [];
+            if (!pkgs.torch) missing.push('torch');
+            if (!pkgs.transformers) missing.push('transformers');
+            if (missing.length) {
+                return { available: false, reason: `Requires Python packages: ${missing.join(', ')} (not installed). Run: pip install torch transformers` };
+            }
+            return { available: true, reason: `torch & transformers installed — ${mode.toUpperCase()} is available.` };
+        }
+        if (mode === 'resnet50') {
+            if (!pkgs.tensorflow) {
+                return { available: false, reason: 'Requires Python package: tensorflow (not installed). Run: pip install tensorflow' };
+            }
+            return { available: true, reason: 'TensorFlow installed — ResNet50 is available.' };
+        }
+        if (mode === 'vision') {
+            const aProv = document.getElementById('analysis_provider').value;
+            const aMod = document.getElementById('analysis_model').value.trim();
+            if (!analysisEval.available) {
+                return { available: false, reason: `Analysis model is unavailable (${analysisEval.reason})` };
+            }
+            if (!_isVisionCapableModelName(aProv, aMod)) {
+                return { available: false, reason: `Analysis model '${aMod || aProv}' is text-only. Choose a vision-capable Analysis model (e.g. llava, moondream, gemini, claude, gpt-4o).` };
+            }
+            return { available: true, reason: `Analysis LLM (${aProv} / ${aMod}) natively supports image input.` };
+        }
+        return { available: true, reason: '' };
+    }
+
+    function updateAIAvailabilityUI() {
+        if (!aiAvailability) return;
+        const analysisEval = evaluateRoleAvailability('analysis');
+        const poemEval = evaluateRoleAvailability('poem');
+
+        // Annotate every Vision Mode option with Available / Unavailable while keeping all selectable
+        const vmSelect = document.getElementById('aiVisionMode');
+        Array.from(vmSelect.options).forEach(opt => {
+            const base = VISION_MODE_BASE_LABELS[opt.value] || opt.value;
+            const ev = evaluateVisionAvailability(opt.value, analysisEval);
+            opt.textContent = ev.available ? `[Available] ${base}` : `[Unavailable] ${base}`;
+        });
+
+        const curVisionMode = vmSelect.value;
+        const visionEval = evaluateVisionAvailability(curVisionMode, analysisEval);
+
+        // Render installed local summary + active vision mode banner
+        const banner = document.getElementById('visionAvailabilityBanner');
+        const ollamaModels = (aiAvailability.ollama && aiAvailability.ollama.models) || [];
+        const pkgs = aiAvailability.packages || {};
+        const modelChips = ollamaModels.length
+            ? ollamaModels.map(m => `<span class="badge bg-success bg-opacity-25 text-success border border-success me-1">${escapeHtml(m)}</span>`).join('')
+            : '<span class="text-muted">None pulled</span>';
+        const pkgStr = [
+            `torch: ${pkgs.torch ? 'installed' : 'missing'}`,
+            `transformers: ${pkgs.transformers ? 'installed' : 'missing'}`,
+            `tensorflow: ${pkgs.tensorflow ? 'installed' : 'missing'}`
+        ].join(' · ');
+
+        const statusBadge = visionEval.available
+            ? `<span class="badge bg-success me-2">Vision Ready</span><span class="text-success">${escapeHtml(visionEval.reason)}</span>`
+            : `<span class="badge bg-danger me-2">Vision Unavailable — Apply Disabled</span><span class="text-warning">${escapeHtml(visionEval.reason)}</span>`;
+
+        banner.innerHTML = `
+            <div class="mb-1">${statusBadge}</div>
+            <div class="text-muted" style="font-size: 0.78rem;">
+                <strong>Installed Local Ollama Models:</strong> ${modelChips}
+                <span class="ms-2">| <strong>ML Packages:</strong> ${escapeHtml(pkgStr)}</span>
+            </div>
+        `;
+
+        const aNote = document.getElementById('analysisAvailabilityNote');
+        aNote.innerHTML = analysisEval.available
+            ? `<span class="text-success">&#10003; ${escapeHtml(analysisEval.reason)}</span>`
+            : `<span class="text-warning">&#9888; Unavailable: ${escapeHtml(analysisEval.reason)}</span>`;
+
+        const pNote = document.getElementById('poemAvailabilityNote');
+        pNote.innerHTML = poemEval.available
+            ? `<span class="text-success">&#10003; ${escapeHtml(poemEval.reason)}</span>`
+            : `<span class="text-warning">&#9888; Unavailable: ${escapeHtml(poemEval.reason)}</span>`;
+
+        const saveVisionBtn = document.getElementById('saveVisionBtn');
+        const testVisionBtn = document.getElementById('testVisionBtn');
+        const saveABtn = document.getElementById('saveAnalysisBtn');
+        const savePBtn = document.getElementById('savePoemBtn');
+        const saveAllBtn = document.getElementById('saveAllAIBtn');
+
+        if (saveVisionBtn) {
+            saveVisionBtn.disabled = !visionEval.available;
+            saveVisionBtn.title = saveVisionBtn.disabled ? 'Selected Vision mode is unavailable on this machine' : '';
+        }
+        if (testVisionBtn) {
+            testVisionBtn.disabled = !visionEval.available;
+            testVisionBtn.title = testVisionBtn.disabled ? 'Selected Vision mode is unavailable on this machine' : '';
+        }
+        saveABtn.disabled = !analysisEval.available;
+        savePBtn.disabled = !poemEval.available;
+        saveAllBtn.disabled = !(analysisEval.available && poemEval.available && visionEval.available);
+
+        saveABtn.title = saveABtn.disabled ? 'Select an available Analysis model before applying' : '';
+        savePBtn.title = savePBtn.disabled ? 'Select an available Poem model before applying' : '';
+        saveAllBtn.title = saveAllBtn.disabled ? 'All selected models and vision mode must be available before applying' : '';
+
+        syncVisionSettingsPanels();
+    }
+
+    const DEFAULT_VISION_LABEL_PROMPT = 'Look at this abstract inkblot line drawing like a Rorschach test. What single creature, object, or natural symbol does it resemble most? Reply with only 1 to 3 words.';
+    const DEFAULT_VISION_DESC_PROMPT = 'Describe the visual shape, flow, tension, and mood of these abstract lines in two short sentences.';
+
+    function syncVisionSettingsPanels() {
+        const mode = document.getElementById('aiVisionMode').value;
+        const pOllama = document.getElementById('visionPanelOllama');
+        const pZeroShot = document.getElementById('visionPanelZeroShot');
+        const pResnet = document.getElementById('visionPanelResnet');
+        const pInfo = document.getElementById('visionPanelInfo');
+
+        pOllama.style.display = (mode === 'ollama_vision' || mode === 'auto') ? 'block' : 'none';
+        pZeroShot.style.display = (mode === 'siglip' || mode === 'clip') ? 'block' : 'none';
+        pResnet.style.display = (mode === 'resnet50') ? 'block' : 'none';
+
+        if (mode === 'stroke_metrics') {
+            pInfo.style.display = 'block';
+            pInfo.textContent = 'Built-in Fractal Dimension, Spatial Entropy, Bilateral Symmetry, and Loop Topology analyzer runs 100% locally in OpenCV/NumPy with zero extra prompts or downloads required.';
+        } else if (mode === 'vision') {
+            pInfo.style.display = 'block';
+            pInfo.textContent = 'Direct Vision LLM mode sends the drawing image straight to the Analysis Model below — tweak its System Prompt and Temperature inside the 1. Analysis Model card.';
+        } else {
+            pInfo.style.display = 'none';
+            pInfo.textContent = '';
+        }
+    }
+
+    function resetVisionDefaults() {
+        document.getElementById('visionLabelPrompt').value = DEFAULT_VISION_LABEL_PROMPT;
+        document.getElementById('visionDescPrompt').value = DEFAULT_VISION_DESC_PROMPT;
+        document.getElementById('visionOllamaTemp').value = 0.4;
+        document.getElementById('visionOllamaMaxTokens').value = 96;
+        document.getElementById('visionOllamaTimeout').value = 60;
+        document.getElementById('visionCleanLabel').checked = true;
+        document.getElementById('visionIncludeDesc').checked = true;
+        document.getElementById('visionBadgeStyle').value = 'vision_only';
+        document.getElementById('vision_test_result').innerHTML = '<span class="text-info">Defaults restored — click Apply Vision Settings to save.</span>';
+    }
+
+    function buildVisionPayload() {
+        const parsedTemp = parseFloat(document.getElementById('visionOllamaTemp').value);
+        const parsedTokens = parseInt(document.getElementById('visionOllamaMaxTokens').value, 10);
+        const parsedTimeout = parseInt(document.getElementById('visionOllamaTimeout').value, 10);
+        const parsedTopK = parseInt(document.getElementById('visionResnetTopK').value, 10);
+        return {
+            vision_mode: document.getElementById('aiVisionMode').value,
+            ollama_vision_model: document.getElementById('aiOllamaVisionModel').value.trim() || 'moondream',
+            vision: {
+                ollama_label_prompt: document.getElementById('visionLabelPrompt').value,
+                ollama_description_prompt: document.getElementById('visionDescPrompt').value,
+                ollama_include_description: document.getElementById('visionIncludeDesc').checked,
+                ollama_temperature: Number.isFinite(parsedTemp) ? parsedTemp : 0.4,
+                ollama_max_tokens: Number.isFinite(parsedTokens) ? parsedTokens : 96,
+                ollama_timeout: Number.isFinite(parsedTimeout) ? parsedTimeout : 60,
+                clean_label: document.getElementById('visionCleanLabel').checked,
+                badge_style: document.getElementById('visionBadgeStyle').value || 'vision_only',
+                zero_shot_archetypes: document.getElementById('visionZeroShotArchetypes').value,
+                zero_shot_tones: document.getElementById('visionZeroShotTones').value,
+                resnet_top_k: Number.isFinite(parsedTopK) ? parsedTopK : 1
+            }
+        };
+    }
+
+    async function loadVisionConfig() {
+        document.getElementById('vision_test_result').textContent = '';
+        try {
+            const res = await fetch('/api/ai/vision?t=' + Date.now());
+            if (!res.ok) return;
+            const data = await res.json();
+            const v = data.vision || {};
+            document.getElementById('aiVisionMode').value = data.vision_mode || 'auto';
+            document.getElementById('aiOllamaVisionModel').value = data.ollama_vision_model || 'moondream';
+            document.getElementById('visionBadgeStyle').value = v.badge_style || 'vision_only';
+            document.getElementById('visionOllamaTemp').value = v.ollama_temperature ?? 0.4;
+            document.getElementById('visionOllamaMaxTokens').value = v.ollama_max_tokens ?? 96;
+            document.getElementById('visionOllamaTimeout').value = v.ollama_timeout ?? 60;
+            document.getElementById('visionCleanLabel').checked = v.clean_label !== false;
+            document.getElementById('visionIncludeDesc').checked = v.ollama_include_description !== false;
+            document.getElementById('visionLabelPrompt').value = v.ollama_label_prompt || DEFAULT_VISION_LABEL_PROMPT;
+            document.getElementById('visionDescPrompt').value = v.ollama_description_prompt || DEFAULT_VISION_DESC_PROMPT;
+            document.getElementById('visionZeroShotArchetypes').value = v.zero_shot_archetypes || '';
+            document.getElementById('visionZeroShotTones').value = v.zero_shot_tones || '';
+            document.getElementById('visionResnetTopK').value = v.resnet_top_k ?? 1;
+            syncVisionSettingsPanels();
+        } catch (e) {
+            console.error('Failed to load vision config:', e);
+        }
+    }
+
+    async function saveVisionConfig(reloadAfter = true) {
+        if (aiAvailability) {
+            const aEval = evaluateRoleAvailability('analysis');
+            const vEval = evaluateVisionAvailability(document.getElementById('aiVisionMode').value, aEval);
+            if (!vEval.available) {
+                updateAIAvailabilityUI();
+                return false;
+            }
+        }
+        const payload = buildVisionPayload();
+        try {
+            const res = await fetch('/api/ai/vision', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.status === 'success') {
+                document.getElementById('vision_test_result').innerHTML = '<span class="text-success">Vision settings saved!</span>';
+                if (reloadAfter) {
+                    await Promise.all([loadVisionConfig(), loadAIAvailability()]);
+                    updateAIAvailabilityUI();
+                    updateMonitor();
+                }
+                return true;
+            } else {
+                alert('Save Vision failed: ' + (data.error || res.statusText));
+                return false;
+            }
+        } catch (e) {
+            alert('Save Vision error: ' + e);
+            return false;
+        }
+    }
+
+    async function testVisionModel() {
+        const saved = await saveVisionConfig(false);
+        if (!saved) return;
+        const out = document.getElementById('vision_test_result');
+        out.innerHTML = '<span class="text-info">Running vision model on latest drawing...</span>';
+        try {
+            const res = await fetch('/api/ai/vision/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.status === 'success') {
+                const rawInfo = data.raw_vision_label && data.raw_vision_label !== data.archetype
+                    ? ` <span class="text-muted">(raw: "${escapeHtml(data.raw_vision_label)}")</span>`
+                    : '';
+                const fbInfo = data.fallback_reason ? ` <span class="text-warning">[Fallback: ${escapeHtml(data.fallback_reason)}]</span>` : '';
+                out.innerHTML = `<span class="text-success">[${escapeHtml(data.effective_mode)} in ${escapeHtml(data.elapsed_sec)}s] Badge: <strong>${escapeHtml(data.archetype)}</strong>${rawInfo}</span>${fbInfo}`;
+            } else {
+                out.innerHTML = `<span class="text-danger">Error: ${escapeHtml(data.error || 'Vision test failed')}</span>`;
+            }
+        } catch (e) {
+            out.innerHTML = `<span class="text-danger">Error: ${escapeHtml(e)}</span>`;
+        }
+    }
+
+    async function loadAIAvailability() {
+        try {
+            const res = await fetch('/api/ai/availability?t=' + Date.now());
+            if (res.ok) {
+                aiAvailability = await res.json();
+                updateAIAvailabilityUI();
+            }
+        } catch (e) {
+            console.error('Failed to check AI availability:', e);
+        }
+    }
+
     function applyRolePreset(role, provider, model, baseUrl, ollamaVisionModel = null) {
         const provEl = document.getElementById(`${role}_provider`);
         const baseEl = document.getElementById(`${role}_base_url`);
@@ -1087,16 +1586,23 @@
         if (ollamaVisionModel) {
             document.getElementById('aiOllamaVisionModel').value = ollamaVisionModel;
         }
+        updateAIAvailabilityUI();
     }
+
+    document.getElementById('aiVisionMode').addEventListener('change', updateAIAvailabilityUI);
+    document.getElementById('aiOllamaVisionModel').addEventListener('input', updateAIAvailabilityUI);
 
     ['analysis', 'poem'].forEach(role => {
         document.getElementById(`${role}_api_key`).addEventListener('input', (e) => {
             if (e.target.value.trim()) {
                 document.getElementById(`${role}_clear_api_key`).checked = false;
             }
+            updateAIAvailabilityUI();
         });
-        document.getElementById(`${role}_provider`).addEventListener('change', () => syncEndpointKeyGuard(role));
-        document.getElementById(`${role}_base_url`).addEventListener('input', () => syncEndpointKeyGuard(role));
+        document.getElementById(`${role}_clear_api_key`).addEventListener('change', updateAIAvailabilityUI);
+        document.getElementById(`${role}_provider`).addEventListener('change', () => { syncEndpointKeyGuard(role); updateAIAvailabilityUI(); });
+        document.getElementById(`${role}_base_url`).addEventListener('input', () => { syncEndpointKeyGuard(role); updateAIAvailabilityUI(); });
+        document.getElementById(`${role}_model`).addEventListener('input', updateAIAvailabilityUI);
     });
 
     function copyAnalysisToPoem() {
@@ -1122,7 +1628,8 @@
                 document.getElementById('poem_api_key_status').textContent = nextProv === 'ollama' ? '(Optional for Ollama)' : '(Enter API key or reuse shared key)';
             }
         }
-        document.getElementById('poem_test_result').innerHTML = '<span class="text-info">Copied provider &amp; model from Analysis — click Save Poem Model to apply.</span>';
+        document.getElementById('poem_test_result').innerHTML = '<span class="text-info">Copied provider &amp; model from Analysis — click Apply Poem Model to apply.</span>';
+        updateAIAvailabilityUI();
     }
 
     async function loadSingleRoleConfig(role) {
@@ -1152,10 +1659,6 @@
                 document.getElementById(`${role}_restrictions`).value = c.restrictions || '';
                 document.getElementById(`${role}_additional`).value = c.additional || '';
                 document.getElementById(`${role}_temp`).value = c.temperature ?? (role === 'poem' ? 0.8 : 0.7);
-                if (role === 'analysis') {
-                    document.getElementById('aiVisionMode').value = c.vision_mode || 'auto';
-                    document.getElementById('aiOllamaVisionModel').value = c.ollama_vision_model || 'moondream';
-                }
                 document.getElementById(`${role}_api_key`).value = '';
                 document.getElementById(`${role}_clear_api_key`).checked = false;
                 document.getElementById(`${role}_api_key_status`).textContent = c.has_api_key
@@ -1207,10 +1710,13 @@
 
     async function loadAIConfig() {
         await Promise.all([
+            loadVisionConfig(),
             loadSingleRoleConfig('analysis'),
             loadSingleRoleConfig('poem'),
-            loadTTSSettings()
+            loadTTSSettings(),
+            loadAIAvailability()
         ]);
+        updateAIAvailabilityUI();
     }
 
     function buildRolePayload(role) {
@@ -1231,9 +1737,7 @@
             capabilities: document.getElementById(`${role}_capabilities`).value,
             restrictions: document.getElementById(`${role}_restrictions`).value,
             additional: document.getElementById(`${role}_additional`).value,
-            temperature: Number.isFinite(parsedTemp) ? parsedTemp : defaultTemp,
-            vision_mode: document.getElementById('aiVisionMode').value,
-            ollama_vision_model: document.getElementById('aiOllamaVisionModel').value.trim() || 'moondream'
+            temperature: Number.isFinite(parsedTemp) ? parsedTemp : defaultTemp
         };
         if (clearKey) {
             config.api_key = '';
@@ -1244,6 +1748,13 @@
     }
 
     async function saveRoleConfig(role, reloadAfter = true) {
+        if (aiAvailability) {
+            const roleEval = evaluateRoleAvailability(role);
+            if (!roleEval.available) {
+                updateAIAvailabilityUI();
+                return false;
+            }
+        }
         const config = buildRolePayload(role);
         try {
             const res = await fetch('/api/ai/config', {
@@ -1255,7 +1766,8 @@
             if (res.ok && data.status === 'Success') {
                 document.getElementById(`${role}_test_result`).innerHTML = '<span class="text-success">Saved!</span>';
                 if (reloadAfter) {
-                    await loadSingleRoleConfig(role);
+                    await Promise.all([loadSingleRoleConfig(role), loadAIAvailability()]);
+                    updateAIAvailabilityUI();
                     updateMonitor();
                 }
                 return true;
@@ -1270,14 +1782,25 @@
     }
 
     async function saveAllAIConfig() {
+        if (aiAvailability) {
+            const aEval = evaluateRoleAvailability('analysis');
+            const pEval = evaluateRoleAvailability('poem');
+            const vEval = evaluateVisionAvailability(document.getElementById('aiVisionMode').value, aEval);
+            if (!aEval.available || !pEval.available || !vEval.available) {
+                updateAIAvailabilityUI();
+                return;
+            }
+        }
+        const okV = await saveVisionConfig(false);
         const okA = await saveRoleConfig('analysis', false);
         const okP = await saveRoleConfig('poem', false);
         await saveTTSSettings();
         await loadAIConfig();
         updateMonitor();
-        if (okA && okP) {
-            document.getElementById('analysis_test_result').innerHTML = '<span class="text-success">Both models saved!</span>';
-            document.getElementById('poem_test_result').innerHTML = '<span class="text-success">Both models saved!</span>';
+        if (okV && okA && okP) {
+            document.getElementById('vision_test_result').innerHTML = '<span class="text-success">Vision saved!</span>';
+            document.getElementById('analysis_test_result').innerHTML = '<span class="text-success">Saved!</span>';
+            document.getElementById('poem_test_result').innerHTML = '<span class="text-success">Saved!</span>';
         }
     }
 

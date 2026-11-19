@@ -87,10 +87,64 @@ DEFAULT_POEM_PROMPT = (
     "Return ONLY the poem text without titles, markdown code blocks, or introductory commentary."
 )
 
+DEFAULT_VISION_LABEL_PROMPT = (
+    "Look at this abstract inkblot line drawing like a Rorschach test. "
+    "What single creature, object, or natural symbol does it resemble most? "
+    "Reply with only 1 to 3 words."
+)
+
+DEFAULT_VISION_DESCRIPTION_PROMPT = (
+    "Describe the visual shape, flow, tension, and mood of these abstract lines in two short sentences."
+)
+
+ALLOWED_VISION_BADGE_STYLES = {"vision_only", "combined", "geometry_only"}
+ALLOWED_VISION_KEYS = {
+    "ollama_label_prompt",
+    "ollama_description_prompt",
+    "ollama_include_description",
+    "ollama_temperature",
+    "ollama_max_tokens",
+    "ollama_timeout",
+    "clean_label",
+    "badge_style",
+    "zero_shot_archetypes",
+    "zero_shot_tones",
+    "resnet_top_k",
+}
+ALLOWED_VV_ATTRIBUTION_KEYS = {
+    "enabled",
+    "show_logo",
+    "logo_path",
+    "community_name",
+    "intro_text",
+    "learn_more_text",
+    "website_label",
+    "website_url",
+    "linkedin_label",
+    "linkedin_url",
+    "facebook_label",
+    "facebook_url",
+    "custom_note",
+}
+_OLLAMA_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$")
+
 DEFAULT_SETTINGS = {
     "ai": {
         "vision_mode": "auto",  # "auto", "vision", "ollama_vision", "siglip", "clip", "stroke_metrics", "resnet50"
         "ollama_vision_model": "moondream",
+        "vision": {
+            "ollama_label_prompt": DEFAULT_VISION_LABEL_PROMPT,
+            "ollama_description_prompt": DEFAULT_VISION_DESCRIPTION_PROMPT,
+            "ollama_include_description": True,
+            "ollama_temperature": 0.4,
+            "ollama_max_tokens": 96,
+            "ollama_timeout": 60,
+            "clean_label": True,
+            "badge_style": "vision_only",  # "vision_only" | "combined" | "geometry_only"
+            "zero_shot_archetypes": "",
+            "zero_shot_tones": "",
+            "resnet_top_k": 1,
+        },
         "analysis": {
             "provider": "ollama",  # "ollama", "gemini", "anthropic", "openai_compatible", "buas"
             "model": "llama3.2",
@@ -499,6 +553,9 @@ def validate_attributions_data(data: dict) -> dict:
         vv = cleaned["veszprem_vibe"]
         if not isinstance(vv, dict):
             raise ValueError("attributions.veszprem_vibe must be an object")
+        unknown_vv = set(vv.keys()) - ALLOWED_VV_ATTRIBUTION_KEYS
+        if unknown_vv:
+            raise ValueError(f"Unknown attributions.veszprem_vibe keys: {sorted(unknown_vv)}")
         vv_clean = deepcopy(vv)
         for bool_field in ("enabled", "show_logo"):
             if bool_field in vv_clean and not isinstance(vv_clean[bool_field], bool):
@@ -563,7 +620,80 @@ def validate_ai_data(data: dict) -> dict:
     if "ollama_vision_model" in cleaned:
         if not isinstance(cleaned["ollama_vision_model"], str):
             raise ValueError("ollama_vision_model must be a string")
-        cleaned["ollama_vision_model"] = cleaned["ollama_vision_model"].strip()[:120] or "moondream"
+        ovm = cleaned["ollama_vision_model"].strip() or "moondream"
+        if not _OLLAMA_MODEL_NAME_RE.match(ovm):
+            raise ValueError("ollama_vision_model contains disallowed characters or exceeds 120 chars")
+        cleaned["ollama_vision_model"] = ovm
+
+    if "vision" in cleaned:
+        vc = cleaned["vision"]
+        if not isinstance(vc, dict):
+            raise ValueError("ai.vision must be an object")
+        unknown_v = set(vc.keys()) - ALLOWED_VISION_KEYS
+        if unknown_v:
+            raise ValueError(f"Unknown ai.vision keys: {sorted(unknown_v)}")
+        vc_clean = deepcopy(vc)
+        for s_field in ("ollama_label_prompt", "ollama_description_prompt", "zero_shot_archetypes", "zero_shot_tones"):
+            if s_field in vc_clean:
+                if vc_clean[s_field] is None:
+                    vc_clean[s_field] = ""
+                elif not isinstance(vc_clean[s_field], str):
+                    raise ValueError(f"ai.vision.{s_field} must be a string")
+                elif len(vc_clean[s_field]) > MAX_PROMPT_FIELD_CHARS:
+                    raise ValueError(f"ai.vision.{s_field} exceeds {MAX_PROMPT_FIELD_CHARS} characters")
+        for b_field in ("ollama_include_description", "clean_label"):
+            if b_field in vc_clean and not isinstance(vc_clean[b_field], bool):
+                vc_clean[b_field] = bool(vc_clean[b_field])
+        if "badge_style" in vc_clean:
+            bs = str(vc_clean["badge_style"] or "vision_only").strip().lower()
+            if bs not in ALLOWED_VISION_BADGE_STYLES:
+                raise ValueError(f"ai.vision.badge_style must be one of {sorted(ALLOWED_VISION_BADGE_STYLES)}")
+            vc_clean["badge_style"] = bs
+        if "ollama_temperature" in vc_clean:
+            raw_vt = vc_clean["ollama_temperature"]
+            if isinstance(raw_vt, bool):
+                raise ValueError("ai.vision.ollama_temperature must be numeric")
+            try:
+                vt = float(raw_vt)
+            except (TypeError, ValueError) as e:
+                raise ValueError("ai.vision.ollama_temperature must be numeric") from e
+            if not math.isfinite(vt) or vt < 0.0 or vt > 2.0:
+                raise ValueError("ai.vision.ollama_temperature must be between 0.0 and 2.0")
+            vc_clean["ollama_temperature"] = vt
+        if "ollama_max_tokens" in vc_clean:
+            raw_mt = vc_clean["ollama_max_tokens"]
+            if isinstance(raw_mt, bool):
+                raise ValueError("ai.vision.ollama_max_tokens must be an integer")
+            try:
+                mt = int(raw_mt)
+            except (TypeError, ValueError) as e:
+                raise ValueError("ai.vision.ollama_max_tokens must be an integer") from e
+            if mt < 16 or mt > 1024:
+                raise ValueError("ai.vision.ollama_max_tokens must be between 16 and 1024")
+            vc_clean["ollama_max_tokens"] = mt
+        if "ollama_timeout" in vc_clean:
+            raw_to = vc_clean["ollama_timeout"]
+            if isinstance(raw_to, bool):
+                raise ValueError("ai.vision.ollama_timeout must be an integer")
+            try:
+                to_val = int(raw_to)
+            except (TypeError, ValueError) as e:
+                raise ValueError("ai.vision.ollama_timeout must be an integer") from e
+            if to_val < 5 or to_val > 180:
+                raise ValueError("ai.vision.ollama_timeout must be between 5 and 180 seconds")
+            vc_clean["ollama_timeout"] = to_val
+        if "resnet_top_k" in vc_clean:
+            raw_k = vc_clean["resnet_top_k"]
+            if isinstance(raw_k, bool):
+                raise ValueError("ai.vision.resnet_top_k must be an integer")
+            try:
+                kv = int(raw_k)
+            except (TypeError, ValueError) as e:
+                raise ValueError("ai.vision.resnet_top_k must be an integer") from e
+            if kv < 1 or kv > 5:
+                raise ValueError("ai.vision.resnet_top_k must be between 1 and 5")
+            vc_clean["resnet_top_k"] = kv
+        cleaned["vision"] = vc_clean
 
     for role in ("analysis", "poem"):
         if role not in cleaned:

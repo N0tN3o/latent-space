@@ -2,8 +2,11 @@ import cv2
 import numpy as np
 
 
+BRUSH_THEMES = ("classic", "ember", "indigo")
+
+
 class GazePainter:
-    def __init__(self, width=1280, height=720, dwell_radius=0.03):
+    def __init__(self, width=1280, height=720, dwell_radius=0.03, theme="classic"):
         """Initialize the gaze painter with a blank canvas and 3x3 dwell tracker."""
         self.w = width
         self.h = height
@@ -12,8 +15,16 @@ class GazePainter:
         self.dwell_time = 0.0
         self.dwell_radius = dwell_radius
         self.stroke_color = (0, 0, 0)  # Black in BGR
+        self.theme = theme if theme in BRUSH_THEMES else "classic"
         self.has_drawn = False
         self.dwell_grid = np.zeros((3, 3), dtype=np.float32)
+
+    def cycle_theme(self) -> str:
+        """Cycle through Classic Obsidian, Velocity Ember, and Midnight Indigo brush styles."""
+        idx = BRUSH_THEMES.index(self.theme) if self.theme in BRUSH_THEMES else 0
+        self.theme = BRUSH_THEMES[(idx + 1) % len(BRUSH_THEMES)]
+        print(f"Brush ink theme switched to: {self.theme.upper()}")
+        return self.theme
 
     def clear(self):
         """Clear the canvas and reset stroke/dwell state."""
@@ -60,11 +71,24 @@ class GazePainter:
         line_width = max(1, min(40, line_width))
 
         color_var = int(255 * speed_factor)
-        color = (
-            max(0, self.stroke_color[0] - color_var // 3),
-            self.stroke_color[1],
-            min(255, self.stroke_color[2] + color_var // 3),
-        )
+        if self.theme == "ember":
+            # BGR: deep charcoal -> crimson -> warm amber with speed
+            r = min(230, 50 + int(180 * speed_factor))
+            g = min(140, 20 + int(110 * speed_factor))
+            b = max(10, 45 - int(35 * speed_factor))
+            color = (b, g, r)
+        elif self.theme == "indigo":
+            # BGR: midnight indigo -> cobalt blue with speed
+            r = min(100, 15 + int(65 * speed_factor))
+            g = min(140, 25 + int(90 * speed_factor))
+            b = min(230, 80 + int(145 * speed_factor))
+            color = (b, g, r)
+        else:
+            color = (
+                max(0, self.stroke_color[0] - color_var // 3),
+                self.stroke_color[1],
+                min(255, self.stroke_color[2] + color_var // 3),
+            )
         cv2.line(self.canvas, self.prev_point, cur_point, color, line_width, cv2.LINE_AA)
         cv2.circle(self.canvas, cur_point, max(1, line_width // 2), color, -1, cv2.LINE_AA)
         self.has_drawn = True
@@ -74,17 +98,19 @@ class GazePainter:
         """Return the drawing canvas image."""
         return self.canvas
 
-    def get_canvas_with_cursor(self, gaze_norm):
-        """Get canvas with a cursor indicator at current gaze position."""
+    def get_canvas_with_cursor(self, gaze_norm, mode_label: str = ""):
+        """Get canvas with a cursor indicator and subtle HUD hint at current gaze position."""
         display = self.canvas.copy()
         if gaze_norm is not None:
             gx = int(np.clip(gaze_norm[0], 0, 1) * self.w)
             gy = int(np.clip(gaze_norm[1], 0, 1) * self.h)
             cursor_size = 20
-            cursor_color = (0, 255, 0)
+            cursor_color = (246, 130, 59) if mode_label.upper() == "FLOW" else (0, 200, 80)
             cv2.line(display, (gx - cursor_size, gy), (gx + cursor_size, gy), cursor_color, 1)
             cv2.line(display, (gx, gy - cursor_size), (gx, gy + cursor_size), cursor_color, 1)
             cv2.circle(display, (gx, gy), 8, cursor_color, 1)
+        hud = f"Mode: {(mode_label or 'DIRECT').upper()} [m]  |  Brush: {self.theme.upper()} [b]  |  [Space] Center  |  [c] Recalibrate"
+        cv2.putText(display, hud, (16, self.h - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (120, 120, 120), 1, cv2.LINE_AA)
         return display
 
     def get_calibration_canvas(self, progress_pct: int):

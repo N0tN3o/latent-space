@@ -166,6 +166,31 @@ def _setup_logger(name, filename, fmt="%(asctime)s;%(name)s;%(levelname)s;%(mess
 main_logger = _setup_logger("image_analysis_pipeline", "installation.log")
 response_logger = _setup_logger("request_responses", "responses.log")
 prediction_logger = _setup_logger("predictions", "predictions.csv", fmt="%(asctime)s;%(message)s")
+vision_logger = _setup_logger("vision_perception", "vision.log")
+
+
+def _log_vision_entry(payload: dict):
+    """Append a structured vision perception entry to the active config_manager.LOGS_DIR/vision.log."""
+    try:
+        config_manager.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        target = (config_manager.LOGS_DIR / "vision.log").resolve()
+        needs_rebind = not vision_logger.handlers or not any(
+            isinstance(h, logging.FileHandler) and Path(getattr(h, "baseFilename", "")).resolve() == target
+            for h in vision_logger.handlers
+        )
+        if needs_rebind:
+            for h in list(vision_logger.handlers):
+                try:
+                    h.close()
+                except Exception:
+                    pass
+                vision_logger.removeHandler(h)
+            fh = logging.FileHandler(target, encoding="utf-8")
+            fh.setFormatter(logging.Formatter("%(asctime)s;%(name)s;%(levelname)s;%(message)s"))
+            vision_logger.addHandler(fh)
+        vision_logger.info(json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        pass
 
 CHROME_CANDIDATES = [
     r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
@@ -822,9 +847,28 @@ def run_analysis_pipeline(
         )
         summary_label = perception["label"]
         prompt_context = perception["prompt_context"]
+        effective_vision = perception.get("effective_mode", vision_mode)
+        fallback_reason = perception.get("fallback_reason", "")
+        geom_metrics = {k: v for k, v in (perception.get("geometry") or {}).items() if k != "description"}
         safe_csv_label = str(summary_label).replace("\r", " ").replace("\n", " ").replace(";", ",")
         prediction_logger.info(safe_csv_label)
-        main_logger.info(f"[{rid}] Visual perception archetype: {summary_label}")
+        if fallback_reason:
+            main_logger.warning(f"[{rid}] Vision fallback: {fallback_reason}")
+        main_logger.info(f"[{rid}] Visual perception archetype: {summary_label} (effective={effective_vision})")
+        _log_vision_entry({
+            "run_id": rid,
+            "requested_mode": perception.get("requested_mode", vision_mode),
+            "effective_mode": effective_vision,
+            "fallback_reason": fallback_reason,
+            "archetype": summary_label,
+            "raw_vision_label": perception.get("raw_vision_label", ""),
+            "badge_style": perception.get("badge_style", "vision_only"),
+            "elapsed_sec": perception.get("elapsed_sec"),
+            "vision_options": perception.get("vision_options", {}),
+            "metrics": geom_metrics,
+            "vision_output": perception.get("vision_output", ""),
+            "prompt_context": prompt_context,
+        })
 
         _check_cancelled()
 

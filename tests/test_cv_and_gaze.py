@@ -396,6 +396,50 @@ class TestCVAndGeometry(unittest.TestCase):
         })
         self.assertFalse(analysis._analysis_llm_handles_vision_natively())
 
+    def test_vision_label_cleaning_and_ollama_vision_options(self):
+        # 1. Conversational & numbered VLM replies are filtered into crisp gallery badge titles
+        self.assertEqual(analysis.clean_vision_archetype_label("1) The lines resemble a snake."), "Snake")
+        self.assertEqual(analysis.clean_vision_archetype_label("Title: Coiled Serpent\nIt winds sharply."), "Coiled Serpent")
+        self.assertEqual(analysis.clean_vision_archetype_label("This abstract drawing looks like a bird in flight."), "Bird in Flight")
+        self.assertEqual(analysis.clean_vision_archetype_label("A black and white line drawing of a tree."), "Tree")
+        self.assertEqual(analysis.clean_vision_archetype_label("An abstract line drawing on a white background.", fallback="Electric Drift"), "Electric Drift")
+
+        # 2. run_ollama_vision_analysis honors configured prompts, temperature, max_tokens, and badge_style
+        img_path = TEST_TMP / "moondream_sample.png"
+        canvas = np.ones((256, 256), dtype=np.uint8) * 255
+        cv2.ellipse(canvas, (128, 128), (80, 40), 20, 0, 360, 0, 4)
+        cv2.line(canvas, (30, 180), (220, 70), 0, 4)
+        cv2.imwrite(str(img_path), canvas)
+
+        config_manager.update_settings_section("ai", {
+            "vision_mode": "ollama_vision",
+            "ollama_vision_model": "moondream",
+            "vision": {
+                "ollama_label_prompt": "Name the shape in 2 words.",
+                "ollama_description_prompt": "Describe the strokes.",
+                "ollama_include_description": True,
+                "ollama_temperature": 0.35,
+                "ollama_max_tokens": 80,
+                "ollama_timeout": 45,
+                "clean_label": True,
+                "badge_style": "combined",
+            },
+        })
+        r1 = mock.MagicMock(ok=True)
+        r1.json.return_value = {"response": "1) The lines resemble a snake."}
+        r2 = mock.MagicMock(ok=True)
+        r2.json.return_value = {"response": "Sharp sweeping coils dart dynamically across the center."}
+        with mock.patch("analysis.requests.post", side_effect=[r1, r2]) as post_mock:
+            res = analysis.analyze_drawing(str(img_path), mode="ollama_vision")
+
+        self.assertEqual(post_mock.call_count, 2)
+        first_call = post_mock.call_args_list[0].kwargs
+        self.assertEqual(first_call["json"]["options"]["temperature"], 0.35)
+        self.assertEqual(first_call["timeout"], 45)
+        self.assertEqual(res["raw_vision_label"], "1) The lines resemble a snake.")
+        self.assertTrue(res["label"].startswith("Snake · "))
+        self.assertIn("Sharp sweeping coils", res["prompt_context"])
+
 
 class TestTimeBasedAffineGazeCalibration(unittest.TestCase):
     def _make_fake_tracker(self):

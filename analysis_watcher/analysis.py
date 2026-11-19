@@ -1,7 +1,11 @@
 import base64
+import importlib.util
+import os
 from pathlib import Path
+import re
 import sys
 import threading
+import time
 import cv2
 import numpy as np
 import requests
@@ -13,14 +17,21 @@ for p in (str(PROJECT_ROOT), str(CURRENT_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from config_manager import get_configured_ollama_host, load_settings
+from config_manager import (
+    DEFAULT_VISION_DESCRIPTION_PROMPT,
+    DEFAULT_VISION_LABEL_PROMPT,
+    get_configured_ollama_host,
+    load_env_vars,
+    load_settings,
+)
 from heatmap import compute_zone_matrix
 from preprocess_image import extract_ink_mask
 
 _CACHE_LOCK = threading.Lock()
-_CLIP_CACHE = {"model": None, "processor": None, "failed": False}
-_SIGLIP_CACHE = {"model": None, "processor": None, "failed": False}
-_RESNET_CACHE = {"model": None, "failed": False}
+_CLIP_CACHE = {"model": None, "processor": None, "failed": False, "last_error": ""}
+_SIGLIP_CACHE = {"model": None, "processor": None, "failed": False, "last_error": ""}
+_RESNET_CACHE = {"model": None, "failed": False, "last_error": ""}
+_LAST_OLLAMA_VISION_ERROR = ""
 
 ABSTRACT_FORM_PROMPTS = [
     ("a spiraling vortex of concentric loops", "Spiraling Vortex"),
@@ -288,28 +299,44 @@ def analyze_stroke_geometry(filename: str, canvas_filename: str = None, dwell_gr
     contours, hierarchy = cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     num_components, enclosed_loops, sharp_bends, total_perim = _count_sharp_bends(contours, hierarchy, binary=binary)
 
-    if enclosed_loops >= 6:
-        structure_desc = f"an intricate lattice of {enclosed_loops} enclosed loops and recurring self-intersecting orbits"
-        archetype_hint = "Fractal Labyrinth"
-    elif enclosed_loops >= 2:
-        structure_desc = f"intertwining paths forming {enclosed_loops} enclosed focal chambers"
-        archetype_hint = "Intertwined Orbits"
-    elif num_components > 8:
+    bends_per_100px = (sharp_bends / max(total_perim / 100.0, 1.0)) if total_perim > 0 else 0.0
+    is_angular = sharp_bends >= 3 and bends_per_100px >= 0.16
+    line_quality = (
+        "angular, darting, and electric with sudden directional shifts"
+        if is_angular
+        else "fluid, sweeping, and organic in its transitions"
+    )
+
+    if horiz_sym > 0.62 and vert_sym > 0.62:
+        structure_desc = f"a balanced symmetrical form of {enclosed_loops} enclosed chambers"
+        archetype_hint = "Rorschach Mirror"
+    elif num_components > 8 and enclosed_loops < 10:
         structure_desc = "fragmented, staccato bursts of attention jumping rapidly across the canvas"
         archetype_hint = "Saccadic Constellation"
+    elif enclosed_loops >= 35 or (enclosed_loops >= 28 and fractal_dim >= 1.53):
+        structure_desc = f"an intricate lattice of {enclosed_loops} enclosed loops and recurring self-intersecting orbits"
+        archetype_hint = "Fractal Labyrinth"
+    elif horiz_sym > 0.50:
+        structure_desc = f"a horizontally mirrored web of {enclosed_loops} intersecting loops"
+        archetype_hint = "Bilateral Echo"
+    elif spatial_entropy < 0.52 and enclosed_loops >= 6:
+        structure_desc = f"a tightly anchored vortex of {enclosed_loops} concentrated loops around the {primary_zone}"
+        archetype_hint = "Focused Vortex"
+    elif spatial_entropy >= 0.65 and enclosed_loops >= 6:
+        structure_desc = f"wide-ranging excursions across the canvas weaving {enclosed_loops} open loops"
+        archetype_hint = "Electric Drift" if is_angular else "Panoramic Currents"
+    elif enclosed_loops >= 12:
+        structure_desc = f"intertwining paths forming {enclosed_loops} overlapping focal chambers"
+        archetype_hint = "Intertwined Orbits"
+    elif enclosed_loops >= 2:
+        structure_desc = f"deliberate intersecting paths forming {enclosed_loops} enclosed focal chambers"
+        archetype_hint = "Woven Loops"
     elif fractal_dim >= 1.32:
         structure_desc = "a densely woven tapestry of searching movements"
         archetype_hint = "Woven Tapestry"
     else:
         structure_desc = "a continuous, unbroken stream-of-consciousness trajectory"
         archetype_hint = "Continuous Horizon Trace"
-
-    bends_per_100px = (sharp_bends / max(total_perim / 100.0, 1.0)) if total_perim > 0 else 0.0
-    line_quality = (
-        "angular, darting, and electric with sudden directional shifts"
-        if (sharp_bends >= 3 and bends_per_100px >= 0.16)
-        else "fluid, sweeping, and organic in its transitions"
-    )
 
     description = (
         f"Visual & Gaze Composition Profile:\n"
@@ -334,51 +361,230 @@ def analyze_stroke_geometry(filename: str, canvas_filename: str = None, dwell_gr
         "primary_zone": primary_zone,
         "secondary_zone": secondary_zone,
         "enclosed_loops": enclosed_loops,
+        "num_components": num_components,
+        "sharp_bends": sharp_bends,
+        "bends_per_100px": round(bends_per_100px, 3),
+        "line_quality": "angular" if is_angular else "fluid",
     }
+
+
+_GENERIC_VISION_LABELS = {
+    "line", "lines", "drawing", "line drawing", "abstract drawing", "abstract line drawing",
+    "abstract art", "abstract sketch", "sketch", "scribble", "scribbles", "black lines",
+    "black and white", "black and white drawing", "black and white line drawing",
+    "white background", "blank", "nothing", "unknown", "none", "ink", "inkblot",
+    "rorschach", "rorschach inkblot", "abstract", "shape", "shapes", "doodle", "doodles",
+    "strokes", "abstract lines", "tangled lines", "messy lines",
+}
+
+_GENERIC_MEDIA_WORDS = {
+    "a", "an", "the", "and", "of", "in", "on", "with", "abstract", "black", "white",
+    "line", "lines", "drawing", "sketch", "scribble", "scribbles", "ink", "inkblot",
+    "rorschach", "image", "picture", "art", "artwork", "doodle", "strokes", "stroke",
+    "simple", "random", "messy", "tangled", "minimalist", "background", "canvas", "shape", "shapes",
+}
+
+_SMALL_TITLE_WORDS = {"a", "an", "and", "as", "at", "by", "for", "from", "in", "into", "of", "on", "or", "the", "to", "with"}
+
+_VISION_PREAMBLE_PATTERNS = [
+    r"^\s*(?:\d+\s*[\)\.\:\-]\s*)+",
+    r"^\s*[\-\*\u2022]+\s*",
+    r"^\s*(?:title|archetype|pareidolia|symbol|shape|object|creature|answer|label|image)\s*[:\-]\s*",
+    r"^\s*(?:in\s+this\s+(?:image|drawing|sketch|inkblot)\s*,?\s*)",
+    r"^\s*(?:this|the)\s+(?:abstract\s+)?(?:black[\-\s]and[\-\s]white\s+)?(?:line\s+)?(?:drawing|sketch|image|inkblot|lines?|strokes?|artwork|picture|composition)\s+(?:most\s+)?(?:closely\s+|vaguely\s+|strongly\s+)?(?:resembles?|looks?\s+like|depicts?|shows?|appears?\s+to\s+be|suggests?|reminds?\s+(?:me\s+)?of|is\s+similar\s+to|could\s+be|might\s+be|is)\s+",
+    r"^\s*(?:it|they|this)\s+(?:most\s+)?(?:closely\s+|vaguely\s+|strongly\s+)?(?:resembles?|looks?\s+like|depicts?|shows?|appears?\s+to\s+be|suggests?|reminds?\s+(?:me\s+)?of|could\s+be|might\s+be|is)\s+",
+    r"^\s*(?:i\s+(?:can\s+)?see|looks?\s+like|resembles?|depicts?|shows?)\s+",
+    r"^\s*(?:an?\s+)?(?:abstract\s+)?(?:black[\-\s]and[\-\s]white\s+)?(?:line\s+)?(?:drawing|sketch|illustration|silhouette|outline|image|representation|depiction)\s+of\s+",
+    r"^\s*(?:a|an|the)\s+",
+]
+
+
+def _title_case_archetype(text: str) -> str:
+    words = text.split()
+    out = []
+    for idx, w in enumerate(words):
+        low = w.lower()
+        if idx > 0 and low in _SMALL_TITLE_WORDS:
+            out.append(low)
+        else:
+            out.append(low.capitalize())
+    return " ".join(out)
+
+
+def clean_vision_archetype_label(raw_text: str, fallback: str = "") -> str:
+    """
+    Filter conversational VLM outputs (e.g. '1) The lines resemble a snake.') into a clean,
+    concise gallery badge archetype (e.g. 'Snake'). Falls back cleanly if the model only
+    returns generic boilerplate like 'abstract line drawing'.
+    """
+    if not raw_text or not str(raw_text).strip():
+        return fallback
+
+    # Pick first non-empty line, strip markdown formatting/quotes
+    lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
+    if not lines:
+        return fallback
+    s = lines[0]
+    s = re.sub(r"[`*_~]+", "", s).strip().strip("\"'“”‘’()[]")
+
+    # Apply preamble stripping iteratively (e.g., "1) The lines resemble a ..." -> "...")
+    for _ in range(4):
+        prev = s
+        for pat in _VISION_PREAMBLE_PATTERNS:
+            s = re.sub(pat, "", s, flags=re.IGNORECASE).strip()
+        s = s.strip("\"'“”‘’()[]")
+        if s == prev:
+            break
+
+    # Take first sentence / clause before period, semicolon, question, exclamation, or parenthetical aside
+    s = re.split(r"[\.!?;]|(?:\s+[—–-]\s+)|\(", s, maxsplit=1)[0].strip()
+    # Remove trailing filler like "on a white background" or "made of lines"
+    s = re.sub(
+        r"\s+(?:on\s+a\s+white\s+background|drawn\s+with\s+.*|made\s+(?:of|from)\s+.*|in\s+black\s+and\s+white)$",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    ).strip()
+    s = re.sub(r"\s+", " ", s).strip(" ,:-•\"'“”‘’")
+
+    # Re-strip leading article if sentence-splitting exposed one
+    s = re.sub(r"^(?:a|an|the)\s+", "", s, flags=re.IGNORECASE).strip()
+
+    if not s or len(s) < 2:
+        return fallback
+    low_s = s.lower()
+    if low_s in _GENERIC_VISION_LABELS or all(w in _GENERIC_MEDIA_WORDS for w in low_s.split()):
+        return fallback
+
+    # Cap to a clean 4-word / 34-char gallery pill title
+    words = s.split()
+    if len(words) > 4:
+        # If it still looks like a full conversational sentence rather than a short archetype, use fallback
+        if any(w.lower() in ("is", "are", "was", "were", "that", "which", "because", "there") for w in words):
+            return fallback
+        words = words[:4]
+        s = " ".join(words)
+
+    if len(s) > 34:
+        s = s[:34].rsplit(" ", 1)[0].strip() or s[:34].strip()
+
+    if not s or s.lower() in _GENERIC_VISION_LABELS:
+        return fallback
+    return _title_case_archetype(s)
+
+
+def _parse_custom_zero_shot_prompts(raw_text: str, default_pairs: list, prefix: str = "") -> list:
+    """Parse newline/comma-separated custom concepts into (prompt_text, short_label) tuples."""
+    if not raw_text or not str(raw_text).strip():
+        return default_pairs
+    items = [p.strip() for p in re.split(r"[\n,;]+", str(raw_text)) if p.strip()]
+    if len(items) < 2:
+        return default_pairs
+    pairs = []
+    for item in items[:24]:
+        label = _title_case_archetype(item[:36])
+        prompt = f"{prefix}{item}" if prefix and not item.lower().startswith(("a ", "an ", "the ")) else item
+        pairs.append((prompt, label))
+    return pairs
+
+
+def _redact_error_secrets(text: str) -> str:
+    """Strip URL userinfo and common secret query parameters from diagnostic errors."""
+    safe = re.sub(r"(?i)([?&](?:key|api_key|token)=)[^&\s]+", r"\1***", str(text))
+    safe = re.sub(r"(?i)(https?://)([^/@\s]+)@", r"\1***@", safe)
+    return safe
 
 
 def run_ollama_vision_analysis(filename: str):
     """
     100% Self-Hosted Local Ollama Vision Analyzer (e.g. moondream, llava, llama3.2-vision).
-    Inspects the abstract gaze drawing locally via Ollama and describes its pareidolia,
-    emotional movement, and visual forms.
+    Uses separate configurable pareidolia label & visual description prompts, Ollama options
+    (temperature, num_predict, timeout), and clean badge label filtering.
     """
+    global _LAST_OLLAMA_VISION_ERROR
+    _LAST_OLLAMA_VISION_ERROR = ""
     try:
         settings = load_settings()
         ai_cfg = settings.get("ai", {})
-        vision_model = ai_cfg.get("ollama_vision_model") or "moondream"
+        vision_cfg = ai_cfg.get("vision", {}) if isinstance(ai_cfg.get("vision"), dict) else {}
+        vision_model = (ai_cfg.get("ollama_vision_model") or "moondream").strip()
         host = get_configured_ollama_host(settings)
         if not host.startswith(("http://", "https://")):
+            _LAST_OLLAMA_VISION_ERROR = f"Invalid Ollama host URL: {_redact_error_secrets(host)}"
             return None
 
+        label_prompt = (vision_cfg.get("ollama_label_prompt") or "").strip() or DEFAULT_VISION_LABEL_PROMPT
+        desc_prompt = (vision_cfg.get("ollama_description_prompt") or "").strip()
+        include_desc = vision_cfg.get("ollama_include_description", True) is not False
+        temperature = float(vision_cfg.get("ollama_temperature", 0.4))
+        max_tokens = int(vision_cfg.get("ollama_max_tokens", 96))
+        timeout_sec = int(vision_cfg.get("ollama_timeout", 60))
+        clean_label = vision_cfg.get("clean_label", True) is not False
+
         img_b64 = base64.b64encode(Path(filename).read_bytes()).decode("utf-8")
-        prompt = (
-            "This is an abstract black-and-white line drawing created by human eye movements (gaze tracking). "
-            "Treat it like a Rorschach inkblot or abstract expressionist sketch: "
-            "1) What pareidolia shape, symbol, or archetype do these lines vaguely resemble? (Give a 2-4 word title on the first line). "
-            "2) Describe the visual character of the lines, loops, tension, and negative space in 2 sentences."
-        )
-        resp = requests.post(
-            f"{host}/api/generate",
-            json={
-                "model": vision_model,
-                "prompt": prompt,
-                "images": [img_b64],
-                "stream": False,
-            },
-            timeout=30,
-        )
-        resp.raise_for_status()
-        text = resp.json().get("response", "").strip()
-        if not text:
+
+        def _call_ollama_vision(prompt_text: str, num_predict: int) -> str:
+            resp = requests.post(
+                f"{host}/api/generate",
+                json={
+                    "model": vision_model,
+                    "prompt": prompt_text,
+                    "images": [img_b64],
+                    "stream": False,
+                    "options": {
+                        "temperature": temperature,
+                        "num_predict": num_predict,
+                    },
+                },
+                timeout=timeout_sec,
+            )
+            resp.raise_for_status()
+            return (resp.json().get("response") or "").strip()
+
+        raw_label_text = _call_ollama_vision(label_prompt, min(max_tokens, 48))
+        if not raw_label_text:
+            _LAST_OLLAMA_VISION_ERROR = f"Ollama vision model '{vision_model}' returned empty response"
             return None
-        first_line = text.splitlines()[0].strip().strip("*#:- ")[:45]
+
+        filtered_label = (
+            clean_vision_archetype_label(raw_label_text, fallback="")
+            if clean_label
+            else raw_label_text.splitlines()[0].strip()[:45]
+        )
+
+        visual_desc = ""
+        if include_desc and desc_prompt:
+            try:
+                visual_desc = _call_ollama_vision(desc_prompt, max_tokens)
+            except Exception as desc_err:
+                print(f"[analysis] Note: Ollama vision description pass skipped ({_redact_error_secrets(desc_err)}).")
+
+        desc_lines = [f"Self-Hosted Vision Model ({vision_model}) Perception:"]
+        if filtered_label:
+            desc_lines.append(f"- Pareidolia Archetype: {filtered_label}")
+        else:
+            desc_lines.append(f"- Pareidolia Impression: {raw_label_text}")
+        if visual_desc:
+            desc_lines.append(f"- Visual Character: {visual_desc}")
+
         return {
-            "summary_label": first_line or "Ollama Vision Reading",
-            "description": f"Self-Hosted Vision Model ({vision_model}) Perception:\n{text}",
+            "summary_label": filtered_label,
+            "raw_label": raw_label_text,
+            "vision_description": visual_desc,
+            "description": "\n".join(desc_lines),
+            "engine": f"ollama_vision:{vision_model}",
+            "options": {
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "timeout": timeout_sec,
+                "clean_label": clean_label,
+                "include_description": include_desc,
+            },
         }
     except Exception as e:
-        print(f"[analysis] Note: Local Ollama Vision model unavailable ({e}), using geometric profile.")
+        safe_err = _redact_error_secrets(e)
+        _LAST_OLLAMA_VISION_ERROR = safe_err
+        print(f"[analysis] Note: Local Ollama Vision model unavailable ({safe_err}), using geometric profile.")
         return None
 
 
@@ -390,6 +596,19 @@ def _run_zero_shot_hf_model(filename: str, model_id: str, cache_dict: dict, is_s
         import torch
         from PIL import Image
         from transformers import AutoModel, AutoProcessor
+
+        settings = load_settings()
+        vision_cfg = settings.get("ai", {}).get("vision", {}) if isinstance(settings.get("ai", {}).get("vision"), dict) else {}
+        archetype_prompts = _parse_custom_zero_shot_prompts(
+            vision_cfg.get("zero_shot_archetypes", ""),
+            RORSCHACH_ARCHETYPE_PROMPTS,
+            prefix="an abstract inkblot drawing resembling ",
+        )
+        tone_prompts = _parse_custom_zero_shot_prompts(
+            vision_cfg.get("zero_shot_tones", ""),
+            EMOTIONAL_TONE_PROMPTS,
+            prefix="an abstract drawing evoking ",
+        )
 
         if cache_dict["model"] is None:
             cache_dict["processor"] = AutoProcessor.from_pretrained(model_id)
@@ -413,21 +632,25 @@ def _run_zero_shot_hf_model(filename: str, model_id: str, cache_dict: dict, is_s
             return prompt_pairs[best_idx][1], prompt_pairs[best_idx][0], float(probs[best_idx])
 
         form_label, form_desc, _ = top_match(ABSTRACT_FORM_PROMPTS)
-        tone_label, tone_desc, _ = top_match(EMOTIONAL_TONE_PROMPTS)
-        rorschach_label, rorschach_desc, _ = top_match(RORSCHACH_ARCHETYPE_PROMPTS)
+        tone_label, tone_desc, _ = top_match(tone_prompts)
+        rorschach_label, rorschach_desc, _ = top_match(archetype_prompts)
         tag = "SigLIP" if is_siglip else "CLIP"
 
+        cache_dict["last_error"] = ""
         return {
             "summary_label": f"{rorschach_label} ({tone_label})",
+            "raw_label": f"{rorschach_label} ({tone_label})",
             "description": (
                 f"Self-Hosted {tag} Abstract Art & Rorschach Perception:\n"
                 f"- Visual Form: Resembles {form_desc} ({form_label}).\n"
                 f"- Emotional Resonance: Evokes {tone_desc} ({tone_label}).\n"
                 f"- Rorschach Pareidolia: Suggests {rorschach_desc} ({rorschach_label})."
             ),
+            "engine": "siglip" if is_siglip else "clip",
         }
     except Exception as e:
         cache_dict["failed"] = True
+        cache_dict["last_error"] = str(e)
         print(f"[analysis] Note: {model_id} not available ({e}), using geometric & fractal analysis.")
         return None
 
@@ -450,6 +673,10 @@ def run_resnet_classification(filename: str):
         from tensorflow.keras.applications.resnet50 import ResNet50, decode_predictions
         from tensorflow.keras.preprocessing.image import img_to_array, load_img
 
+        settings = load_settings()
+        vision_cfg = settings.get("ai", {}).get("vision", {}) if isinstance(settings.get("ai", {}).get("vision"), dict) else {}
+        top_k = max(1, min(5, int(vision_cfg.get("resnet_top_k", 1))))
+
         if _RESNET_CACHE["model"] is None:
             _RESNET_CACHE["model"] = ResNet50(weights="imagenet")
 
@@ -457,16 +684,191 @@ def run_resnet_classification(filename: str):
         arr = img_to_array(image)
         arr = np.expand_dims(arr, axis=0)
         y_pred = _RESNET_CACHE["model"].predict(arr, verbose=0)
-        label = decode_predictions(y_pred, top=1)[0][0][1]
-        label = label.replace("_", " ").capitalize()
+        decoded = decode_predictions(y_pred, top=top_k)[0]
+        labels = [item[1].replace("_", " ").capitalize() for item in decoded]
+        label = labels[0]
+        _RESNET_CACHE["last_error"] = ""
         return {
             "summary_label": label,
-            "description": f"ImageNet Pareidolia Association: {label}",
+            "raw_label": ", ".join(labels),
+            "description": f"ImageNet Pareidolia Association: {', '.join(labels)}",
+            "engine": "resnet50",
         }
     except Exception as e:
         _RESNET_CACHE["failed"] = True
+        _RESNET_CACHE["last_error"] = str(e)
         print(f"[analysis] Note: TensorFlow ResNet50 unavailable ({e}).")
         return None
+
+
+def list_local_ollama_models(settings: dict = None) -> tuple:
+    """
+    Return (ollama_running: bool, installed_models: list[str]) by querying the configured
+    Ollama host's /api/tags, falling back to scanning ~/.ollama/models/manifests on disk.
+    """
+    cfg = settings or load_settings()
+    host = get_configured_ollama_host(cfg)
+    if host.startswith(("http://", "https://")):
+        try:
+            resp = requests.get(f"{host}/api/tags", timeout=0.8)
+            if resp.ok:
+                names = [str(m.get("name", "")).strip() for m in resp.json().get("models", []) if m.get("name")]
+                return True, sorted(set(names))
+        except Exception:
+            pass
+
+    # Disk fallback when Ollama server isn't currently running
+    disk_models = set()
+    try:
+        ollama_models_root = Path(os.environ.get("OLLAMA_MODELS") or (Path.home() / ".ollama" / "models"))
+        manifests_dir = ollama_models_root / "manifests"
+        if manifests_dir.exists():
+            for manifest_file in manifests_dir.rglob("*"):
+                if not manifest_file.is_file():
+                    continue
+                rel_parts = manifest_file.relative_to(manifests_dir).parts
+                # Standard layout: registry.ollama.ai/library/<model>/<tag>
+                if len(rel_parts) >= 3:
+                    tag = rel_parts[-1]
+                    model_name = rel_parts[-2]
+                    if len(rel_parts) >= 4 and rel_parts[-3] != "library":
+                        model_name = f"{rel_parts[-3]}/{model_name}"
+                    disk_models.add(f"{model_name}:{tag}")
+    except Exception:
+        pass
+    return False, sorted(disk_models)
+
+
+def _ollama_model_installed(model_name: str, installed_models: list) -> bool:
+    target = (model_name or "").strip().lower()
+    if not target:
+        return False
+    for m in installed_models:
+        ml = m.lower()
+        if ml == target or ml == f"{target}:latest" or (":" not in target and ml.startswith(f"{target}:")):
+            return True
+    return False
+
+
+def _is_vision_model_name(model_name: str) -> bool:
+    low = (model_name or "").strip().lower()
+    if not low:
+        return False
+    if low.startswith("gemma3:1b"):
+        return False
+    vision_hints = (
+        "vision", "llava", "moondream", "bakllava", "minicpm-v", "qwen2-vl", "qwen2.5-vl",
+        "qwen2.5vl", "pixtral", "internvl", "granite3.2-vision", "gemma3", "gpt-4o",
+        "gpt-4-vision", "gpt-4.1", "gpt-5", "claude-3", "claude-4", "gemini",
+    )
+    return any(h in low for h in vision_hints)
+
+
+def get_ai_availability(settings: dict = None) -> dict:
+    """
+    Inspect locally available Python ML packages, pulled Ollama models, and configured API keys
+    (never exposing secret values) so Admin UI can show live availability and block applying
+    unavailable models/vision modes.
+    """
+    cfg = settings or load_settings()
+    ai_cfg = cfg.get("ai", {})
+    env = load_env_vars()
+
+    has_torch = importlib.util.find_spec("torch") is not None
+    has_transformers = importlib.util.find_spec("transformers") is not None
+    has_tensorflow = importlib.util.find_spec("tensorflow") is not None
+
+    ollama_running, ollama_models = list_local_ollama_models(cfg)
+    ollama_vision_models = [m for m in ollama_models if _is_vision_model_name(m)]
+    configured_ovm = (ai_cfg.get("ollama_vision_model") or "moondream").strip()
+    ovm_installed = _ollama_model_installed(configured_ovm, ollama_models)
+
+    env_keys = {
+        "gemini": bool((env.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY") or "").strip()),
+        "openai": bool((env.get("OPENAI_API_KEY") or "").strip()),
+        "groq": bool((env.get("GROQ_API_KEY") or "").strip()),
+        "openrouter": bool((env.get("OPENROUTER_API_KEY") or "").strip()),
+        "anthropic": bool((env.get("ANTHROPIC_API_KEY") or "").strip()),
+        "buas": bool((env.get("BUAS_API_KEY") or env.get("API_KEY") or "").strip()),
+    }
+
+    saved_keys = {
+        role: bool((ai_cfg.get(role, {}).get("api_key") or "").strip())
+        for role in ("analysis", "poem")
+    }
+
+    missing_hf = [pkg for pkg, ok in (("torch", has_torch), ("transformers", has_transformers)) if not ok]
+    hf_ready = has_torch and has_transformers
+
+    vision_modes = {
+        "auto": {
+            "available": True,
+            "reason": (
+                "Ready (uses installed local vision model if available, otherwise built-in Fractal & Rorschach Geometry)"
+            ),
+        },
+        "stroke_metrics": {
+            "available": True,
+            "reason": "Ready (built-in OpenCV & NumPy geometric, fractal, symmetry, and entropy analyzer — always offline)",
+        },
+        "ollama_vision": {
+            "available": ovm_installed,
+            "reason": (
+                f"Ready (local Ollama model '{configured_ovm}' found)"
+                if ovm_installed
+                else f"Ollama vision model '{configured_ovm}' is not installed on this machine. Run: ollama pull {configured_ovm}"
+            ),
+        },
+        "siglip": {
+            "available": hf_ready,
+            "reason": (
+                "Ready (torch + transformers installed; downloads google/siglip-base-patch16-224 on first run)"
+                if hf_ready
+                else f"Missing Python packages: {', '.join(missing_hf)}. Install with: pip install torch transformers"
+            ),
+        },
+        "clip": {
+            "available": hf_ready,
+            "reason": (
+                "Ready (torch + transformers installed; downloads openai/clip-vit-base-patch32 on first run)"
+                if hf_ready
+                else f"Missing Python packages: {', '.join(missing_hf)}. Install with: pip install torch transformers"
+            ),
+        },
+        "resnet50": {
+            "available": has_tensorflow,
+            "reason": (
+                "Ready (TensorFlow installed for legacy ImageNet ResNet50)"
+                if has_tensorflow
+                else "Missing Python package: tensorflow. Install with: pip install tensorflow"
+            ),
+        },
+        "vision": {
+            "available": _analysis_llm_handles_vision_natively(),
+            "reason": (
+                "Ready (Analysis LLM natively supports image input)"
+                if _analysis_llm_handles_vision_natively()
+                else "Analysis LLM is text-only; choose a vision-capable Analysis model (e.g. llava, moondream, gemini, claude, gpt-4o)"
+            ),
+        },
+    }
+
+    return {
+        "packages": {
+            "torch": has_torch,
+            "transformers": has_transformers,
+            "tensorflow": has_tensorflow,
+        },
+        "ollama": {
+            "running": ollama_running,
+            "host": get_configured_ollama_host(cfg),
+            "models": ollama_models,
+            "vision_models": ollama_vision_models,
+        },
+        "env_keys": env_keys,
+        "saved_keys": saved_keys,
+        "vision_modes": vision_modes,
+    }
 
 
 def _is_ollama_vision_model_ready() -> bool:
@@ -511,40 +913,90 @@ def _analysis_llm_handles_vision_natively() -> bool:
 
 def analyze_drawing(filename: str, mode: str = "auto", canvas_filename: str = None, dwell_grid=None) -> dict:
     """
-    Comprehensive self-hosted drawing analysis returning a short `label` (archetype)
-    and a rich `prompt_context` for the Psychoanalysis LLM.
+    Comprehensive self-hosted drawing analysis returning a short `label` (archetype),
+    rich `prompt_context` for the Psychoanalysis LLM, and vision diagnostics for vision.log.
     """
+    t0 = time.monotonic()
+    settings = load_settings()
+    vision_cfg = settings.get("ai", {}).get("vision", {}) if isinstance(settings.get("ai", {}).get("vision"), dict) else {}
+    badge_style = str(vision_cfg.get("badge_style") or "vision_only").strip().lower()
+
     geom = analyze_stroke_geometry(filename, canvas_filename=canvas_filename, dwell_grid=dwell_grid)
     sections = [geom["description"]]
-    summary_label = geom["summary_label"]
+    geom_label = geom["summary_label"]
+    summary_label = geom_label
 
     extra = None
+    effective_mode = "stroke_metrics"
+    fallback_reason = ""
+
     if mode == "ollama_vision":
         extra = run_ollama_vision_analysis(filename)
+        if extra is None:
+            fallback_reason = f"Ollama vision unavailable ({_LAST_OLLAMA_VISION_ERROR or 'model not pulled or server offline'}); fell back to stroke_metrics"
     elif mode == "clip":
         with _CACHE_LOCK:
             extra = run_clip_abstract_analysis(filename)
+            if extra is None:
+                fallback_reason = f"CLIP unavailable ({_CLIP_CACHE.get('last_error') or 'torch/transformers not installed'}); fell back to stroke_metrics"
     elif mode == "siglip":
         with _CACHE_LOCK:
             extra = run_siglip_abstract_analysis(filename)
+            if extra is None:
+                fallback_reason = f"SigLIP unavailable ({_SIGLIP_CACHE.get('last_error') or 'torch/transformers not installed'}); fell back to stroke_metrics"
     elif mode == "resnet50":
         with _CACHE_LOCK:
             extra = run_resnet_classification(filename)
+            if extra is None:
+                fallback_reason = f"ResNet50 unavailable ({_RESNET_CACHE.get('last_error') or 'tensorflow not installed'}); fell back to stroke_metrics"
+    elif mode == "vision":
+        if _analysis_llm_handles_vision_natively():
+            effective_mode = "direct_vision_llm+stroke_metrics"
+        else:
+            fallback_reason = "Configured Analysis LLM is text-only; image skipped, using stroke_metrics"
     elif mode == "auto":
         with _CACHE_LOCK:
             if _SIGLIP_CACHE["model"] is not None:
                 extra = run_siglip_abstract_analysis(filename)
             elif _CLIP_CACHE["model"] is not None:
                 extra = run_clip_abstract_analysis(filename)
-        if extra is None and not _analysis_llm_handles_vision_natively() and _is_ollama_vision_model_ready():
-            extra = run_ollama_vision_analysis(filename)
+        if extra is None:
+            if _analysis_llm_handles_vision_natively():
+                effective_mode = "auto(direct_vision_llm+stroke_metrics)"
+            elif _is_ollama_vision_model_ready():
+                extra = run_ollama_vision_analysis(filename)
+            else:
+                effective_mode = "auto(stroke_metrics)"
 
+    raw_vision_label = ""
+    vision_options = {}
     if extra:
         sections.insert(0, extra["description"])
-        summary_label = extra["summary_label"]
+        effective_mode = extra.get("engine", mode)
+        raw_vision_label = extra.get("raw_label", "")
+        vision_options = extra.get("options", {})
+        vision_label = (extra.get("summary_label") or "").strip()
+
+        if badge_style == "geometry_only":
+            summary_label = geom_label
+        elif badge_style == "combined":
+            if vision_label and vision_label.lower() != geom_label.lower():
+                summary_label = f"{vision_label} · {geom_label}"
+            else:
+                summary_label = vision_label or geom_label
+        else:  # "vision_only"
+            summary_label = vision_label or geom_label
 
     return {
         "label": summary_label,
+        "raw_vision_label": raw_vision_label,
+        "badge_style": badge_style,
         "prompt_context": "\n\n".join(sections),
         "geometry": geom,
+        "requested_mode": mode,
+        "effective_mode": effective_mode,
+        "fallback_reason": fallback_reason,
+        "vision_output": extra["description"] if extra else "",
+        "vision_options": vision_options,
+        "elapsed_sec": round(time.monotonic() - t0, 2),
     }

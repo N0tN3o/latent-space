@@ -73,6 +73,7 @@ from qr_utils import qr_svg
 ensure_directories()
 
 try:
+    from analysis import analyze_drawing, get_ai_availability
     from chat import AIGenerationError, LLMModel
     from run_analysis_watcher import (
         PipelineStageError,
@@ -1047,6 +1048,8 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         try:
             self.send_response(206 if is_partial else 200)
             self.send_header("Content-Type", ctype)
+            if suffix == ".svg":
+                self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
             self.send_header("Accept-Ranges", "bytes")
             if is_partial:
                 self.send_header("Content-Range", f"bytes {start_byte}-{end_byte}/{file_size}")
@@ -1170,7 +1173,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             return self._send_file(config_manager.WEB_UI_DIR / "draw.html")
         if path in ("/kiosk", "/kiosk.html"):
             return self._send_file(config_manager.WEB_UI_DIR / "kiosk.html")
-        if path in ("/kasboek-logo.jpg", "/assets/kasboek/kasboek-logo.jpg"):
+        if path.lower() in ("/kasboek-logo.jpg", "/assets/kasboek/kasboek-logo.jpg"):
             is_preview = (query.get("preview") or [""])[0] == "1"
             attr_cfg = load_settings().get("attributions", {})
             if not is_preview and not (attr_cfg.get("enabled", False) and attr_cfg.get("show_logo", True)):
@@ -1185,7 +1188,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         if path == "/korolev-medium.otf":
             return self._send_file(PROJECT_DIR / "korolev-medium.otf", cacheable=True)
 
-        if path.startswith("/assets/"):
+        if path.lower().startswith("/assets/"):
             rel = path[len("/assets/"):]
             rel_parts = Path(rel).parts
             assets_root = (PROJECT_DIR / "assets").resolve()
@@ -1194,6 +1197,16 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             target = (assets_root / rel).resolve()
             if not target.is_relative_to(assets_root):
                 return self._send_text("Forbidden", status=403)
+            # Enforce Kasboek attribution hiding even on case-insensitive filesystems (Windows/macOS)
+            kasboek_dir = (assets_root / "kasboek").resolve()
+            if os.path.normcase(str(target)).startswith(os.path.normcase(str(kasboek_dir)) + os.sep):
+                is_preview = (query.get("preview") or [""])[0] == "1"
+                attr_cfg = load_settings().get("attributions", {})
+                if not is_preview and not (attr_cfg.get("enabled", False) and attr_cfg.get("show_logo", True)):
+                    self.send_response(204)
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    return
             return self._send_file(target, cacheable=True)
 
         if path.startswith("/vendor/"):
@@ -1286,6 +1299,24 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             if not self._require_admin():
                 return
             return self._send_json(load_settings().get("tts", {}))
+
+        if path == "/api/ai/availability":
+            if not self._require_admin():
+                return
+            if not AI_AVAILABLE:
+                return self._send_json({"status": "error", "error": "Analysis module unavailable"}, 503)
+            return self._send_json(get_ai_availability())
+
+        if path == "/api/ai/vision":
+            if not self._require_admin():
+                return
+            ai_cfg = load_settings().get("ai", {})
+            return self._send_json({
+                "status": "success",
+                "vision_mode": ai_cfg.get("vision_mode", "auto"),
+                "ollama_vision_model": ai_cfg.get("ollama_vision_model", "moondream"),
+                "vision": ai_cfg.get("vision", {}),
+            })
 
         if path == "/api/ai/config":
             if not self._require_admin():
@@ -1504,6 +1535,79 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             data = self._read_json_body()
             updated = update_settings_section("tts", data)
             return self._send_json({"status": "success", "tts": updated.get("tts", {})})
+
+        if path == "/api/ai/vision":
+            data = self._read_json_body()
+            unknown_top = set(data.keys()) - {"vision_mode", "ollama_vision_model", "vision"}
+            if unknown_top:
+                return self._send_json(
+                    {"status": "error", "error": f"Unknown vision payload keys: {sorted(unknown_top)}"},
+                    400,
+                )
+            payload = {}
+            if "vision_mode" in data:
+                payload["vision_mode"] = data["vision_mode"]
+            if "ollama_vision_model" in data:
+                payload["ollama_vision_model"] = data["ollama_vision_model"]
+            if "vision" in data:
+                if not isinstance(data["vision"], dict):
+                    return self._send_json({"status": "error", "error": "vision must be an object"}, 400)
+                payload["vision"] = data["vision"]
+            if not payload:
+                return self._send_json({"status": "error", "error": "No vision fields provided"}, 400)
+            updated = update_settings_section("ai", payload)
+            ai_out = updated.get("ai", {})
+            return self._send_json({
+                "status": "success",
+                "vision_mode": ai_out.get("vision_mode", "auto"),
+                "ollama_vision_model": ai_out.get("ollama_vision_model", "moondream"),
+                "vision": ai_out.get("vision", {}),
+            })
+
+        if path == "/api/ai/vision/test":
+            if not AI_AVAILABLE:
+                return self._send_json({"status": "error", "error": "Analysis module unavailable"}, 503)
+            settings = load_settings()
+            vision_mode = settings.get("ai", {}).get("vision_mode", "auto")
+            sample_img = config_manager.SHARED_DIR / "image_processed.png"
+            tmp_sample = None
+            if not sample_img.exists():
+                docs = sorted(
+                    (p for p in config_manager.DOCS_DIR.glob("print_*.png") if not p.name.endswith(".heatmap.png")),
+                    key=lambda p: p.stat().st_mtime if p.exists() else 0,
+                    reverse=True,
+                )
+                if docs:
+                    sample_img = docs[0]
+            if not sample_img.exists():
+                import cv2
+                import numpy as np
+                tmp_sample = config_manager.SHARED_DIR / f".tmp_vision_test_{os.getpid()}_{threading.get_ident()}.png"
+                canvas = np.ones((256, 256), dtype=np.uint8) * 255
+                cv2.ellipse(canvas, (128, 128), (75, 45), 15, 0, 360, 0, 4)
+                cv2.line(canvas, (45, 190), (210, 65), 0, 4)
+                cv2.imwrite(str(tmp_sample), canvas)
+                sample_img = tmp_sample
+            try:
+                res = analyze_drawing(str(sample_img), mode=vision_mode)
+                return self._send_json({
+                    "status": "success",
+                    "sample_image": sample_img.name,
+                    "requested_mode": res.get("requested_mode", vision_mode),
+                    "effective_mode": res.get("effective_mode", vision_mode),
+                    "fallback_reason": res.get("fallback_reason", ""),
+                    "archetype": res.get("label", ""),
+                    "raw_vision_label": res.get("raw_vision_label", ""),
+                    "badge_style": res.get("badge_style", "vision_only"),
+                    "elapsed_sec": res.get("elapsed_sec", 0),
+                    "vision_output": res.get("vision_output", ""),
+                })
+            finally:
+                if tmp_sample is not None and tmp_sample.exists():
+                    try:
+                        tmp_sample.unlink()
+                    except Exception:
+                        pass
 
         if path == "/api/ai/config":
             data = self._read_json_body()

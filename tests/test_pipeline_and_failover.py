@@ -133,6 +133,9 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
         self.assertTrue(observed_during_pdf_render.get("pdfRendering"))
         final_content = json.loads((config_manager.SHARED_DIR / "content.json").read_text(encoding="utf-8"))
         self.assertFalse(final_content.get("pdfRendering"))
+        vision_log_file = config_manager.LOGS_DIR / "vision.log"
+        self.assertTrue(vision_log_file.exists())
+        self.assertIn(rid, vision_log_file.read_text(encoding="utf-8"))
 
     def test_fallback_pdf_renderer_wraps_and_renders_valid_pdf(self):
         rid = "20261117_120500_001"

@@ -2,6 +2,19 @@
   "ai": {
     "vision_mode": "auto",
     "ollama_vision_model": "moondream",
+    "vision": {
+      "ollama_label_prompt": "Look at this abstract inkblot line drawing like a Rorschach test. What single creature, object, or natural symbol does it resemble most? Reply with only 1 to 3 words.",
+      "ollama_description_prompt": "Describe the visual shape, flow, tension, and mood of these abstract lines in two short sentences.",
+      "ollama_include_description": true,
+      "ollama_temperature": 0.4,
+      "ollama_max_tokens": 96,
+      "ollama_timeout": 60,
+      "clean_label": true,
+      "badge_style": "vision_only",
+      "zero_shot_archetypes": "",
+      "zero_shot_tones": "",
+      "resnet_top_k": 1
+    },
     "analysis": {
       "provider": "ollama",
       "model": "llama3.2",

@@ -197,7 +197,7 @@ class GazeTrackingPainter:
         if self.remote_url:
             print(f"Remote Sync URL:  {self.remote_url}")
         print("=" * 60)
-        print("Controls: [q] Quit | [Space] Center Cursor Here | [c] Recalibrate | [m] Toggle Hybrid/Flow")
+        print("Controls: [q] Quit | [Space] Center Cursor | [c] Recalibrate | [m] Mode (Direct/Flow) | [b] Brush Style")
         print()
 
         cv2.namedWindow(self.eyes_window)
@@ -263,7 +263,7 @@ class GazeTrackingPainter:
                 calib_display = self.painter.get_calibration_canvas(self.get_calibration_percentage())
                 cv2.imshow(self.canvas_window, calib_display)
             elif self.state == STATE_DRAWING:
-                canvas_display = self.painter.get_canvas_with_cursor(norm_gaze)
+                canvas_display = self.painter.get_canvas_with_cursor(norm_gaze, mode_label=self.tracker.control_mode)
                 cv2.imshow(self.canvas_window, canvas_display)
 
             key = cv2.waitKey(1) & 0xFF
@@ -275,6 +275,8 @@ class GazeTrackingPainter:
                     self.transition_to(STATE_CALIBRATING)
             elif key == ord("m"):
                 self.tracker.toggle_control_mode()
+            elif key == ord("b"):
+                self.painter.cycle_theme()
             elif key == ord(" ") and self.state == STATE_DRAWING:
                 self.tracker.recenter_now()
                 self.painter.prev_point = None
