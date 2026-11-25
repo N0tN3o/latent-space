@@ -78,11 +78,19 @@ try:
     from run_analysis_watcher import (
         PipelineStageError,
         cleanup_orphaned_temp_files,
+        ensure_localized_print_pdf,
         generate_run_id,
         run_analysis_pipeline,
         snapshot_drawing_input,
         watch_loop,
         write_live_image_and_mark_handled,
+    )
+    from translator import (
+        get_translation_availability,
+        get_translation_config,
+        preload_local_nmt_model,
+        reset_local_nmt_cache,
+        translate_reading,
     )
     AI_AVAILABLE = True
 except Exception as e:
@@ -689,6 +697,16 @@ def api_get_status() -> dict:
         pipe_snapshot = dict(_pipeline_state)
         pipe_snapshot["queue_length"] = _pipeline_queue.qsize()
 
+    tr_cfg = settings.get("translation", {})
+    tr_summary = {
+        "enabled": bool(tr_cfg.get("enabled", True)),
+        "mode": tr_cfg.get("mode", "local_nmt"),
+        "local_nmt_model": tr_cfg.get("local_nmt_model", config_manager.DEFAULT_LOCAL_NMT_MODEL),
+        "ollama_model": tr_cfg.get("ollama_model", "translategemma:4b"),
+        "default_print_language": tr_cfg.get("default_print_language", "en"),
+        "target_languages": tr_cfg.get("target_languages", ["hu"]),
+    }
+
     return {
         "device": host_name,
         "lan_url": f"http://{lan_ip}:{port}",
@@ -704,6 +722,7 @@ def api_get_status() -> dict:
             "poem_provider": settings.get("ai", {}).get("poem", {}).get("provider", "ollama"),
             "poem_model": settings.get("ai", {}).get("poem", {}).get("model", ""),
         },
+        "translation": tr_summary,
         "tts": settings.get("tts", {}),
         "printing": settings.get("printing", {}),
         "attributions": {
@@ -789,10 +808,16 @@ def api_list_prints() -> list:
         heatmap_file = f.with_name(f"{f.stem}.heatmap.png")
         meta = _read_cached_meta(f.with_suffix(".json"))
         dt = _resolve_print_datetime(f, mtime=mtime, meta=meta)
+        run_id = meta.get("runId", f.stem.replace("print_", ""))
+        translations = meta.get("translations") if isinstance(meta.get("translations"), dict) else {}
+        langs = meta.get("languages")
+        if not isinstance(langs, list) or not langs:
+            langs = list(translations.keys()) if translations else ["en"]
         files.append({
             "name": f.name,
-            "run_id": meta.get("runId", f.stem.replace("print_", "")),
+            "run_id": run_id,
             "pdf_url": f"/shared_output/docs/{f.name}",
+            "pdf_urls": {lc: f"/api/pdf/{run_id}/{lc}" for lc in config_manager.SUPPORTED_LANGUAGES},
             "thumb_url": f"/shared_output/docs/{thumb_file.name}" if thumb_file.exists() else "",
             "heatmap_url": f"/shared_output/docs/{heatmap_file.name}" if heatmap_file.exists() else "",
             "size": f"{size_bytes / 1024:.1f} KB",
@@ -808,6 +833,9 @@ def api_list_prints() -> list:
             "spatialEntropy": meta.get("spatialEntropy"),
             "poem": meta.get("poem", ""),
             "psychoanalysis": meta.get("psychoanalysis", ""),
+            "translations": translations,
+            "languages": langs,
+            "print_language": meta.get("printLanguage", "en"),
         })
     return files
 
@@ -1173,6 +1201,8 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             return self._send_file(config_manager.WEB_UI_DIR / "draw.html")
         if path in ("/kiosk", "/kiosk.html"):
             return self._send_file(config_manager.WEB_UI_DIR / "kiosk.html")
+        if path in ("/i18n.js", "/web_ui/i18n.js"):
+            return self._send_file(config_manager.WEB_UI_DIR / "i18n.js")
         if path.lower() in ("/kasboek-logo.jpg", "/assets/kasboek/kasboek-logo.jpg"):
             is_preview = (query.get("preview") or [""])[0] == "1"
             attr_cfg = load_settings().get("attributions", {})
@@ -1251,13 +1281,34 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/auth/status":
             return self._send_json({"authenticated": self._is_admin_authenticated()})
 
+        if path.startswith("/api/pdf/"):
+            rest = path[len("/api/pdf/"):].strip("/")
+            parts = rest.split("/")
+            if len(parts) != 2:
+                return self._send_text("Bad Request", status=400)
+            req_rid, req_lang = parts[0].strip(), parts[1].strip().lower()
+            if req_lang not in config_manager.ALLOWED_LANGUAGES:
+                return self._send_text("Unsupported language", status=400)
+            if not AI_AVAILABLE:
+                fallback_pdf = config_manager.DOCS_DIR / f"print_{req_rid}.pdf"
+                if fallback_pdf.exists():
+                    return self._send_file(fallback_pdf, cacheable=True)
+                return self._send_text("Not Found", status=404)
+            pdf_target = ensure_localized_print_pdf(req_rid, req_lang)
+            if pdf_target is None or not Path(pdf_target).exists():
+                return self._send_text("Print PDF not found", status=404)
+            return self._send_file(Path(pdf_target), cacheable=True)
+
         if path == "/api/public/info":
             settings = load_settings()
             port = get_server_port(settings)
             lan_ip = _get_lan_ip()
+            tr_cfg = settings.get("translation", {})
             return self._send_json({
                 "lan_url": get_public_base_url(settings, lan_ip=lan_ip),
                 "local_lan_url": f"http://{lan_ip}:{port}",
+                "supported_languages": list(config_manager.SUPPORTED_LANGUAGES),
+                "translation_enabled": bool(tr_cfg.get("enabled", True) and tr_cfg.get("mode", "local_nmt") != "off"),
             })
 
         if path == "/api/pipeline/status":
@@ -1299,6 +1350,18 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             if not self._require_admin():
                 return
             return self._send_json(load_settings().get("tts", {}))
+
+        if path == "/api/settings/translation":
+            if not self._require_admin():
+                return
+            return self._send_json(load_settings().get("translation", {}))
+
+        if path == "/api/ai/translation/status":
+            if not self._require_admin():
+                return
+            if not AI_AVAILABLE:
+                return self._send_json({"status": "error", "error": "Translation module unavailable"}, 503)
+            return self._send_json(get_translation_availability())
 
         if path == "/api/ai/availability":
             if not self._require_admin():
@@ -1536,6 +1599,70 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             updated = update_settings_section("tts", data)
             return self._send_json({"status": "success", "tts": updated.get("tts", {})})
 
+        if path == "/api/settings/translation":
+            data = self._read_json_body()
+            prev = load_settings().get("translation", {})
+            updated = update_settings_section("translation", data)
+            new_tr = updated.get("translation", {})
+            if AI_AVAILABLE and (
+                new_tr.get("local_nmt_model") != prev.get("local_nmt_model")
+                or new_tr.get("local_nmt_threads") != prev.get("local_nmt_threads")
+            ):
+                reset_local_nmt_cache()
+            return self._send_json({"status": "success", "translation": new_tr})
+
+        if path == "/api/ai/translation/preload":
+            if not AI_AVAILABLE:
+                return self._send_json({"status": "error", "error": "Translation module unavailable"}, 503)
+            data = self._read_json_body()
+            model_id = data.get("local_nmt_model")
+            threads = data.get("local_nmt_threads")
+            try:
+                res = preload_local_nmt_model(model_id=model_id, num_threads=threads)
+                return self._send_json(res)
+            except Exception as e:
+                return self._send_json({"status": "error", "error": str(e)}, 500)
+
+        if path == "/api/ai/translation/test":
+            if not AI_AVAILABLE:
+                return self._send_json({"status": "error", "error": "Translation module unavailable"}, 503)
+            data = self._read_json_body()
+            target_lang = str(data.get("target_lang") or "hu").strip().lower()
+            if target_lang not in config_manager.ALLOWED_LANGUAGES or target_lang == "en":
+                return self._send_json({"status": "error", "error": "target_lang must be 'hu'"}, 400)
+            sample_arch = str(data.get("archetype") or "Urchin · Woven Loops")[:120]
+            sample_analysis = str(
+                data.get("psychoanalysis")
+                or "Your gaze traces restless orbits across the canvas, balancing quiet curiosity with an urge to break free."
+            )[:1200]
+            sample_poem = str(
+                data.get("poem")
+                or "Restless dark ink drifts,\nQuiet loops bend toward the light,\nStillness holds the edge."
+            )[:1200]
+            try:
+                res = translate_reading(
+                    archetype=sample_arch,
+                    psychoanalysis=sample_analysis,
+                    poem=sample_poem,
+                    target_lang=target_lang,
+                )
+                if not res.get("ok"):
+                    return self._send_json({"status": "error", "error": res.get("error") or "Translation disabled"}, 400)
+                return self._send_json({
+                    "status": "success",
+                    "mode": res.get("mode"),
+                    "provider": res.get("provider"),
+                    "elapsed_sec": res.get("elapsed_sec"),
+                    "target_lang": target_lang,
+                    "translated": {
+                        "archetype": res.get("archetype", ""),
+                        "psychoanalysis": res.get("psychoanalysis", ""),
+                        "poem": res.get("poem", ""),
+                    },
+                })
+            except Exception as e:
+                return self._send_json({"status": "error", "error": str(e)}, 500)
+
         if path == "/api/ai/vision":
             data = self._read_json_body()
             unknown_top = set(data.keys()) - {"vision_mode", "ollama_vision_model", "vision"}
@@ -1668,6 +1795,9 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             data = self._read_json_body()
             filename = data.get("filename", "")
             mark_only = bool(data.get("mark_only", False))
+            req_lang = str(data.get("lang") or "").strip().lower()
+            if req_lang and req_lang not in config_manager.ALLOWED_LANGUAGES:
+                return self._send_json({"status": "error", "error": "Unsupported print language"}, 400)
             if (
                 not isinstance(filename, str)
                 or not filename.startswith("print_")
@@ -1679,12 +1809,22 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             if not pdf_path.exists():
                 return self._send_json({"status": "error", "error": "PDF file not found"}, 404)
             if mark_only:
-                mark_file_printed(filename)
+                mark_file_printed(filename, extra_meta={"lang": req_lang} if req_lang else None)
                 return self._send_json({"status": "success", "filename": filename, "mode": "browser"})
+            target_pdf = pdf_path
+            if req_lang and AI_AVAILABLE:
+                rid = pdf_path.stem[len("print_"):]
+                loc_pdf = ensure_localized_print_pdf(rid, req_lang)
+                if loc_pdf and Path(loc_pdf).exists():
+                    target_pdf = Path(loc_pdf)
             settings = load_settings()
             raw_printer = data.get("printer_name") or settings.get("printing", {}).get("printer_name", "default")
             printer_name = validate_printer_name(raw_printer)
-            res = send_pdf_to_printer(str(pdf_path), printer_name=printer_name)
+            res = send_pdf_to_printer(
+                str(target_pdf),
+                printer_name=printer_name,
+                extra_meta={"lang": req_lang} if req_lang else None,
+            )
             return self._send_json(res, 200 if res.get("status") == "success" else 500)
 
         if path == "/api/files/delete":
@@ -1705,6 +1845,11 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                     p = pdf_file.with_name(f"{stem}{suffix}")
                     if p.exists():
                         p.unlink()
+                        removed_any = True
+                for lc in config_manager.SUPPORTED_LANGUAGES:
+                    loc_pdf = docs_dir / "lang" / lc / f"{stem}.pdf"
+                    if loc_pdf.exists():
+                        loc_pdf.unlink()
                         removed_any = True
                 if stem.startswith("print_"):
                     rid = stem[len("print_"):]
@@ -1746,6 +1891,18 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
 def run_server(host="0.0.0.0", port=8000):
     if AI_AVAILABLE:
         cleanup_orphaned_temp_files()
+        try:
+            tcfg = get_translation_config()
+            if tcfg["enabled"] and tcfg["mode"] == "local_nmt" and tcfg["local_nmt_preload"]:
+                def _bg_preload():
+                    try:
+                        res = preload_local_nmt_model()
+                        print(f"[translator] Preloaded CPU NMT '{res['model']}' in {res['elapsed_sec']}s (0 MB VRAM)")
+                    except Exception as pre_err:
+                        print(f"[translator] Optional preload skipped: {pre_err}")
+                threading.Thread(target=_bg_preload, daemon=True, name="ls_nmt_preload").start()
+        except Exception:
+            pass
     start_background_watcher()
     admin_pw, auth_src = get_or_create_admin_password()
     server = LockedThreadingHTTPServer((host, port), LatentSpaceRequestHandler)

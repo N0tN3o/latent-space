@@ -52,6 +52,9 @@ def stop_ollama_serving(kill_external: bool = False, owned_proc: subprocess.Pope
         role_cfg = ai_cfg.get(role, {})
         if role_cfg.get("provider", "ollama") == "ollama" and role_cfg.get("model"):
             models_to_unload.add(role_cfg["model"])
+    trans_cfg = settings.get("translation", {})
+    if trans_cfg.get("enabled") and trans_cfg.get("mode") == "ollama" and trans_cfg.get("ollama_model"):
+        models_to_unload.add(trans_cfg["ollama_model"])
 
     if _is_ollama_running(host):
         try:

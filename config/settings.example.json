@@ -51,6 +51,21 @@
       "additional": ""
     }
   },
+  "translation": {
+    "enabled": true,
+    "mode": "local_nmt",
+    "target_languages": [
+      "hu"
+    ],
+    "local_nmt_model": "Helsinki-NLP/opus-mt-tc-big-en-hu",
+    "local_nmt_threads": 6,
+    "local_nmt_preload": false,
+    "ollama_model": "translategemma:4b",
+    "ollama_base_url": "",
+    "ollama_temperature": 0.2,
+    "ollama_timeout": 45,
+    "default_print_language": "en"
+  },
   "tts": {
     "enabled": false,
     "provider": "elevenlabs",

@@ -4,17 +4,20 @@ Latent Space Analysis Pipeline & File Watcher
 Cross-platform, Google-Drive-free, multi-provider AI pipeline.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 import hashlib
 import json
 import logging
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import textwrap
 import threading
 import time
+from urllib.parse import parse_qs, urlencode, urlparse
 import urllib.request
 
 # Add project root and analysis_watcher to sys.path
@@ -41,6 +44,13 @@ from analysis import analyze_drawing
 from chat import AIGenerationError, LLMModel, enforce_analysis_word_limit
 from heatmap import draw_heatmap
 from preprocess_image import DrawingValidationError, preprocess_image
+from translator import (
+    _clean_translated_output,
+    get_translation_config,
+    translate_analysis_stage_local_nmt,
+    translate_poem_stage_local_nmt,
+    translate_reading,
+)
 
 ensure_directories()
 
@@ -48,6 +58,15 @@ _id_lock = threading.Lock()
 _last_run_id = ""
 _watcher_sig_lock = threading.Lock()
 _handled_image_sig = None
+_localized_pdf_locks_guard = threading.Lock()
+_localized_pdf_locks = {}
+_SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_]{4,64}$")
+
+HU_MONTHS = (
+    "",
+    "január", "február", "március", "április", "május", "június",
+    "július", "augusztus", "szeptember", "október", "november", "december",
+)
 
 PAPER_SIZES_INCHES = {
     "A4": (8.27, 11.69),
@@ -211,10 +230,17 @@ def find_chrome():
     return None
 
 
-def get_gallery_url(print_render: bool = False):
+def get_gallery_url(print_render: bool = False, lang: str = None, run_id: str = None):
     settings = load_settings()
     port = get_server_port(settings)
-    suffix = "?print_render=1" if print_render else ""
+    params = []
+    if print_render:
+        params.append(("print_render", "1"))
+    if lang and str(lang).strip().lower() in config_manager.ALLOWED_LANGUAGES:
+        params.append(("lang", str(lang).strip().lower()))
+    if run_id and _SAFE_RUN_ID_RE.match(str(run_id).strip()):
+        params.append(("run_id", str(run_id).strip()))
+    suffix = f"?{urlencode(params)}" if params else ""
     return f"http://127.0.0.1:{port}/{suffix}"
 
 
@@ -246,14 +272,18 @@ def _resolve_local_logo_path(logo_path: str) -> Path:
     return default_logo
 
 
-def _format_pdf_timestamp(ts_raw: str = None) -> str:
+def _format_pdf_timestamp(ts_raw: str = None, lang: str = "en") -> str:
+    dt = None
     if ts_raw:
         try:
             dt = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
-            return dt.strftime("%B %d, %Y %H:%M")
         except Exception:
-            pass
-    return datetime.now().strftime("%B %d, %Y %H:%M")
+            dt = None
+    if dt is None:
+        dt = datetime.now()
+    if (lang or "en").lower() == "hu":
+        return f"{dt.year}. {HU_MONTHS[dt.month]} {dt.day}. {dt.strftime('%H:%M')}"
+    return dt.strftime("%B %d, %Y %H:%M")
 
 
 def _fit_text_block(
@@ -313,14 +343,33 @@ def _count_pdf_pages(pdf_file: Path) -> int:
         return 1
 
 
-def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> str:
+def _pick_localized_fields(website_data: dict, lang: str = "en") -> dict:
+    """Resolve archetype, psychoanalysis, and poem for the requested language with English fallback."""
+    eff_lang = (lang or "en").strip().lower()
+    translations = website_data.get("translations") if isinstance(website_data.get("translations"), dict) else {}
+    entry = translations.get(eff_lang) if isinstance(translations.get(eff_lang), dict) else {}
+    en_entry = translations.get("en") if isinstance(translations.get("en"), dict) else {}
+    return {
+        "archetype": entry.get("archetype") or en_entry.get("archetype") or website_data.get("archetype", ""),
+        "psychoanalysis": entry.get("psychoanalysis") or en_entry.get("psychoanalysis") or website_data.get("psychoanalysis", ""),
+        "poem": entry.get("poem") or en_entry.get("poem") or website_data.get("poem", ""),
+    }
+
+
+def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict, lang: str = None) -> str:
     """
     Fallback PDF renderer using thread-safe Matplotlib Figure API if Playwright/Chrome is unavailable.
-    Honors paper_format, logo_path, timestamp, custom_footer_note, strictly single-page, no QR code.
+    Honors paper_format, logo_path, timestamp, custom_footer_note, language, strictly single-page, no QR code.
     """
     from matplotlib.backends.backend_pdf import FigureCanvasPdf
     from matplotlib.figure import Figure
     import cv2
+
+    eff_lang = (lang or website_data.get("printLanguage") or "en").strip().lower()
+    if eff_lang not in config_manager.ALLOWED_LANGUAGES:
+        eff_lang = "en"
+    loc = _pick_localized_fields(website_data, eff_lang)
+    is_hu = eff_lang == "hu"
 
     printing_cfg = settings.get("printing", {})
     paper_format = printing_cfg.get("paper_format", "A4")
@@ -344,16 +393,18 @@ def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> 
     # Title & Archetype/Metrics badge
     fig.text(
         0.5, 0.545,
-        "Latent Space, Through the Eyes of the Algorithm",
+        "Latent Space — Az algoritmus szemével" if is_hu else "Latent Space, Through the Eyes of the Algorithm",
         ha="center", va="center", fontsize=14, fontweight="bold", color="#2a2a2a",
     )
     badge_parts = []
-    if website_data.get("archetype"):
-        badge_parts.append(str(website_data["archetype"]).upper())
+    if loc.get("archetype"):
+        badge_parts.append(str(loc["archetype"]).upper())
     if isinstance(website_data.get("fractalDimension"), (int, float)):
-        badge_parts.append(f"FRACTAL D={website_data['fractalDimension']:.2f}")
+        lbl_f = "FRAKTÁL" if is_hu else "FRACTAL"
+        badge_parts.append(f"{lbl_f} D={website_data['fractalDimension']:.2f}")
     if isinstance(website_data.get("spatialEntropy"), (int, float)):
-        badge_parts.append(f"ENTROPY={round(website_data['spatialEntropy'] * 100)}%")
+        lbl_e = "ENTRÓPIA" if is_hu else "ENTROPY"
+        badge_parts.append(f"{lbl_e}={round(website_data['spatialEntropy'] * 100)}%")
     if badge_parts:
         fig.text(
             0.5, 0.515,
@@ -368,9 +419,9 @@ def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> 
     analysis_base_w = max(32, int(round(48 * width_scale)))
     poem_base_w = max(28, int(round(42 * width_scale)))
 
-    fig.text(0.07, 0.48, "ANALYSIS", fontsize=9, fontweight="bold", color="#666666")
+    fig.text(0.07, 0.48, "ELEMZÉS" if is_hu else "ANALYSIS", fontsize=9, fontweight="bold", color="#666666")
     analysis_wrapped, analysis_fs = _fit_text_block(
-        website_data.get("psychoanalysis", ""),
+        loc.get("psychoanalysis", ""),
         base_width=analysis_base_w,
         base_fontsize=8.5,
         max_height_frac=0.35,
@@ -383,9 +434,9 @@ def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> 
     )
 
     # 3. Poem on bottom-right (bounded above Attention Span / QR row at y=0.255)
-    fig.text(0.54, 0.48, "POEM", fontsize=9, fontweight="bold", color="#666666")
+    fig.text(0.54, 0.48, "VERS" if is_hu else "POEM", fontsize=9, fontweight="bold", color="#666666")
     poem_wrapped, poem_fs = _fit_text_block(
-        website_data.get("poem", ""),
+        loc.get("poem", ""),
         base_width=poem_base_w,
         base_fontsize=8.5,
         max_height_frac=0.195,
@@ -402,7 +453,7 @@ def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> 
     if heatmap_file.exists():
         hm = cv2.imread(str(heatmap_file), cv2.IMREAD_GRAYSCALE)
         if hm is not None:
-            fig.text(0.54, 0.242, "ATTENTION SPAN", fontsize=8, fontweight="bold", color="#666666")
+            fig.text(0.54, 0.242, "FIGYELEMTÉRKÉP" if is_hu else "ATTENTION SPAN", fontsize=8, fontweight="bold", color="#666666")
             ax_hm = fig.add_axes([0.54, 0.125, 0.14, 0.105])
             ax_hm.imshow(hm, cmap="gray", vmin=0, vmax=255)
             ax_hm.axis("off")
@@ -512,7 +563,7 @@ def _render_pdf_fallback(pdf_path: Path, website_data: dict, settings: dict) -> 
         attr_wrapped = _wrap_preserving_lines(combined_footer, width=wrap_w)
         fig.text(text_x, 0.058, attr_wrapped, ha="center", va="center", fontsize=fs_footer, color="#444444")
 
-    ts_str = _format_pdf_timestamp(website_data.get("timestamp"))
+    ts_str = _format_pdf_timestamp(website_data.get("timestamp"), lang=eff_lang)
     fig.text(0.5, 0.018, ts_str, ha="center", va="center", fontsize=7.5, style="italic", color="#666666")
 
     tmp_pdf = pdf_path.with_name(f".tmp_{os.getpid()}_{threading.get_ident()}_{pdf_path.name}")
@@ -537,15 +588,28 @@ def _is_gallery_reachable(url: str) -> bool:
         return False
 
 
-def save_print_pdf(url=None, out_dir=None, website_data=None, run_id=None):
+def save_print_pdf(url=None, out_dir=None, website_data=None, run_id=None, lang=None):
     """
     Render the served gallery URL with Playwright into an A4/configured-format PDF in out_dir,
     falling back to Matplotlib PDF rendering if Playwright/Chromium or the local server is unavailable.
     """
     if url is None:
-        url = get_gallery_url(print_render=True)
+        url = get_gallery_url(print_render=True, lang=lang)
     if out_dir is None:
         out_dir = config_manager.DOCS_DIR
+
+    eff_lang = (lang or "").strip().lower()
+    if not eff_lang and url:
+        try:
+            q_lang = (parse_qs(urlparse(url).query).get("lang") or [""])[0].strip().lower()
+            if q_lang in config_manager.ALLOWED_LANGUAGES:
+                eff_lang = q_lang
+        except Exception:
+            pass
+    if not eff_lang and isinstance(website_data, dict):
+        eff_lang = str(website_data.get("printLanguage") or "en").strip().lower()
+    if eff_lang not in config_manager.ALLOWED_LANGUAGES:
+        eff_lang = "en"
 
     out_dir_path = Path(out_dir)
     out_dir_path.mkdir(parents=True, exist_ok=True)
@@ -578,7 +642,9 @@ def save_print_pdf(url=None, out_dir=None, website_data=None, run_id=None):
                     page.wait_for_function(
                         """async () => {
                             const upd = document.getElementById('lastUpdate');
-                            if (!upd || upd.textContent === 'Waiting for data...') return false;
+                            if (!upd) return false;
+                            const txt = (upd.textContent || '').trim();
+                            if (!txt || txt === 'Waiting for data...' || txt.startsWith('Várakozás')) return false;
                             if (document.fonts && document.fonts.ready) await document.fonts.ready;
                             const imgs = Array.from(document.querySelectorAll('img'))
                                 .filter(el => el.getAttribute('src') && el.style.display !== 'none');
@@ -633,10 +699,67 @@ def save_print_pdf(url=None, out_dir=None, website_data=None, run_id=None):
             content_path = config_manager.SHARED_DIR / "content.json"
             if website_data is None and content_path.exists():
                 website_data = json.loads(content_path.read_text(encoding="utf-8"))
-            return _render_pdf_fallback(pdf_path, website_data or {}, settings)
+            return _render_pdf_fallback(pdf_path, website_data or {}, settings, lang=eff_lang)
         except Exception as e2:
             main_logger.error(f"Fallback PDF renderer failed: {e2}")
             return None
+
+
+def ensure_localized_print_pdf(run_id: str, lang: str = "en"):
+    """
+    Return the Path to a print PDF for (run_id, lang), rendering and caching it under
+    shared_output/docs/lang/<lang>/print_<run_id>.pdf on first request if needed.
+    """
+    rid = str(run_id or "").strip()
+    eff_lang = str(lang or "en").strip().lower()
+    if not _SAFE_RUN_ID_RE.match(rid) or eff_lang not in config_manager.ALLOWED_LANGUAGES:
+        return None
+
+    docs_dir = config_manager.DOCS_DIR
+    primary_pdf = docs_dir / f"print_{rid}.pdf"
+    meta_path = docs_dir / f"print_{rid}.json"
+    if not primary_pdf.exists() and not meta_path.exists():
+        return None
+
+    meta = {}
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+
+    primary_lang = str(meta.get("printLanguage") or "en").strip().lower()
+    if eff_lang == primary_lang and primary_pdf.exists():
+        return primary_pdf
+
+    localized_dir = docs_dir / "lang" / eff_lang
+    localized_pdf = localized_dir / f"print_{rid}.pdf"
+    if localized_pdf.exists() and localized_pdf.stat().st_size > 100:
+        return localized_pdf
+
+    lock_key = (rid, eff_lang)
+    with _localized_pdf_locks_guard:
+        lock = _localized_pdf_locks.setdefault(lock_key, threading.Lock())
+        if len(_localized_pdf_locks) > 256:
+            _localized_pdf_locks.clear()
+            _localized_pdf_locks[lock_key] = lock
+
+    with lock:
+        if localized_pdf.exists() and localized_pdf.stat().st_size > 100:
+            return localized_pdf
+        if not meta:
+            return primary_pdf if primary_pdf.exists() else None
+        localized_dir.mkdir(parents=True, exist_ok=True)
+        rendered = save_print_pdf(
+            url=get_gallery_url(print_render=True, lang=eff_lang, run_id=rid),
+            out_dir=str(localized_dir),
+            website_data=meta,
+            run_id=rid,
+            lang=eff_lang,
+        )
+        if rendered and Path(rendered).exists():
+            return Path(rendered)
+        return primary_pdf if primary_pdf.exists() else None
 
 
 def _run_optional_tts(poem: str, settings: dict, run_id: str = None) -> str:
@@ -911,22 +1034,115 @@ def run_analysis_pipeline(
 
         _check_cancelled()
 
-        # 5. Poem Generation
-        main_logger.info(f"[{rid}] Starting poem generation via {poem_model._provider} ({poem_model._llm})")
-        poem_kwargs = {"message": analysis_text, "allow_failover": True}
-        if cancel_event is not None:
-            poem_kwargs["cancel_event"] = cancel_event
-        poem_text = poem_model.chat(**poem_kwargs)
-        main_logger.info(f"[{rid}] Poem complete via {poem_model._last_used_provider} ({poem_model._last_used_model})")
-        response_logger.info(
-            json.dumps({
-                "run_id": rid,
-                "role": "poem",
-                "provider": poem_model._last_used_provider,
-                "model": poem_model._last_used_model,
-                "response": poem_text,
-            }, ensure_ascii=False)
-        )
+        # 4b. Kick off zero-VRAM CPU translation of archetype + psychoanalysis while GPU writes the poem!
+        tcfg = get_translation_config(settings)
+        target_langs = tcfg["target_languages"] if (tcfg["enabled"] and tcfg["mode"] != "off") else []
+        tr_executor = None
+        tr_analysis_futures = {}
+        tr_start = time.monotonic()
+        if target_langs and tcfg["mode"] == "local_nmt":
+            tr_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ls_nmt")
+            for tlang in target_langs:
+                tr_analysis_futures[tlang] = tr_executor.submit(
+                    translate_analysis_stage_local_nmt,
+                    summary_label,
+                    analysis_text,
+                    tlang,
+                    settings,
+                )
+
+        try:
+            # 5. Poem Generation (runs on GPU while CPU NMT translates analysis in parallel)
+            main_logger.info(f"[{rid}] Starting poem generation via {poem_model._provider} ({poem_model._llm})")
+            poem_kwargs = {"message": analysis_text, "allow_failover": True}
+            if cancel_event is not None:
+                poem_kwargs["cancel_event"] = cancel_event
+            poem_text = _clean_translated_output(poem_model.chat(**poem_kwargs), is_poem=True)
+            main_logger.info(f"[{rid}] Poem complete via {poem_model._last_used_provider} ({poem_model._last_used_model})")
+            response_logger.info(
+                json.dumps({
+                    "run_id": rid,
+                    "role": "poem",
+                    "provider": poem_model._last_used_provider,
+                    "model": poem_model._last_used_model,
+                    "response": poem_text,
+                }, ensure_ascii=False)
+            )
+
+            _check_cancelled()
+
+            # 5b. Complete multilingual translations (non-critical: never fails a reading)
+            translations = {
+                "en": {
+                    "archetype": summary_label,
+                    "psychoanalysis": analysis_text,
+                    "poem": poem_text,
+                }
+            }
+            translation_provider = "off"
+            translation_error = ""
+            translation_elapsed = 0.0
+
+            if target_langs:
+                tr_errors = []
+                if tcfg["mode"] == "local_nmt":
+                    for tlang in target_langs:
+                        try:
+                            part_res = tr_analysis_futures[tlang].result(timeout=45)
+                            tr_poem = translate_poem_stage_local_nmt(poem_text, target_lang=tlang, settings=settings)
+                            if part_res.get("psychoanalysis") or tr_poem:
+                                translations[tlang] = {
+                                    "archetype": part_res.get("archetype") or summary_label,
+                                    "psychoanalysis": part_res.get("psychoanalysis") or analysis_text,
+                                    "poem": tr_poem or poem_text,
+                                }
+                                translation_provider = part_res.get("provider", f"local_nmt:{tcfg['local_nmt_model']}")
+                                main_logger.info(
+                                    f"[{rid}] Translated reading -> {tlang} via {translation_provider} "
+                                    f"(overlapped total {time.monotonic() - tr_start:.2f}s)"
+                                )
+                        except Exception as tr_e:
+                            tr_errors.append(f"{tlang}: {tr_e}")
+                            main_logger.warning(f"[{rid}] Local NMT translation ({tlang}) skipped: {tr_e}")
+                    translation_elapsed = round(time.monotonic() - tr_start, 2)
+                else:
+                    seq_t0 = time.monotonic()
+                    for tlang in target_langs:
+                        if cancel_event is not None and cancel_event.is_set():
+                            break
+                        try:
+                            main_logger.info(f"[{rid}] Starting translation -> {tlang} via mode={tcfg['mode']}")
+                            tr_res = translate_reading(
+                                archetype=summary_label,
+                                psychoanalysis=analysis_text,
+                                poem=poem_text,
+                                target_lang=tlang,
+                                settings=settings,
+                                prompt_context=prompt_context,
+                                analysis_model=analysis_model,
+                                poem_model=poem_model,
+                                cancel_event=cancel_event,
+                            )
+                            if tr_res.get("ok"):
+                                translations[tlang] = {
+                                    "archetype": tr_res.get("archetype") or summary_label,
+                                    "psychoanalysis": tr_res.get("psychoanalysis") or analysis_text,
+                                    "poem": tr_res.get("poem") or poem_text,
+                                }
+                                translation_provider = tr_res.get("provider", tcfg["mode"])
+                                main_logger.info(
+                                    f"[{rid}] Translated reading -> {tlang} via {translation_provider} in {tr_res.get('elapsed_sec')}s"
+                                )
+                        except Exception as tr_e:
+                            tr_errors.append(f"{tlang}: {tr_e}")
+                            main_logger.warning(f"[{rid}] Translation ({tcfg['mode']} -> {tlang}) skipped: {tr_e}")
+                    translation_elapsed = round(time.monotonic() - seq_t0, 2)
+
+                if tr_errors:
+                    translation_error = "; ".join(tr_errors)
+        finally:
+            if tr_executor is not None:
+                tr_executor.shutdown(wait=False, cancel_futures=True)
 
         _check_cancelled()
 
@@ -957,6 +1173,8 @@ def run_analysis_pipeline(
         expected_pdf_name = f"print_{rid}.pdf"
         geom = perception.get("geometry", {})
         latest_settings = load_settings()
+        req_print_lang = get_translation_config(latest_settings)["default_print_language"]
+        print_lang = req_print_lang if req_print_lang in translations else "en"
         website_data = {
             "status": "ok",
             "runId": rid,
@@ -968,6 +1186,12 @@ def run_analysis_pipeline(
             "primaryZone": geom.get("primary_zone"),
             "psychoanalysis": analysis_text,
             "poem": poem_text,
+            "translations": translations,
+            "languages": list(translations.keys()),
+            "printLanguage": print_lang,
+            "translationProvider": translation_provider,
+            "translationElapsedSec": translation_elapsed,
+            "translationError": translation_error,
             "poemAudio": poem_audio,
             "printPDF": f"docs/{expected_pdf_name}",
             "pdfRendering": True,
@@ -982,9 +1206,14 @@ def run_analysis_pipeline(
         main_logger.info(f"[{rid}] Website content.json updated")
 
         # 9. Render Print PDF and save sidecar metadata
-        main_logger.info(f"[{rid}] Rendering print PDF")
+        main_logger.info(f"[{rid}] Rendering print PDF (lang={print_lang})")
+        pdf_render_url = (
+            get_gallery_url(print_render=True)
+            if print_lang == "en"
+            else get_gallery_url(print_render=True, lang=print_lang)
+        )
         pdf_file = save_print_pdf(
-            get_gallery_url(print_render=True),
+            pdf_render_url,
             out_dir=str(config_manager.DOCS_DIR),
             website_data=website_data,
             run_id=rid,

@@ -39,8 +39,13 @@ ALLOWED_VISION_MODES = {"auto", "vision", "ollama_vision", "siglip", "clip", "st
 ALLOWED_AI_PROVIDERS = {"ollama", "gemini", "anthropic", "openai_compatible", "buas"}
 ALLOWED_FALLBACK_PROVIDERS = {"auto", "none"} | ALLOWED_AI_PROVIDERS
 ALLOWED_TTS_PROVIDERS = {"elevenlabs", "google_cloud", "none"}
+ALLOWED_LANGUAGES = {"en", "hu"}
+SUPPORTED_LANGUAGES = ("en", "hu")
+ALLOWED_TRANSLATION_MODES = {"local_nmt", "ollama", "native_llm", "off"}
+DEFAULT_LOCAL_NMT_MODEL = "Helsinki-NLP/opus-mt-tc-big-en-hu"
+_HF_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,160}$")
 _PRINTER_NAME_RE = re.compile(r"^[A-Za-z0-9 _.\-:()/\\]{1,128}$")
-SETTINGS_SECTIONS = ("ai", "tts", "printing", "attributions", "server")
+SETTINGS_SECTIONS = ("ai", "translation", "tts", "printing", "attributions", "server")
 MAX_PROMPT_FIELD_CHARS = 8000
 MAX_API_KEY_CHARS = 512
 # QR capacity is 213 bytes; "/shared_output/docs/print_YYYYMMDD_HHMMSS_mmm.pdf" adds 49 bytes.
@@ -183,6 +188,19 @@ DEFAULT_SETTINGS = {
             "temperature": 0.8,
             "assistant_key": "959058ad-4417-49e3-9e71-252ee2fb033d",
         },
+    },
+    "translation": {
+        "enabled": True,
+        "mode": "local_nmt",  # "local_nmt" | "ollama" | "native_llm" | "off"
+        "target_languages": ["hu"],
+        "local_nmt_model": DEFAULT_LOCAL_NMT_MODEL,
+        "local_nmt_threads": 6,
+        "local_nmt_preload": False,
+        "ollama_model": "translategemma:4b",
+        "ollama_base_url": "",
+        "ollama_temperature": 0.2,
+        "ollama_timeout": 45,
+        "default_print_language": "en",
     },
     "tts": {
         "enabled": False,
@@ -759,6 +777,106 @@ def validate_ai_data(data: dict) -> dict:
     return cleaned
 
 
+def validate_translation_data(data: dict) -> dict:
+    """Validate multilingual translation engine settings before persistence."""
+    if not isinstance(data, dict):
+        raise ValueError("translation payload must be an object")
+    cleaned = deepcopy(data)
+    allowed_keys = {
+        "enabled",
+        "mode",
+        "target_languages",
+        "local_nmt_model",
+        "local_nmt_threads",
+        "local_nmt_preload",
+        "ollama_model",
+        "ollama_base_url",
+        "ollama_temperature",
+        "ollama_timeout",
+        "default_print_language",
+    }
+    unknown = set(cleaned.keys()) - allowed_keys
+    if unknown:
+        raise ValueError(f"Unknown translation keys: {sorted(unknown)}")
+    for b_field in ("enabled", "local_nmt_preload"):
+        if b_field in cleaned and not isinstance(cleaned[b_field], bool):
+            cleaned[b_field] = bool(cleaned[b_field])
+    if "mode" in cleaned:
+        mode = str(cleaned["mode"] or "local_nmt").strip().lower()
+        if mode not in ALLOWED_TRANSLATION_MODES:
+            raise ValueError(f"translation.mode must be one of {sorted(ALLOWED_TRANSLATION_MODES)}")
+        cleaned["mode"] = mode
+    if "target_languages" in cleaned:
+        raw_langs = cleaned["target_languages"]
+        if not isinstance(raw_langs, list):
+            raise ValueError("translation.target_languages must be a list of language codes")
+        out_langs = []
+        for item in raw_langs:
+            code = str(item or "").strip().lower()
+            if code not in ALLOWED_LANGUAGES or code == "en":
+                raise ValueError(f"Unsupported target language '{item}'; allowed: {sorted(ALLOWED_LANGUAGES - {'en'})}")
+            if code not in out_langs:
+                out_langs.append(code)
+        cleaned["target_languages"] = out_langs
+    if "local_nmt_model" in cleaned:
+        if not isinstance(cleaned["local_nmt_model"], str):
+            raise ValueError("translation.local_nmt_model must be a string")
+        m_id = cleaned["local_nmt_model"].strip() or DEFAULT_LOCAL_NMT_MODEL
+        if ".." in m_id or not _HF_MODEL_ID_RE.match(m_id):
+            raise ValueError("translation.local_nmt_model contains disallowed characters")
+        cleaned["local_nmt_model"] = m_id
+    if "local_nmt_threads" in cleaned:
+        raw_thr = cleaned["local_nmt_threads"]
+        if isinstance(raw_thr, bool):
+            raise ValueError("translation.local_nmt_threads must be an integer")
+        try:
+            thr = int(raw_thr)
+        except (TypeError, ValueError) as e:
+            raise ValueError("translation.local_nmt_threads must be an integer") from e
+        if thr < 1 or thr > 16:
+            raise ValueError("translation.local_nmt_threads must be between 1 and 16")
+        cleaned["local_nmt_threads"] = thr
+    if "ollama_model" in cleaned:
+        if not isinstance(cleaned["ollama_model"], str):
+            raise ValueError("translation.ollama_model must be a string")
+        om = cleaned["ollama_model"].strip() or "translategemma:4b"
+        if not _OLLAMA_MODEL_NAME_RE.match(om):
+            raise ValueError("translation.ollama_model contains disallowed characters or exceeds 120 chars")
+        cleaned["ollama_model"] = om
+    if "ollama_base_url" in cleaned:
+        cleaned["ollama_base_url"] = validate_safe_url(
+            cleaned["ollama_base_url"], "translation.ollama_base_url", allow_relative=False
+        )
+    if "ollama_temperature" in cleaned:
+        raw_t = cleaned["ollama_temperature"]
+        if isinstance(raw_t, bool):
+            raise ValueError("translation.ollama_temperature must be numeric")
+        try:
+            tv = float(raw_t)
+        except (TypeError, ValueError) as e:
+            raise ValueError("translation.ollama_temperature must be numeric") from e
+        if not math.isfinite(tv) or tv < 0.0 or tv > 2.0:
+            raise ValueError("translation.ollama_temperature must be between 0.0 and 2.0")
+        cleaned["ollama_temperature"] = tv
+    if "ollama_timeout" in cleaned:
+        raw_to = cleaned["ollama_timeout"]
+        if isinstance(raw_to, bool):
+            raise ValueError("translation.ollama_timeout must be an integer")
+        try:
+            to_val = int(raw_to)
+        except (TypeError, ValueError) as e:
+            raise ValueError("translation.ollama_timeout must be an integer") from e
+        if to_val < 5 or to_val > 180:
+            raise ValueError("translation.ollama_timeout must be between 5 and 180 seconds")
+        cleaned["ollama_timeout"] = to_val
+    if "default_print_language" in cleaned:
+        pl = str(cleaned["default_print_language"] or "en").strip().lower()
+        if pl not in ALLOWED_LANGUAGES:
+            raise ValueError(f"translation.default_print_language must be one of {sorted(ALLOWED_LANGUAGES)}")
+        cleaned["default_print_language"] = pl
+    return cleaned
+
+
 def validate_tts_data(data: dict) -> dict:
     """Validate TTS settings before persistence."""
     if not isinstance(data, dict):
@@ -960,6 +1078,8 @@ def _validate_settings_sections(data: dict) -> dict:
             raise ValueError(f"settings.{section} must be an object")
     if "ai" in cleaned:
         cleaned["ai"] = validate_ai_data(cleaned["ai"])
+    if "translation" in cleaned:
+        cleaned["translation"] = validate_translation_data(cleaned["translation"])
     if "tts" in cleaned:
         cleaned["tts"] = validate_tts_data(cleaned["tts"])
     if "attributions" in cleaned:
@@ -1021,6 +1141,8 @@ def update_settings_section(section: str, data: dict) -> dict:
         clean_data = data
         if section == "ai":
             clean_data = validate_ai_data(_sanitize_incoming_settings({"ai": data}, existing=current).get("ai", data))
+        elif section == "translation":
+            clean_data = validate_translation_data(data)
         elif section == "attributions":
             clean_data = validate_attributions_data(data)
         elif section == "printing":
