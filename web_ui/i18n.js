@@ -49,6 +49,8 @@
             'gallery.nav.draw': 'Gaze Draw',
             'gallery.nav.kiosk': 'Print Kiosk',
             'gallery.nav.print': 'Print',
+            'gallery.nav.new_drawing': 'New Drawing',
+            'gallery.nav.menu_title': 'Gallery & Staff Controls',
             'gallery.section.analysis': 'Analysis',
             'gallery.section.poem': 'Poem',
             'gallery.section.attention': 'Attention Span',
@@ -129,6 +131,19 @@
             'draw.err.reading_failed': 'We could not complete your reading ({msg}). Your drawing is preserved — click Submit to retry or Clear/Recalibrate.',
             'draw.err.timeout': 'Analysis is taking longer than expected. Your drawing is preserved — retry or check the Gallery.',
             'draw.err.webcam': 'Webcam eye tracker could not load (check camera permissions or internet / local /vendor/mediapipe/ bundle). Mouse and touch drawing are ready.',
+            'draw.err.cam_https': 'Camera access requires a secure connection (HTTPS on phones/tablets, or http://localhost on the host PC). You can still draw with touch or mouse.',
+            'draw.err.cam_denied': 'Camera permission was denied. Allow camera access in your browser settings and tap Retry, or draw with touch/mouse.',
+            'draw.err.cam_not_found': 'No camera was detected on this device. You can draw for 15 seconds with touch or mouse.',
+            'draw.err.cam_busy': 'The camera is currently in use by another app or tab. Close the other app and tap Retry.',
+            'draw.err.cam_mediapipe': 'Camera opened, but the eye-tracking engine could not initialize in this browser. Touch and mouse drawing are ready.',
+            'draw.staff.modal_title': 'Staff Unlock Required',
+            'draw.staff.modal_desc_html': 'Enter the Admin passcode (printed at server startup or in <code>config/admin_pin.txt</code>) to open Staff Controls.',
+            'draw.staff.modal_placeholder': 'Admin passcode',
+            'draw.staff.lock_btn': 'Lock Staff',
+            'draw.staff.unlock_btn': 'Unlock',
+            'draw.staff.invalid_pin': 'Invalid passcode.',
+            'draw.ex.cam_starting': 'Starting camera…',
+            'draw.ex.cam_retry_btn': 'Retry Camera',
             'draw.ex.kicker': 'Interactive Eye-Tracking Installation',
             'draw.ex.title': 'Latent Space',
             'draw.ex.subtitle': 'Through the Eyes of the Algorithm',
@@ -512,6 +527,8 @@
             'gallery.nav.draw': 'Rajzolás',
             'gallery.nav.kiosk': 'Nyomtatópult',
             'gallery.nav.print': 'Nyomtatás',
+            'gallery.nav.new_drawing': 'Új rajz',
+            'gallery.nav.menu_title': 'Galéria és személyzeti menü',
             'gallery.section.analysis': 'Elemzés',
             'gallery.section.poem': 'Vers',
             'gallery.section.attention': 'Figyelemtérkép',
@@ -592,6 +609,19 @@
             'draw.err.reading_failed': 'Nem sikerült elkészíteni az elemzést ({msg}). A rajzod megmaradt — kattints a Beküldésre az újrapróbáláshoz, vagy töröld a vásznat.',
             'draw.err.timeout': 'Az elemzés a vártnál tovább tart. A rajzod megmaradt — próbáld újra, vagy nézd meg a Galériát.',
             'draw.err.webcam': 'A kamerás szemkövető nem tudott elindulni (ellenőrizd a kameraengedélyt vagy a helyi /vendor/mediapipe/ fájlokat). Egérrel és érintéssel továbbra is rajzolhatsz.',
+            'draw.err.cam_https': 'A kamera használatához biztonságos kapcsolat (HTTPS telefonon/tableten, vagy http://localhost a fő gépen) szükséges. Érintéssel vagy egérrel így is rajzolhatsz.',
+            'draw.err.cam_denied': 'A kameraengedély elutasítva. Engedélyezd a kamerát a böngészőben és kattints az Újrapróbálkozásra, vagy rajzolj érintéssel/egérrel.',
+            'draw.err.cam_not_found': 'Nem található kamera ezen az eszközön. Érintéssel vagy egérrel 15 másodpercig rajzolhatsz.',
+            'draw.err.cam_busy': 'A kamerát jelenleg egy másik alkalmazás vagy lap használja. Zárd be azt, majd próbáld újra.',
+            'draw.err.cam_mediapipe': 'A kamera elindult, de a szemkövető motor nem tudott inicializálódni ebben a böngészőben. Érintéssel és egérrel rajzolhatsz.',
+            'draw.staff.modal_title': 'Személyzeti belépés szükséges',
+            'draw.staff.modal_desc_html': 'Add meg az admin jelszót (szerverindításkor kiírva vagy a <code>config/admin_pin.txt</code> fájlban) a Kezelőpult megnyitásához.',
+            'draw.staff.modal_placeholder': 'Admin jelszó',
+            'draw.staff.lock_btn': 'Zárolás',
+            'draw.staff.unlock_btn': 'Belépés',
+            'draw.staff.invalid_pin': 'Hibás jelszó.',
+            'draw.ex.cam_starting': 'Kamera indítása…',
+            'draw.ex.cam_retry_btn': 'Kamera újrapróbálása',
             'draw.ex.kicker': 'Interaktív szemkövető installáció',
             'draw.ex.title': 'Latent Space',
             'draw.ex.subtitle': 'Az algoritmus szemével',
@@ -1123,6 +1153,8 @@
                 btn.style.fontWeight = '700';
                 btn.style.fontSize = variant === 'gallery' ? '0.72rem' : '0.78rem';
                 btn.style.padding = variant === 'gallery' ? '5px 8px' : '6px 10px';
+                btn.style.minWidth = variant === 'gallery' ? '32px' : '36px';
+                btn.style.textAlign = 'center';
                 btn.style.lineHeight = '1';
                 btn.style.transition = 'background 0.15s, color 0.15s';
                 btn.addEventListener('click', (e) => {

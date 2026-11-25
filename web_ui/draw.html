@@ -141,6 +141,15 @@
             overflow: hidden;
             box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
             z-index: 20;
+            transition: opacity 0.18s ease;
+        }
+
+        /* Never use display:none or 1px size on an active <video> container — iOS Safari throttles/stalls decoding */
+        .pip-box.is-hidden {
+            opacity: 0;
+            pointer-events: none;
+            z-index: -1;
+            box-shadow: none;
         }
 
         .pip-header {
@@ -200,11 +209,13 @@
             display: none;
             align-items: center;
             justify-content: space-between;
-            padding: 12px 24px;
+            min-height: 57px;
+            padding: 10px 24px;
             background: rgba(15, 17, 22, 0.92);
             border-bottom: 1px solid rgba(255, 255, 255, 0.08);
             z-index: 60;
             position: relative;
+            gap: 12px;
         }
 
         body.exhibition-mode header#operatorHeader {
@@ -223,6 +234,7 @@
             display: flex;
             align-items: center;
             gap: 12px;
+            min-width: 0;
         }
 
         .ex-brand-name {
@@ -231,18 +243,21 @@
             letter-spacing: 0.08em;
             text-transform: uppercase;
             color: #e5e7eb;
+            white-space: nowrap;
         }
 
         .ex-cam-pill {
             display: inline-flex;
             align-items: center;
             gap: 6px;
+            min-width: 215px;
             font-size: 0.78rem;
             color: var(--muted);
             background: rgba(255, 255, 255, 0.04);
             border: 1px solid rgba(255, 255, 255, 0.08);
             padding: 4px 10px;
             border-radius: 999px;
+            white-space: nowrap;
         }
 
         .ex-cam-dot {
@@ -250,6 +265,7 @@
             height: 7px;
             border-radius: 50%;
             background: #6b7280;
+            flex: 0 0 auto;
         }
 
         .ex-cam-pill.is-live .ex-cam-dot {
@@ -262,17 +278,47 @@
             border-color: rgba(16, 185, 129, 0.35);
         }
 
+        .ex-cam-pill.is-loading .ex-cam-dot {
+            background: #f59e0b;
+            box-shadow: 0 0 8px rgba(245, 158, 11, 0.8);
+            animation: exCamPulse 1s ease-in-out infinite;
+        }
+
+        .ex-cam-pill.is-loading {
+            color: #fde68a;
+            border-color: rgba(245, 158, 11, 0.45);
+        }
+
+        .ex-cam-pill.is-error .ex-cam-dot {
+            background: #ef4444;
+            box-shadow: 0 0 8px rgba(239, 68, 68, 0.8);
+        }
+
+        .ex-cam-pill.is-error {
+            color: #fecaca;
+            border-color: rgba(239, 68, 68, 0.45);
+        }
+
+        @keyframes exCamPulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.45; transform: scale(0.82); }
+        }
+
         .ex-topbar-right {
             display: flex;
             align-items: center;
             gap: 10px;
+            flex: 0 0 auto;
         }
 
         .ex-staff-btn {
             background: transparent;
-            color: #6b7280;
-            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: #9ca3af;
+            border: 1px solid rgba(255, 255, 255, 0.1);
             padding: 5px 10px;
+            min-width: 118px;
+            text-align: center;
+            white-space: nowrap;
             border-radius: 6px;
             font-size: 0.74rem;
             cursor: pointer;
@@ -280,8 +326,60 @@
         }
 
         .ex-staff-btn:hover {
-            color: #d1d5db;
-            border-color: rgba(255, 255, 255, 0.25);
+            color: #f3f4f6;
+            border-color: rgba(255, 255, 255, 0.28);
+        }
+
+        .ex-cam-inline-error {
+            margin: 14px auto 0 auto;
+            max-width: 620px;
+            padding: 10px 14px;
+            border-radius: 10px;
+            background: rgba(239, 68, 68, 0.14);
+            border: 1px solid rgba(239, 68, 68, 0.45);
+            color: #fecaca;
+            font-size: 0.86rem;
+            line-height: 1.45;
+        }
+
+        /* Passcode-gated Staff Unlock Modal */
+        .staff-modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.76);
+            backdrop-filter: blur(4px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 200;
+            padding: 20px;
+        }
+
+        .staff-modal {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 24px;
+            width: 100%;
+            max-width: 390px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65);
+        }
+
+        .staff-modal input {
+            background: #0e1015;
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 10px 14px;
+            border-radius: 8px;
+            font-size: 1rem;
+        }
+
+        .staff-modal input:focus {
+            outline: none;
+            border-color: var(--accent);
         }
 
         /* Floating HUD during live Exhibition Calibration & 15s Drawing */
@@ -365,6 +463,10 @@
         .ex-card {
             width: 100%;
             max-width: 860px;
+            min-height: 515px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
             background: rgba(24, 27, 34, 0.94);
             border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 20px;
@@ -401,6 +503,7 @@
         .ex-desc {
             font-size: 1.05rem;
             line-height: 1.65;
+            min-height: 54px;
             color: #d1d5db;
             max-width: 620px;
             margin: 0 auto 28px auto;
@@ -428,7 +531,10 @@
         .ex-brush-pill {
             display: inline-flex;
             align-items: center;
+            justify-content: center;
             gap: 8px;
+            min-width: 176px;
+            white-space: nowrap;
             background: #20242f;
             color: #d1d5db;
             border: 1px solid #323846;
@@ -464,6 +570,7 @@
             border: none;
             border-radius: 12px;
             padding: 15px 38px;
+            min-width: 220px;
             font-size: 1.12rem;
             font-weight: 700;
             letter-spacing: 0.02em;
@@ -550,6 +657,16 @@
             }
             .ex-card {
                 padding: 26px 20px;
+                min-height: 0;
+            }
+            .ex-cam-pill {
+                min-width: 0;
+                max-width: 175px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .ex-staff-btn {
+                min-width: 0;
             }
         }
 
@@ -681,8 +798,8 @@
             </span>
         </div>
         <div class="ex-topbar-right">
+            <button class="ex-staff-btn" id="exStaffBtn" onclick="requestStaffControls()" data-i18n="draw.ex.staff_btn" title="Shortcut: Shift+E">Staff Controls</button>
             <span id="exLangSwitch"></span>
-            <button class="ex-staff-btn" onclick="setExhibitionMode(false)" data-i18n="draw.ex.staff_btn" title="Shortcut: Shift+E">Staff Controls</button>
         </div>
     </div>
 
@@ -692,7 +809,6 @@
             <span class="status-badge" id="statusBadge">Ready (Move eyes or mouse/touch to draw)</span>
         </div>
         <div class="controls">
-            <span id="drawLangSwitch"></span>
             <button class="btn" id="camBtn" onclick="startWebcamGaze()" data-i18n="draw.btn.start_cam">Start Webcam Eye Tracking</button>
             <button class="btn" id="centerBtn" onclick="recenterCursorNow()" style="display:none;" data-i18n="draw.btn.center" data-i18n-title="draw.btn.center_title" title="Press Spacebar anytime while drawing to re-center the cursor to your current gaze">Center Cursor [Space]</button>
             <button class="btn" id="calibBtn" onclick="startCalibration()" style="display:none;" data-i18n="draw.btn.recalibrate">Recalibrate</button>
@@ -707,8 +823,10 @@
             <button class="btn" onclick="clearCanvas()" data-i18n="draw.btn.clear">Clear</button>
             <button class="btn btn-primary" id="submitBtn" onclick="submitDrawing()" data-i18n="draw.btn.submit">Submit &amp; Analyze</button>
             <button class="btn" id="exhibitionModeBtn" onclick="setExhibitionMode(true)" data-i18n="draw.ex.exit_staff_btn" title="Shortcut: Shift+E">Exhibition Mode</button>
-            <a href="/" class="btn" data-i18n="draw.btn.gallery">Gallery</a>
+            <button class="btn" id="lockStaffBtn" onclick="lockStaffControls()" data-i18n="draw.staff.lock_btn">Lock Staff</button>
+            <a href="/" class="btn" id="operatorGalleryLink" data-i18n="draw.btn.gallery">Gallery</a>
             <a href="/kiosk" class="btn" data-i18n="draw.btn.kiosk">Kiosk</a>
+            <span id="drawLangSwitch"></span>
         </div>
     </header>
 
@@ -733,13 +851,28 @@
         <div class="ex-card" id="exhibitionCard"></div>
     </div>
 
-    <div class="pip-box" id="pipBox" style="display:none;">
+    <div class="staff-modal-backdrop" id="drawStaffModal">
+        <form class="staff-modal" onsubmit="submitDrawStaffLogin(event)">
+            <h3 style="font-size: 1.15rem;" data-i18n="draw.staff.modal_title">Staff Unlock Required</h3>
+            <p style="font-size: 0.88rem; color: var(--muted); line-height: 1.45;" data-i18n-html="draw.staff.modal_desc_html">
+                Enter the Admin passcode (printed at server startup or in <code>config/admin_pin.txt</code>) to open Staff Controls.
+            </p>
+            <input type="password" id="drawStaffPinInput" data-i18n-placeholder="draw.staff.modal_placeholder" placeholder="Admin passcode" autocomplete="current-password" required>
+            <div id="drawStaffError" style="color: #f87171; font-size: 0.85rem; display: none;"></div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px;">
+                <button type="button" class="btn" onclick="closeDrawStaffModal()" data-i18n="common.cancel">Cancel</button>
+                <button type="submit" class="btn btn-primary" data-i18n="draw.staff.unlock_btn">Unlock</button>
+            </div>
+        </form>
+    </div>
+
+    <div class="pip-box is-hidden" id="pipBox">
         <div class="pip-header">
             <span id="pipStatus" data-i18n="draw.pip.title">Eye Tracker Feed</span>
             <span id="fpsCounter">0 FPS</span>
         </div>
         <div class="pip-video-wrap">
-            <video id="webcamVideo" autoplay playsinline muted></video>
+            <video id="webcamVideo" autoplay playsinline webkit-playsinline muted></video>
             <canvas id="eyeOverlayCanvas" width="320" height="240"></canvas>
         </div>
     </div>
@@ -774,8 +907,12 @@
         const rawOpParam = (pageParams.get('operator') || '').toLowerCase();
         const rawSsParam = (pageParams.get('single_screen') || '').toLowerCase();
 
-        // Exhibition Mode is ON by default (use ?exhibition=0 or ?operator=1 or Shift+E for Staff Controls).
-        let exhibitionMode = !(rawExParam === '0' || rawExParam === 'false' || rawOpParam === '1' || rawOpParam === 'true');
+        // Exhibition Mode is ALWAYS ON on initial load for visitors; ?exhibition=0 or ?operator=1
+        // opens Staff Controls only after verifying an authenticated staff session (or passcode unlock).
+        const wantsStaffOnBoot = (rawExParam === '0' || rawExParam === 'false' || rawOpParam === '1' || rawOpParam === 'true');
+        let exhibitionMode = true;
+        let isStaffAuthenticated = false;
+        let pendingStaffAction = null;
 
         // Dual-screen (separate Gallery screen) is default; single-screen preserved via ?single_screen=1 or staff toggle.
         let singleScreenMode = false;
@@ -800,6 +937,13 @@
         let exLastErrorText = '';
         let exLastProcStatusKey = 'draw.status.sending';
         let exLastProcStatusVars = null;
+        let camStatusState = 'idle'; // 'idle' | 'loading' | 'live' | 'error'
+        let lastCamErrorKey = '';
+        let camStartPromise = null;
+        let mediapipeAssetsPromise = null;
+        let activeLandmarkerDelegate = 'GPU';
+        let consecutiveDetectErrors = 0;
+        let isSwitchingDelegate = false;
 
         function escapeHtml(str) {
             return String(str || '')
@@ -821,6 +965,99 @@
         });
         const t = drawI18n.t;
 
+        function isStaffModalOpen() {
+            const modal = document.getElementById('drawStaffModal');
+            return !!(modal && modal.style.display === 'flex');
+        }
+
+        async function refreshDrawAuthStatus() {
+            try {
+                const res = await fetch('/api/auth/status?t=' + Date.now());
+                if (res.ok) {
+                    const data = await res.json();
+                    isStaffAuthenticated = !!data.authenticated;
+                }
+            } catch (_) {}
+            if (exhibitionMode && exStage === 'welcome') {
+                renderExhibitionStage();
+            }
+            return isStaffAuthenticated;
+        }
+
+        function openDrawStaffModal(onUnlocked = null) {
+            pendingStaffAction = onUnlocked;
+            const errEl = document.getElementById('drawStaffError');
+            const inputEl = document.getElementById('drawStaffPinInput');
+            const modal = document.getElementById('drawStaffModal');
+            if (errEl) errEl.style.display = 'none';
+            if (inputEl) inputEl.value = '';
+            if (modal) modal.style.display = 'flex';
+            setTimeout(() => { if (inputEl) inputEl.focus(); }, 40);
+        }
+
+        window.closeDrawStaffModal = function() {
+            const modal = document.getElementById('drawStaffModal');
+            if (modal) modal.style.display = 'none';
+            pendingStaffAction = null;
+        };
+
+        window.submitDrawStaffLogin = async function(ev) {
+            ev.preventDefault();
+            const inputEl = document.getElementById('drawStaffPinInput');
+            const errEl = document.getElementById('drawStaffError');
+            const pwd = inputEl ? inputEl.value : '';
+            if (errEl) errEl.style.display = 'none';
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: pwd }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (res.ok) {
+                    isStaffAuthenticated = true;
+                    const cb = pendingStaffAction;
+                    window.closeDrawStaffModal();
+                    if (typeof cb === 'function') {
+                        cb();
+                    } else if (exhibitionMode && exStage === 'welcome') {
+                        renderExhibitionStage();
+                    }
+                } else {
+                    if (errEl) {
+                        errEl.textContent = data.error || t('draw.staff.invalid_pin');
+                        errEl.style.display = 'block';
+                    }
+                }
+            } catch (err) {
+                if (errEl) {
+                    errEl.textContent = t('draw.staff.invalid_pin');
+                    errEl.style.display = 'block';
+                }
+            }
+        };
+
+        window.requestStaffControls = async function() {
+            if (!isStaffAuthenticated) {
+                await refreshDrawAuthStatus();
+            }
+            if (isStaffAuthenticated) {
+                window.setExhibitionMode(false);
+            } else {
+                openDrawStaffModal(() => {
+                    window.setExhibitionMode(false);
+                });
+            }
+        };
+
+        window.lockStaffControls = async function() {
+            try {
+                await fetch('/api/auth/logout', { method: 'POST' });
+            } catch (_) {}
+            isStaffAuthenticated = false;
+            window.setExhibitionMode(true);
+        };
+
         function setStatusKey(key, vars = null) {
             lastStatusKey = key;
             lastStatusVars = vars;
@@ -838,14 +1075,29 @@
             if (btn) {
                 btn.textContent = singleScreenMode ? t('draw.ex.display_single') : t('draw.ex.display_dual');
             }
+            const galLink = document.getElementById('operatorGalleryLink');
+            if (galLink) {
+                galLink.href = singleScreenMode ? '/?single_screen=1' : '/';
+            }
         }
 
         function updateExhibitionCamBadge() {
             const pill = document.getElementById('exCamStatus');
             const textEl = document.getElementById('exCamStatusText');
             if (!pill || !textEl) return;
-            pill.classList.toggle('is-live', webcamRunning);
-            textEl.textContent = webcamRunning ? t('draw.ex.cam_ready') : t('draw.ex.cam_standby');
+            const state = webcamRunning ? 'live' : camStatusState;
+            pill.classList.toggle('is-live', state === 'live');
+            pill.classList.toggle('is-loading', state === 'loading');
+            pill.classList.toggle('is-error', state === 'error');
+            if (state === 'live') {
+                textEl.textContent = t('draw.ex.cam_ready');
+            } else if (state === 'loading') {
+                textEl.textContent = t('draw.ex.cam_starting');
+            } else if (state === 'error') {
+                textEl.textContent = t('draw.ex.cam_fallback_title');
+            } else {
+                textEl.textContent = t('draw.ex.cam_standby');
+            }
         }
 
         function refreshDynamicDrawText() {
@@ -1478,13 +1730,13 @@
                                 if (singleScreenMode) {
                                     pendingPostSubmitTimerId = setTimeout(() => {
                                         if (pollId === activePollId && exStage === 'complete') {
-                                            window.location.href = '/';
+                                            window.location.href = '/?single_screen=1';
                                         }
                                     }, 3000);
                                 }
                             } else if (shouldRedirectSingle) {
                                 pendingPostSubmitTimerId = setTimeout(() => {
-                                    if (pollId === activePollId) window.location.href = '/';
+                                    if (pollId === activePollId) window.location.href = singleScreenMode ? '/?single_screen=1' : '/';
                                 }, 1200);
                             } else {
                                 pendingPostSubmitTimerId = setTimeout(() => {
@@ -1576,12 +1828,23 @@
         };
 
         window.addEventListener('keydown', (e) => {
+            if (isStaffModalOpen()) {
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    window.closeDrawStaffModal();
+                }
+                return;
+            }
             if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) {
                 return;
             }
             if (e.shiftKey && (e.key === 'E' || e.key === 'e')) {
                 e.preventDefault();
-                window.setExhibitionMode(!exhibitionMode);
+                if (exhibitionMode) {
+                    window.requestStaffControls();
+                } else {
+                    window.setExhibitionMode(true);
+                }
                 return;
             }
             if (exhibitionMode && (e.code === 'Space' || e.code === 'Enter')) {
@@ -1618,94 +1881,252 @@
         };
 
         async function loadMediaPipeVision() {
-            // Prefer optional local offline bundle in web_ui/vendor/mediapipe/ if installed, else CDN
-            try {
-                const probe = await fetch('/vendor/mediapipe/face_landmarker.task', { method: 'HEAD' });
-                if (probe.ok) {
-                    const vision = await import('/vendor/mediapipe/vision_bundle.mjs');
-                    const fileset = await vision.FilesetResolver.forVisionTasks('/vendor/mediapipe/wasm');
-                    return { vision, fileset, modelAssetPath: '/vendor/mediapipe/face_landmarker.task' };
-                }
-            } catch (_) {}
+            if (mediapipeAssetsPromise) return mediapipeAssetsPromise;
+            mediapipeAssetsPromise = (async () => {
+                // Prefer optional local offline bundle in web_ui/vendor/mediapipe/ if installed, else CDN
+                try {
+                    const probe = await fetch('/vendor/mediapipe/face_landmarker.task', { method: 'HEAD' });
+                    if (probe.ok) {
+                        const vision = await import('/vendor/mediapipe/vision_bundle.mjs');
+                        const fileset = await vision.FilesetResolver.forVisionTasks('/vendor/mediapipe/wasm');
+                        return { vision, fileset, modelAssetPath: '/vendor/mediapipe/face_landmarker.task' };
+                    }
+                } catch (_) {}
 
-            const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
-            const fileset = await vision.FilesetResolver.forVisionTasks(
-                'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
-            );
-            const modelAssetPath = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
-            return { vision, fileset, modelAssetPath };
+                const vision = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14');
+                const fileset = await vision.FilesetResolver.forVisionTasks(
+                    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+                );
+                const modelAssetPath = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+                return { vision, fileset, modelAssetPath };
+            })().catch((err) => {
+                mediapipeAssetsPromise = null;
+                throw err;
+            });
+            return mediapipeAssetsPromise;
+        }
+
+        function classifyCameraError(err, stage = 'camera') {
+            if (stage === 'mediapipe') {
+                return { code: 'ERR_MEDIAPIPE_INIT', key: 'draw.err.cam_mediapipe' };
+            }
+            const name = (err && err.name) ? String(err.name) : '';
+            const rawMsg = (err && err.message) ? String(err.message) : '';
+            if (!window.isSecureContext || rawMsg === 'INSECURE_CONTEXT' || !navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+                return { code: 'ERR_CAM_HTTPS', key: 'draw.err.cam_https' };
+            }
+            if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+                return { code: 'ERR_CAM_DENIED', key: 'draw.err.cam_denied' };
+            }
+            if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+                return { code: 'ERR_CAM_NOT_FOUND', key: 'draw.err.cam_not_found' };
+            }
+            if (name === 'NotReadableError' || name === 'TrackStartError' || name === 'AbortError') {
+                return { code: 'ERR_CAM_BUSY', key: 'draw.err.cam_busy' };
+            }
+            return { code: 'ERR_WEBCAM_UNAVAILABLE', key: 'draw.err.webcam' };
+        }
+
+        async function requestCameraStreamCrossDevice() {
+            if (!window.isSecureContext || !navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+                const err = new Error('INSECURE_CONTEXT');
+                err.name = 'SecurityError';
+                throw err;
+            }
+            // Progressive constraints for Desktop, Android Chrome/Firefox, and iOS Safari (portrait & landscape)
+            const constraintTiers = [
+                { video: { facingMode: { ideal: 'user' }, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false },
+                { video: { facingMode: 'user' }, audio: false },
+                { video: true, audio: false },
+            ];
+            let lastErr = null;
+            for (const constraints of constraintTiers) {
+                try {
+                    return await navigator.mediaDevices.getUserMedia(constraints);
+                } catch (err) {
+                    lastErr = err;
+                    const name = (err && err.name) ? String(err.name) : '';
+                    // Never re-prompt when the user explicitly denied permissions or device is locked
+                    if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError' || name === 'NotReadableError') {
+                        throw err;
+                    }
+                }
+            }
+            throw lastErr || new Error('Camera unavailable');
+        }
+
+        async function attachAndPlayVideo(video, stream) {
+            // Mandatory iOS Safari & Android Chrome inline autoplay attributes BEFORE assigning srcObject
+            video.muted = true;
+            video.defaultMuted = true;
+            video.playsInline = true;
+            video.autoplay = true;
+            video.setAttribute('muted', '');
+            video.setAttribute('playsinline', '');
+            video.setAttribute('webkit-playsinline', '');
+            video.setAttribute('autoplay', '');
+            video.srcObject = stream;
+
+            await new Promise((resolve) => {
+                if (video.readyState >= 1 && video.videoWidth > 0) {
+                    resolve();
+                    return;
+                }
+                let settled = false;
+                const done = () => {
+                    if (settled) return;
+                    settled = true;
+                    video.removeEventListener('loadedmetadata', done);
+                    video.removeEventListener('canplay', done);
+                    clearTimeout(tid);
+                    resolve();
+                };
+                const tid = setTimeout(done, 4000);
+                video.addEventListener('loadedmetadata', done, { once: true });
+                video.addEventListener('canplay', done, { once: true });
+            });
+
+            try {
+                await video.play();
+            } catch (playErr) {
+                // Retry once after next frame (Safari sometimes resolves metadata slightly before play)
+                await new Promise((r) => setTimeout(r, 120));
+                await video.play();
+            }
+        }
+
+        function handleWebcamTrackEnded() {
+            if (!webcamRunning) return;
+            webcamRunning = false;
+            camStatusState = 'idle';
+            const camBtn = document.getElementById('camBtn');
+            if (camBtn) {
+                camBtn.disabled = false;
+                camBtnState = 'idle';
+                camBtn.textContent = t('draw.btn.start_cam');
+            }
+            updateExhibitionCamBadge();
+            syncExhibitionChrome();
+            if (!exhibitionMode) {
+                setStatusKey('draw.status.mouse_active');
+            }
+        }
+
+        async function ensureFaceLandmarker(preferDelegate = 'GPU') {
+            if (faceLandmarker && activeLandmarkerDelegate === preferDelegate) {
+                return faceLandmarker;
+            }
+            const { vision, fileset, modelAssetPath } = await loadMediaPipeVision();
+            const isIOS = /iP(ad|hone|od)/.test(navigator.userAgent) ||
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+            const delegates = (preferDelegate === 'CPU' || isIOS) ? ['CPU'] : ['GPU', 'CPU'];
+            let lastErr = null;
+            for (const delegate of delegates) {
+                try {
+                    if (faceLandmarker && typeof faceLandmarker.close === 'function') {
+                        try { faceLandmarker.close(); } catch (_) {}
+                    }
+                    faceLandmarker = await vision.FaceLandmarker.createFromOptions(fileset, {
+                        baseOptions: { modelAssetPath, delegate },
+                        runningMode: 'VIDEO',
+                        numFaces: 1
+                    });
+                    activeLandmarkerDelegate = delegate;
+                    consecutiveDetectErrors = 0;
+                    return faceLandmarker;
+                } catch (err) {
+                    lastErr = err;
+                    console.warn(`MediaPipe ${delegate} delegate failed:`, err);
+                }
+            }
+            throw lastErr || new Error('FaceLandmarker initialization failed');
         }
 
         window.startWebcamGaze = async function(opts = {}) {
             if (webcamRunning) return true;
-            const camBtn = document.getElementById('camBtn');
-            camBtn.disabled = true;
-            camBtnState = 'loading';
-            camBtn.textContent = t('draw.btn.loading_cam');
-            setStatusKey('draw.status.loading_mediapipe');
+            if (camStartPromise) return camStartPromise;
 
-            let stream = null;
-            try {
-                const { vision, fileset, modelAssetPath } = await loadMediaPipeVision();
-                try {
-                    faceLandmarker = await vision.FaceLandmarker.createFromOptions(fileset, {
-                        baseOptions: { modelAssetPath, delegate: 'GPU' },
-                        runningMode: 'VIDEO',
-                        numFaces: 1
-                    });
-                } catch (gpuErr) {
-                    console.warn('GPU delegate unavailable, falling back to CPU delegate:', gpuErr);
-                    faceLandmarker = await vision.FaceLandmarker.createFromOptions(fileset, {
-                        baseOptions: { modelAssetPath, delegate: 'CPU' },
-                        runningMode: 'VIDEO',
-                        numFaces: 1
-                    });
-                }
-
-                const video = document.getElementById('webcamVideo');
-                if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
-                    throw new Error('Webcam API unavailable in this browser context (open via http://localhost or HTTPS).');
-                }
-                stream = await navigator.mediaDevices.getUserMedia({
-                    video: { width: 640, height: 480, facingMode: 'user' }
-                });
-                video.srcObject = stream;
-                await video.play();
-
-                document.getElementById('pipBox').style.display = 'block';
-                document.getElementById('calibBtn').style.display = 'inline-block';
-                document.getElementById('centerBtn').style.display = 'inline-block';
-                camBtnState = 'active';
-                camBtn.textContent = t('draw.btn.cam_active');
-                webcamRunning = true;
+            camStartPromise = (async () => {
+                const camBtn = document.getElementById('camBtn');
+                camBtn.disabled = true;
+                camBtnState = 'loading';
+                camStatusState = 'loading';
+                lastCamErrorKey = '';
+                camBtn.textContent = t('draw.btn.loading_cam');
+                setStatusKey('draw.status.loading_mediapipe');
                 updateExhibitionCamBadge();
-                if (opts && opts.prewarmOnly) {
-                    setState(STATES.IDLE);
-                } else if (opts && opts.autoCalibrate) {
-                    setState(STATES.CALIBRATING);
-                } else {
-                    setState(exhibitionMode ? STATES.IDLE : STATES.SEARCHING);
-                }
-                requestAnimationFrame(processVideoFrame);
                 if (exhibitionMode && exStage === 'welcome') {
                     renderExhibitionStage();
                 }
-                return true;
-            } catch (err) {
-                if (stream) {
-                    try { stream.getTracks().forEach(t => t.stop()); } catch (_) {}
+
+                let stream = null;
+                let initStage = 'camera';
+                try {
+                    // STEP 1 (CRITICAL FOR iOS / ANDROID): Call getUserMedia() & video.play()
+                    // IMMEDIATELY inside the user click/tap gesture BEFORE loading MediaPipe WASM!
+                    stream = await requestCameraStreamCrossDevice();
+                    const video = document.getElementById('webcamVideo');
+                    await attachAndPlayVideo(video, stream);
+
+                    const vTrack = stream.getVideoTracks()[0];
+                    if (vTrack) {
+                        vTrack.addEventListener('ended', handleWebcamTrackEnded, { once: true });
+                    }
+
+                    // STEP 2: Load MediaPipe FaceLandmarker (GPU with automatic CPU fallback)
+                    initStage = 'mediapipe';
+                    await ensureFaceLandmarker('GPU');
+
+                    document.getElementById('calibBtn').style.display = 'inline-block';
+                    document.getElementById('centerBtn').style.display = 'inline-block';
+                    camBtnState = 'active';
+                    camStatusState = 'live';
+                    camBtn.textContent = t('draw.btn.cam_active');
+                    webcamRunning = true;
+                    hideDrawError();
+                    updateExhibitionCamBadge();
+                    syncExhibitionChrome();
+                    if (opts && opts.prewarmOnly) {
+                        setState(STATES.IDLE);
+                    } else if (opts && opts.autoCalibrate) {
+                        setState(STATES.CALIBRATING);
+                    } else {
+                        setState(exhibitionMode ? STATES.IDLE : STATES.SEARCHING);
+                    }
+                    requestAnimationFrame(processVideoFrame);
+                    if (exhibitionMode && exStage === 'welcome') {
+                        renderExhibitionStage();
+                    }
+                    return true;
+                } catch (err) {
+                    if (stream) {
+                        try { stream.getTracks().forEach(tr => tr.stop()); } catch (_) {}
+                    }
+                    const video = document.getElementById('webcamVideo');
+                    if (video && video.srcObject === stream) {
+                        video.srcObject = null;
+                    }
+                    console.error('Webcam/EyeTracker start failed:', err);
+                    const classified = classifyCameraError(err, initStage);
+                    lastCamErrorKey = classified.key;
+                    camStatusState = 'error';
+                    if (!exhibitionMode) {
+                        showDrawError(classified.code, t(classified.key));
+                    }
+                    camBtn.disabled = false;
+                    camBtnState = 'idle';
+                    camBtn.textContent = t('draw.btn.start_cam');
+                    setStatusKey('draw.status.mouse_active');
+                    updateExhibitionCamBadge();
+                    if (exhibitionMode && exStage === 'welcome') {
+                        renderExhibitionStage();
+                    }
+                    return false;
+                } finally {
+                    camStartPromise = null;
                 }
-                console.error(err);
-                if (!exhibitionMode) {
-                    showDrawError('ERR_WEBCAM_UNAVAILABLE', t('draw.err.webcam'));
-                }
-                camBtn.disabled = false;
-                camBtnState = 'idle';
-                camBtn.textContent = t('draw.btn.start_cam');
-                setStatusKey('draw.status.mouse_active');
-                updateExhibitionCamBadge();
-                return false;
-            }
+            })();
+            return camStartPromise;
         };
 
         function windowSpread(hist) {
@@ -1864,10 +2285,11 @@
                 lastFrameTs = now;
                 document.getElementById('fpsCounter').textContent = `${fps} FPS`;
 
-                if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0 && faceLandmarker) {
+                if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0 && faceLandmarker && !isSwitchingDelegate) {
                     const detectTs = Math.max(Math.floor(now), lastDetectTs + 1);
                     lastDetectTs = detectTs;
                     const res = faceLandmarker.detectForVideo(video, detectTs);
+                    consecutiveDetectErrors = 0;
                     eyeCtx.clearRect(0, 0, eyeCanvas.width, eyeCanvas.height);
 
                     if (res.faceLandmarks && res.faceLandmarks.length > 0 && res.faceLandmarks[0].length >= 477) {
@@ -2030,6 +2452,16 @@
                 }
             } catch (frameErr) {
                 console.warn('Transient video frame error:', frameErr);
+                consecutiveDetectErrors += 1;
+                if (consecutiveDetectErrors >= 3 && activeLandmarkerDelegate === 'GPU' && !isSwitchingDelegate) {
+                    isSwitchingDelegate = true;
+                    console.warn('Switching MediaPipe FaceLandmarker from GPU to CPU delegate after runtime error.');
+                    ensureFaceLandmarker('CPU').catch((swErr) => {
+                        console.error('CPU delegate fallback failed:', swErr);
+                    }).finally(() => {
+                        isSwitchingDelegate = false;
+                    });
+                }
             } finally {
                 if (webcamRunning) {
                     requestAnimationFrame(processVideoFrame);
@@ -2082,7 +2514,8 @@
             const pipBox = document.getElementById('pipBox');
 
             if (pipBox) {
-                pipBox.style.display = (webcamRunning && !(exhibitionMode && exInputMode === 'pointer')) ? 'block' : 'none';
+                const showPip = webcamRunning && !(exhibitionMode && exInputMode === 'pointer');
+                pipBox.classList.toggle('is-hidden', !showPip);
             }
 
             if (!exhibitionMode) {
@@ -2132,9 +2565,12 @@
                         ${escapeHtml(b.label)}
                     </button>
                 `).join('');
-                const prewarmBtn = webcamRunning
+                const prewarmBtn = (!isStaffAuthenticated || webcamRunning)
                     ? ''
-                    : `<button type="button" class="ex-link-subtle" onclick="exPrewarmCamera()">${escapeHtml(t('draw.ex.cam_prewarm'))}</button>`;
+                    : `<button type="button" class="ex-link-subtle" id="exPrewarmBtn" ${camStatusState === 'loading' ? 'disabled' : ''} onclick="exPrewarmCamera()">${escapeHtml(camStatusState === 'loading' ? t('draw.ex.cam_starting') : t('draw.ex.cam_prewarm'))}</button>`;
+                const camErrHtml = lastCamErrorKey
+                    ? `<div class="ex-cam-inline-error" id="exCamInlineError">${escapeHtml(t(lastCamErrorKey))}</div>`
+                    : '';
                 card.innerHTML = `
                     <div class="ex-kicker">${escapeHtml(t('draw.ex.kicker'))}</div>
                     <h1 class="ex-headline">${escapeHtml(t('draw.ex.title'))}</h1>
@@ -2153,6 +2589,7 @@
                         <button type="button" class="ex-link-subtle" onclick="exOpenTutorial('pointer')">${escapeHtml(t('draw.ex.start_touch_btn'))}</button>
                         ${prewarmBtn}
                     </div>
+                    ${camErrHtml}
                 `;
                 return;
             }
@@ -2207,11 +2644,13 @@
             }
 
             if (exStage === 'cam_fallback') {
+                const detailMsg = lastCamErrorKey ? t(lastCamErrorKey) : t('draw.ex.cam_fallback_desc');
                 card.innerHTML = `
                     <h2 class="ex-headline" style="font-size: 1.75rem;">${escapeHtml(t('draw.ex.cam_fallback_title'))}</h2>
-                    <p class="ex-desc">${escapeHtml(t('draw.ex.cam_fallback_desc'))}</p>
+                    <p class="ex-desc">${escapeHtml(detailMsg)}</p>
                     <div class="ex-actions-row">
                         <button type="button" class="ex-cta-secondary" onclick="resetExhibitionToWelcome()">&larr; ${escapeHtml(t('draw.ex.back_btn'))}</button>
+                        <button type="button" class="ex-cta-secondary" onclick="exRetryCamera()">${escapeHtml(t('draw.ex.cam_retry_btn'))}</button>
                         <button type="button" class="ex-cta-primary" onclick="exStartPointerDrawing()">${escapeHtml(t('draw.ex.begin_draw_btn'))} &rarr;</button>
                     </div>
                 `;
@@ -2261,7 +2700,7 @@
                                 <h2 class="ex-headline" style="font-size: clamp(1.5rem, 2.6vw, 2.1rem); margin-bottom: 12px;">${escapeHtml(t('draw.ex.done_title_single'))}</h2>
                                 <p class="ex-desc" style="margin: 0 0 20px 0;">${escapeHtml(t('draw.ex.done_desc_single'))}</p>
                                 <div class="ex-actions-row" style="justify-content: flex-start;">
-                                    <a href="/" class="ex-cta-primary">${escapeHtml(t('draw.ex.open_gallery_btn'))} &rarr;</a>
+                                    <a href="/?single_screen=1" class="ex-cta-primary">${escapeHtml(t('draw.ex.open_gallery_btn'))} &rarr;</a>
                                     <button type="button" class="ex-cta-secondary" onclick="resetExhibitionToWelcome()">${escapeHtml(t('draw.ex.start_over_btn'))}</button>
                                 </div>
                             </div>
@@ -2377,10 +2816,24 @@
         };
 
         window.exPrewarmCamera = async function() {
-            await window.startWebcamGaze({ prewarmOnly: true });
+            const ok = await window.startWebcamGaze({ prewarmOnly: true });
             updateExhibitionCamBadge();
             if (exhibitionMode && exStage === 'welcome') {
                 renderExhibitionStage();
+            }
+            return ok;
+        };
+
+        window.exRetryCamera = async function() {
+            exInputMode = 'gaze';
+            enterExhibitionStage('loading_cam');
+            const ok = await window.startWebcamGaze({ autoCalibrate: true });
+            if (!exhibitionMode) return;
+            if (ok) {
+                exStage = 'calibrating';
+                syncExhibitionChrome();
+            } else {
+                enterExhibitionStage('cam_fallback');
             }
         };
 
@@ -2433,6 +2886,10 @@
         };
 
         window.setExhibitionMode = function(enabled) {
+            if (!enabled && !isStaffAuthenticated) {
+                openDrawStaffModal(() => window.setExhibitionMode(false));
+                return;
+            }
             clearExhibitionTimers();
             exhibitionMode = !!enabled;
             if (exhibitionMode) {
@@ -2461,11 +2918,16 @@
         drawI18n.mountSwitcher(document.getElementById('exLangSwitch'), 'dark');
         drawI18n.applyDOM();
         refreshDynamicDrawText();
-        if (exhibitionMode) {
-            enterExhibitionStage('welcome');
-        } else {
-            syncExhibitionChrome();
-        }
+        enterExhibitionStage('welcome');
+        refreshDrawAuthStatus().then((authed) => {
+            if (wantsStaffOnBoot) {
+                if (authed) {
+                    window.setExhibitionMode(false);
+                } else {
+                    openDrawStaffModal(() => window.setExhibitionMode(false));
+                }
+            }
+        });
     </script>
 </body>
 </html>
