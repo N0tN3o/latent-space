@@ -2135,7 +2135,13 @@
         onChange: () => {
             renderTranslationStatusBanner();
             if (adminAuthenticated) {
-                if (lastStatusPayload) renderMonitor(lastStatusPayload);
+                if (lastStatusPayload) {
+                    try {
+                        renderMonitor(lastStatusPayload);
+                    } catch (e) {
+                        console.error('Monitor render failed:', e);
+                    }
+                }
                 updateMonitor();
                 updateAttrPreview();
                 updateAIAvailabilityUI();
@@ -2503,6 +2509,8 @@
     async function applySmartFix(fixId, paramsRaw, btnEl) {
         let params = {};
         try { params = paramsRaw ? JSON.parse(paramsRaw) : {}; } catch (_) {}
+        // Polling skips unchanged markup, so this handler must restore its own button.
+        const originalLabel = btnEl ? btnEl.textContent : '';
         if (btnEl) {
             btnEl.disabled = true;
             btnEl.textContent = '...';
@@ -2570,7 +2578,11 @@
             }
         } catch (e) {
             showToast('Auto-fix failed: ' + e.message, 'err');
-            if (btnEl) btnEl.disabled = false;
+        } finally {
+            if (btnEl) {
+                btnEl.disabled = false;
+                btnEl.textContent = originalLabel;
+            }
         }
     }
 
@@ -2858,6 +2870,8 @@
 
     async function unloadOllamaModel(modelName, btnEl) {
         if (!modelName) return;
+        // Polling skips unchanged markup, so this handler must restore its own button.
+        const originalLabel = btnEl ? btnEl.textContent : '';
         if (btnEl) {
             btnEl.disabled = true;
             btnEl.textContent = '...';
@@ -2877,7 +2891,11 @@
             setTimeout(updateMonitor, 400);
         } catch (e) {
             showToast('Unload error: ' + e, 'err');
-            if (btnEl) btnEl.disabled = false;
+        } finally {
+            if (btnEl) {
+                btnEl.disabled = false;
+                btnEl.textContent = originalLabel;
+            }
         }
     }
 
