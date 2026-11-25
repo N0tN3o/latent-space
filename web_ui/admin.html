@@ -275,11 +275,11 @@
                     </div>
 
                     <div class="row g-2 mb-2 align-items-end">
-                        <div class="col-md-7">
+                        <div class="col-md-5">
                             <label class="form-label small text-muted mb-1" data-i18n="admin.ai.vision_mode">Vision Perception Mode</label>
                             <select id="aiVisionMode" class="form-select form-select-sm">
                                 <option value="auto">Auto (Best Available Vision + Fractal &amp; Rorschach Geometry)</option>
-                                <option value="ollama_vision">Self-Hosted Ollama Vision (moondream / llava) + Fractal Geometry</option>
+                                <option value="ollama_vision">Self-Hosted Ollama Vision (moondream / llava / gemma4) + Fractal Geometry</option>
                                 <option value="siglip">Self-Hosted Google SigLIP Zero-Shot Abstract Art + Fractal Geometry</option>
                                 <option value="clip">Self-Hosted OpenAI CLIP Zero-Shot Abstract Art + Fractal Geometry</option>
                                 <option value="stroke_metrics">Self-Hosted Fractal Dimension, Entropy &amp; Rorschach Geometry Only</option>
@@ -287,12 +287,22 @@
                                 <option value="resnet50">Legacy ImageNet ResNet50 + Fractal Geometry</option>
                             </select>
                         </div>
-                        <div class="col-md-5">
+                        <div class="col-md-4">
                             <label class="form-label small text-muted mb-1" data-i18n="admin.ai.badge_style">PDF &amp; Gallery Badge Style</label>
                             <select id="visionBadgeStyle" class="form-select form-select-sm">
                                 <option value="vision_only" data-i18n="admin.ai.badge_vision_only">Vision Archetype Only (e.g. SNAKE)</option>
                                 <option value="combined" data-i18n="admin.ai.badge_combined">Combined: Vision · Geometry (e.g. SNAKE · ELECTRIC DRIFT)</option>
                                 <option value="geometry_only" data-i18n="admin.ai.badge_geometry_only">Geometry Archetype Only (vision still guides LLM)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small text-muted mb-1" data-i18n="admin.ai.vision_token_budget" title="Gemma 4 visual soft-token resolution tier (70/140 downscales for faster vision encoding; 280 default ≈ 645K px; 560/1120 keeps full detail for OpenAI-compatible/llama.cpp/cloud VLMs).">Vision Token Budget (Gemma 4)</label>
+                            <select id="visionTokenBudget" class="form-select form-select-sm">
+                                <option value="70">70 tokens (Fast / ~400px)</option>
+                                <option value="140">140 tokens (Quick / ~560px)</option>
+                                <option value="280" selected>280 tokens (Default / ~800px)</option>
+                                <option value="560">560 tokens (High Detail / ~1130px)</option>
+                                <option value="1120">1120 tokens (Max Detail / ~1600px)</option>
                             </select>
                         </div>
                     </div>
@@ -302,24 +312,34 @@
                         <span class="text-muted">Checking installed local models, Python ML packages, and API keys...</span>
                     </div>
 
-                    <!-- Dynamic Engine Panel: Ollama Vision (moondream / llava / etc.) -->
+                    <!-- Dynamic Engine Panel: Ollama Vision (moondream / llava / gemma4 / etc.) -->
                     <div id="visionPanelOllama" class="mb-3">
                         <div class="row g-2 mb-2 align-items-end">
-                            <div class="col-md-4">
+                            <div class="col-md-3">
                                 <label class="form-label small mb-1" data-i18n="admin.ai.vision_ollama_model">Ollama Vision Model</label>
-                                <input type="text" id="aiOllamaVisionModel" class="form-control form-control-sm" placeholder="moondream">
+                                <input type="text" id="aiOllamaVisionModel" class="form-control form-control-sm" placeholder="moondream / gemma4:e4b">
                             </div>
                             <div class="col-md-2">
                                 <label class="form-label small mb-1" data-i18n="admin.ai.vision_temp">Temp (0–2)</label>
                                 <input type="number" step="0.05" min="0" max="2" id="visionOllamaTemp" class="form-control form-control-sm" value="0.4">
                             </div>
-                            <div class="col-md-3">
-                                <label class="form-label small mb-1" data-i18n="admin.ai.vision_max_tokens">Max Tokens</label>
-                                <input type="number" step="8" min="16" max="1024" id="visionOllamaMaxTokens" class="form-control form-control-sm" value="96">
+                            <div class="col-md-2">
+                                <label class="form-label small mb-1" data-i18n="admin.ai.vision_max_tokens" title="Maximum output + thinking tokens (num_predict, 16–2048). Raise to 280–560+ if enabling thinking on Gemma 4.">Max Output Tokens</label>
+                                <input type="number" step="10" min="16" max="2048" id="visionOllamaMaxTokens" class="form-control form-control-sm" value="280">
                             </div>
-                            <div class="col-md-3">
+                            <div class="col-md-2">
                                 <label class="form-label small mb-1" data-i18n="admin.ai.vision_timeout">Timeout (sec)</label>
                                 <input type="number" step="5" min="5" max="180" id="visionOllamaTimeout" class="form-control form-control-sm" value="60">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label small mb-1" data-i18n="admin.ai.vision_thinking" title="Controls chain-of-thought on thinking-capable VLMs (e.g. gemma4:e4b, qwen3-vl). Auto disables thinking for fast vision; Low allows brief reasoning.">Vision Thinking Mode</label>
+                                <select id="visionOllamaThinking" class="form-select form-select-sm">
+                                    <option value="auto">Auto (Fast / Off)</option>
+                                    <option value="off">Off (Direct)</option>
+                                    <option value="low">Low (Brief Thinking)</option>
+                                    <option value="medium">Medium</option>
+                                    <option value="high">High</option>
+                                </select>
                             </div>
                         </div>
 
@@ -437,8 +457,9 @@
                             <div class="mb-3">
                                 <span class="small text-muted d-block mb-1" data-i18n="admin.ai.presets_analysis">Quick Presets (Analysis):</span>
                                 <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'llama3.1:8b', 'http://localhost:11434/v1')">Ollama (llama3.1:8b)</span>
+                                <span class="badge bg-success me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'gemma4:e4b', 'http://localhost:11434/v1', 'gemma4:e4b')">Ollama (gemma4:e4b)</span>
+                                <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'gemma3:4b', 'http://localhost:11434/v1', 'gemma3:4b')">Ollama (gemma3:4b)</span>
                                 <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'llama3.2', 'http://localhost:11434/v1')">Ollama (llama3.2)</span>
-                                <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'llava', 'http://localhost:11434/v1', 'llava')">Ollama Vision (llava)</span>
                                 <span class="badge bg-primary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'gemini', 'gemini-2.0-flash', '')">Gemini 2.0 Flash</span>
                                 <span class="badge bg-info text-dark me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'openai_compatible', 'llama-3.3-70b-versatile', 'https://api.groq.com/openai/v1')">Groq (llama-3.3-70b)</span>
                                 <span class="badge bg-warning text-dark me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'anthropic', 'claude-3-5-haiku-latest', '')">Claude 3.5 Haiku</span>
@@ -507,6 +528,23 @@
                                 </div>
                             </div>
 
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-6">
+                                    <label class="form-label small" data-i18n="admin.ai.thinking_mode" title="Controls chain-of-thought for thinking models (gemma4, qwen3, deepseek-r1, gemini-2.5/3). Auto uses brief Low thinking on thinking models and omits the parameter on standard models.">Thinking Mode</label>
+                                    <select id="analysis_thinking_mode" class="form-select form-select-sm">
+                                        <option value="auto">Auto (Low on Thinking Models)</option>
+                                        <option value="off">Off (Fastest / No Thinking)</option>
+                                        <option value="low">Low (Brief Thinking)</option>
+                                        <option value="medium">Medium</option>
+                                        <option value="high">High</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small" data-i18n="admin.ai.max_tokens" title="Optional hard output+thinking token cap (0 = model default, or 64–4096 e.g. 560 or 1120).">Max Tokens (0 = auto)</label>
+                                    <input type="number" step="64" min="0" max="4096" class="form-control form-control-sm" id="analysis_max_tokens" value="0">
+                                </div>
+                            </div>
+
                             <div class="mb-2">
                                 <label class="form-label small" data-i18n="admin.ai.sys_prompt_analysis">System Prompt / Instructions (Analysis)</label>
                                 <textarea class="form-control form-control-sm" id="analysis_desc" rows="4"></textarea>
@@ -545,6 +583,8 @@
                             <div class="mb-3">
                                 <span class="small text-muted d-block mb-1" data-i18n="admin.ai.presets_poem">Quick Presets (Poem):</span>
                                 <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('poem', 'ollama', 'llama3.1:8b', 'http://localhost:11434/v1')">Ollama (llama3.1:8b)</span>
+                                <span class="badge bg-success me-1 mb-1 preset-chip" onclick="applyRolePreset('poem', 'ollama', 'gemma4:e4b', 'http://localhost:11434/v1')">Ollama (gemma4:e4b)</span>
+                                <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('poem', 'ollama', 'gemma3:4b', 'http://localhost:11434/v1')">Ollama (gemma3:4b)</span>
                                 <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('poem', 'ollama', 'llama3.2', 'http://localhost:11434/v1')">Ollama (llama3.2)</span>
                                 <span class="badge bg-primary me-1 mb-1 preset-chip" onclick="applyRolePreset('poem', 'gemini', 'gemini-2.0-flash', '')">Gemini 2.0 Flash</span>
                                 <span class="badge bg-info text-dark me-1 mb-1 preset-chip" onclick="applyRolePreset('poem', 'openai_compatible', 'llama-3.3-70b-versatile', 'https://api.groq.com/openai/v1')">Groq (llama-3.3-70b)</span>
@@ -607,6 +647,23 @@
                                 <div class="col-md-4">
                                     <label class="form-label small" data-i18n="admin.ai.assistant_name">Assistant Name</label>
                                     <input type="text" class="form-control form-control-sm" id="poem_name">
+                                </div>
+                            </div>
+
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-6">
+                                    <label class="form-label small" data-i18n="admin.ai.thinking_mode" title="Controls chain-of-thought for thinking models (gemma4, qwen3, deepseek-r1, gemini-2.5/3). Auto uses brief Low thinking on thinking models and omits the parameter on standard models.">Thinking Mode</label>
+                                    <select id="poem_thinking_mode" class="form-select form-select-sm">
+                                        <option value="auto">Auto (Low on Thinking Models)</option>
+                                        <option value="off">Off (Fastest / No Thinking)</option>
+                                        <option value="low">Low (Brief Thinking)</option>
+                                        <option value="medium">Medium</option>
+                                        <option value="high">High</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small" data-i18n="admin.ai.max_tokens" title="Optional hard output+thinking token cap (0 = model default, or 64–4096 e.g. 560 or 1120).">Max Tokens (0 = auto)</label>
+                                    <input type="number" step="64" min="0" max="4096" class="form-control form-control-sm" id="poem_max_tokens" value="0">
                                 </div>
                             </div>
 
@@ -1332,7 +1389,7 @@
 
     const VISION_MODE_BASE_LABELS = {
         auto: 'Auto (Best Available Vision + Fractal & Rorschach Geometry)',
-        ollama_vision: 'Self-Hosted Ollama Vision (moondream / llava) + Fractal Geometry',
+        ollama_vision: 'Self-Hosted Ollama Vision (moondream / llava / gemma4) + Fractal Geometry',
         siglip: 'Self-Hosted Google SigLIP Zero-Shot Abstract Art + Fractal Geometry',
         clip: 'Self-Hosted OpenAI CLIP Zero-Shot Abstract Art + Fractal Geometry',
         stroke_metrics: 'Self-Hosted Fractal Dimension, Entropy & Rorschach Geometry Only',
@@ -1354,7 +1411,13 @@
         const m = (modelName || '').trim().toLowerCase();
         if (p === 'gemini' || p === 'anthropic') return true;
         if (!m || m.startsWith('gemma3:1b')) return false;
-        const hints = ['vision', 'llava', 'moondream', 'bakllava', 'minicpm-v', 'qwen2-vl', 'qwen2.5-vl', 'qwen2.5vl', 'pixtral', 'internvl', 'granite3.2-vision', 'gemma3', 'gpt-4o', 'gpt-4-vision', 'gpt-4.1', 'gpt-5', 'claude-3', 'claude-4', 'gemini'];
+        const hints = [
+            'vision', 'llava', 'moondream', 'bakllava', 'minicpm-v',
+            'qwen2-vl', 'qwen2.5-vl', 'qwen2.5vl', 'qwen3-vl', 'qwen3vl', 'qwen3.5',
+            'pixtral', 'internvl', 'granite3.2-vision', 'mistral-small3.1', 'mistral-small3.2',
+            'gemma3', 'gemma4', 'llama4', 'llama-4',
+            'gpt-4o', 'gpt-4-vision', 'gpt-4.1', 'gpt-5', 'claude-3', 'claude-4', 'gemini'
+        ];
         return hints.some(h => m.includes(h));
     }
 
@@ -1588,8 +1651,10 @@
         document.getElementById('visionLabelPrompt').value = DEFAULT_VISION_LABEL_PROMPT;
         document.getElementById('visionDescPrompt').value = DEFAULT_VISION_DESC_PROMPT;
         document.getElementById('visionOllamaTemp').value = 0.4;
-        document.getElementById('visionOllamaMaxTokens').value = 96;
+        document.getElementById('visionOllamaMaxTokens').value = 280;
         document.getElementById('visionOllamaTimeout').value = 60;
+        document.getElementById('visionOllamaThinking').value = 'auto';
+        document.getElementById('visionTokenBudget').value = '280';
         document.getElementById('visionCleanLabel').checked = true;
         document.getElementById('visionIncludeDesc').checked = true;
         document.getElementById('visionBadgeStyle').value = 'vision_only';
@@ -1600,6 +1665,7 @@
         const parsedTemp = parseFloat(document.getElementById('visionOllamaTemp').value);
         const parsedTokens = parseInt(document.getElementById('visionOllamaMaxTokens').value, 10);
         const parsedTimeout = parseInt(document.getElementById('visionOllamaTimeout').value, 10);
+        const parsedBudget = parseInt(document.getElementById('visionTokenBudget').value, 10);
         const parsedTopK = parseInt(document.getElementById('visionResnetTopK').value, 10);
         return {
             vision_mode: document.getElementById('aiVisionMode').value,
@@ -1609,8 +1675,10 @@
                 ollama_description_prompt: document.getElementById('visionDescPrompt').value,
                 ollama_include_description: document.getElementById('visionIncludeDesc').checked,
                 ollama_temperature: Number.isFinite(parsedTemp) ? parsedTemp : 0.4,
-                ollama_max_tokens: Number.isFinite(parsedTokens) ? parsedTokens : 96,
+                ollama_max_tokens: Number.isFinite(parsedTokens) ? parsedTokens : 280,
                 ollama_timeout: Number.isFinite(parsedTimeout) ? parsedTimeout : 60,
+                ollama_thinking: document.getElementById('visionOllamaThinking').value || 'auto',
+                vision_token_budget: Number.isFinite(parsedBudget) ? parsedBudget : 280,
                 clean_label: document.getElementById('visionCleanLabel').checked,
                 badge_style: document.getElementById('visionBadgeStyle').value || 'vision_only',
                 zero_shot_archetypes: document.getElementById('visionZeroShotArchetypes').value,
@@ -1631,8 +1699,10 @@
             document.getElementById('aiOllamaVisionModel').value = data.ollama_vision_model || 'moondream';
             document.getElementById('visionBadgeStyle').value = v.badge_style || 'vision_only';
             document.getElementById('visionOllamaTemp').value = v.ollama_temperature ?? 0.4;
-            document.getElementById('visionOllamaMaxTokens').value = v.ollama_max_tokens ?? 96;
+            document.getElementById('visionOllamaMaxTokens').value = v.ollama_max_tokens ?? 280;
             document.getElementById('visionOllamaTimeout').value = v.ollama_timeout ?? 60;
+            document.getElementById('visionOllamaThinking').value = v.ollama_thinking || 'auto';
+            document.getElementById('visionTokenBudget').value = String(v.vision_token_budget ?? 280);
             document.getElementById('visionCleanLabel').checked = v.clean_label !== false;
             document.getElementById('visionIncludeDesc').checked = v.ollama_include_description !== false;
             document.getElementById('visionLabelPrompt').value = v.ollama_label_prompt || DEFAULT_VISION_LABEL_PROMPT;
@@ -1813,6 +1883,14 @@
                 const maxWordsEl = document.getElementById(`${role}_max_words`);
                 if (maxWordsEl) {
                     maxWordsEl.value = c.max_words ?? 110;
+                }
+                const thinkingEl = document.getElementById(`${role}_thinking_mode`);
+                if (thinkingEl) {
+                    thinkingEl.value = c.thinking_mode || 'auto';
+                }
+                const maxTokensEl = document.getElementById(`${role}_max_tokens`);
+                if (maxTokensEl) {
+                    maxTokensEl.value = c.max_tokens ?? 0;
                 }
                 document.getElementById(`${role}_api_key`).value = '';
                 document.getElementById(`${role}_clear_api_key`).checked = false;
@@ -2104,6 +2182,15 @@
         if (maxWordsEl) {
             const parsedMaxWords = parseInt(maxWordsEl.value, 10);
             config.max_words = Number.isFinite(parsedMaxWords) ? parsedMaxWords : 110;
+        }
+        const thinkingEl = document.getElementById(`${role}_thinking_mode`);
+        if (thinkingEl) {
+            config.thinking_mode = thinkingEl.value || 'auto';
+        }
+        const maxTokensEl = document.getElementById(`${role}_max_tokens`);
+        if (maxTokensEl) {
+            const parsedMaxTokens = parseInt(maxTokensEl.value, 10);
+            config.max_tokens = Number.isFinite(parsedMaxTokens) ? parsedMaxTokens : 0;
         }
         if (clearKey) {
             config.api_key = '';
