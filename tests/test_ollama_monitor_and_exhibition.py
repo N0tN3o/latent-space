@@ -251,6 +251,63 @@ class TestOllamaMonitorAndExhibitionMode(unittest.TestCase):
         self.assertIn("applySmartFix", admin_html)
         self.assertIn("aiPipelineStepper", admin_html)
 
+        # /draw security & cross-device (Desktop/Android/iOS) camera checks
+        self.assertIn("drawStaffModal", draw_html)
+        self.assertIn("requestStaffControls", draw_html)
+        self.assertIn("lockStaffControls", draw_html)
+        self.assertIn("/api/auth/login", draw_html)
+        self.assertIn("webkit-playsinline", draw_html)
+        self.assertIn("pip-box.is-hidden", draw_html)
+        self.assertIn("requestCameraStreamCrossDevice", draw_html)
+        self.assertIn("draw.err.cam_https", draw_html)
+        self.assertIn("exRetryCamera", draw_html)
+        # Ensure getUserMedia runs BEFORE MediaPipe FaceLandmarker inside startWebcamGaze
+        start_idx = draw_html.index("window.startWebcamGaze = async function")
+        gum_idx = draw_html.index("requestCameraStreamCrossDevice()", start_idx)
+        mp_idx = draw_html.index("ensureFaceLandmarker('GPU')", start_idx)
+        self.assertLess(gum_idx, mp_idx)
+
+        # Gallery minimal exhibition corner & popover
+        index_html = (PROJECT_ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertIn("galleryMenuBtn", index_html)
+        self.assertIn("galleryMenuPopover", index_html)
+        self.assertIn("singleScreenDrawBtn", index_html)
+        # Language switcher must sit to the right of the menu button to prevent EN/HU shift
+        self.assertLess(index_html.index('id="galleryMenuBtn"'), index_html.index('id="galleryLangSwitch"'))
+
+    def test_fast_localhost_normalization_stdlib_stats_and_offline_manifests(self):
+        # 1. localhost -> 127.0.0.1 normalization eliminates Windows IPv6 stall
+        self.assertEqual(
+            monitoring_server._fast_local_ollama_url("http://localhost:11434"),
+            "http://127.0.0.1:11434",
+        )
+        self.assertEqual(
+            monitoring_server._fast_local_ollama_url("http://192.168.1.20:11434"),
+            "http://192.168.1.20:11434",
+        )
+
+        # 2. System stats return real disk & non-zero memory (or None for CPU) even without psutil
+        with mock.patch.object(monitoring_server, "psutil", None):
+            stats = monitoring_server.get_system_stats()
+        self.assertIsNone(stats["cpu_percent"])
+        self.assertGreater(stats["disk_usage"], 0.0)
+
+        # 3. Offline Ollama manifest layer size fallback when Ollama HTTP server is stopped
+        fake_home = self.tmp_root / "fake_home"
+        manifest_file = fake_home / ".ollama" / "models" / "manifests" / "registry.ollama.ai" / "library" / "gemma4" / "e4b"
+        manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        manifest_file.write_text(json.dumps({
+            "config": {"size": 1024},
+            "layers": [
+                {"size": 5 * (1024 ** 3)},
+                {"size": 1 * (1024 ** 3)},
+            ],
+        }), encoding="utf-8")
+        with mock.patch.object(monitoring_server.urllib.request, "urlopen", side_effect=OSError("refused")), \
+             mock.patch.object(monitoring_server.Path, "home", return_value=fake_home):
+            sizes = monitoring_server.get_ollama_model_sizes(force=True)
+        self.assertAlmostEqual(sizes.get("gemma4:e4b", 0.0), 6.0, places=2)
+
     def test_chat_ollama_cold_timeout_no_retry_and_thinking_cap(self):
         import chat
         import requests

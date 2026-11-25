@@ -36,14 +36,9 @@
             top: 14px;
             right: 18px;
             display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
+            align-items: center;
+            gap: 8px;
             z-index: 100;
-            opacity: 0.25;
-            transition: opacity 0.25s ease;
-        }
-        .floating-nav:hover {
-            opacity: 1;
         }
         .floating-nav a, .floating-nav button {
             background: #1f1f1f;
@@ -57,7 +52,9 @@
             font-family: inherit;
             display: inline-flex;
             align-items: center;
+            justify-content: center;
             gap: 5px;
+            white-space: nowrap;
         }
         .floating-nav a:hover, .floating-nav button:hover {
             background: #3a3a3a;
@@ -65,6 +62,76 @@
         .floating-nav .live-active {
             background: #10b981;
             color: #fff;
+        }
+        .gallery-menu-btn {
+            opacity: 0.18;
+            min-width: 28px;
+            padding: 5px 8px !important;
+            transition: opacity 0.2s ease, background 0.2s ease;
+        }
+        .gallery-menu-btn:hover, .gallery-menu-btn.is-open {
+            opacity: 0.92;
+        }
+        .gallery-menu-popover {
+            display: none;
+            position: fixed;
+            top: 50px;
+            right: 18px;
+            background: #181a20;
+            border: 1px solid #333845;
+            border-radius: 10px;
+            padding: 8px;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+            z-index: 105;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 170px;
+        }
+        .gallery-menu-popover.is-open {
+            display: flex;
+        }
+        .gallery-menu-row {
+            display: flex;
+            gap: 5px;
+        }
+        .gallery-menu-row button {
+            flex: 1;
+        }
+        .gallery-menu-popover a, .gallery-menu-popover button {
+            background: #252832;
+            color: #f3f4f6;
+            text-decoration: none;
+            border: 1px solid #343947;
+            padding: 7px 10px;
+            border-radius: 6px;
+            font-size: 0.78rem;
+            cursor: pointer;
+            font-family: inherit;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+        .gallery-menu-popover a:hover, .gallery-menu-popover button:hover {
+            background: #343a49;
+        }
+        .gallery-menu-popover .live-active {
+            background: #10b981;
+            border-color: #10b981;
+            color: #fff;
+        }
+        .gallery-single-draw-btn {
+            background: #10b981 !important;
+            color: #ffffff !important;
+            font-weight: 600;
+            min-width: 106px;
+        }
+        .gallery-single-draw-btn:hover {
+            background: #059669 !important;
+        }
+        #galleryLangSwitch {
+            flex: 0 0 auto;
         }
 
         .scribble-section {
@@ -322,6 +389,7 @@
 
         @media print {
             audio, .floating-nav, .qr-card { display: none !important; }
+            .gallery-menu-popover { display: none !important; }
             html, body {
                 margin: 0;
                 padding: 0;
@@ -419,14 +487,21 @@
 </head>
 <body>
     <nav class="floating-nav">
+        <a href="/draw?single_screen=1" id="singleScreenDrawBtn" class="gallery-single-draw-btn" style="display: none;" data-i18n="gallery.nav.new_drawing">New Drawing</a>
+        <button type="button" id="galleryMenuBtn" class="gallery-menu-btn" onclick="toggleGalleryMenu(event)" data-i18n-title="gallery.nav.menu_title" title="Gallery &amp; Staff Controls" aria-expanded="false">&middot;&middot;&middot;</button>
         <span id="galleryLangSwitch"></span>
-        <button onclick="stepHistory(1)" data-i18n="gallery.nav.prev" data-i18n-title="gallery.nav.prev_title" title="Older Artwork (Left Arrow)">Prev</button>
-        <button id="liveModeBtn" class="live-active" onclick="returnToLive()" data-i18n="gallery.nav.live" data-i18n-title="gallery.nav.live_title" title="Return to Live Feed">Live</button>
-        <button onclick="stepHistory(-1)" data-i18n="gallery.nav.next" data-i18n-title="gallery.nav.next_title" title="Newer Artwork (Right Arrow)">Next</button>
+    </nav>
+
+    <div class="gallery-menu-popover" id="galleryMenuPopover">
+        <div class="gallery-menu-row">
+            <button onclick="stepHistory(1)" data-i18n="gallery.nav.prev" data-i18n-title="gallery.nav.prev_title" title="Older Artwork (Left Arrow)">Prev</button>
+            <button id="liveModeBtn" class="live-active" onclick="returnToLive()" data-i18n="gallery.nav.live" data-i18n-title="gallery.nav.live_title" title="Return to Live Feed">Live</button>
+            <button onclick="stepHistory(-1)" data-i18n="gallery.nav.next" data-i18n-title="gallery.nav.next_title" title="Newer Artwork (Right Arrow)">Next</button>
+        </div>
         <a href="/draw" data-i18n="gallery.nav.draw">Gaze Draw</a>
         <a href="/kiosk" data-i18n="gallery.nav.kiosk">Print Kiosk</a>
         <button onclick="window.print()" data-i18n="gallery.nav.print">Print</button>
-    </nav>
+    </div>
 
     <div class="container">
         <div id="errorBanner" class="error-banner" style="display: none;"></div>
@@ -512,7 +587,39 @@
 
         const urlParams = new URLSearchParams(window.location.search);
         const isPrintRender = urlParams.get('print_render') === '1';
+        const isSingleScreenGallery = urlParams.get('single_screen') === '1';
+        const showControlsParam = urlParams.get('controls') === '1';
         const renderRunId = (urlParams.get('run_id') || '').trim();
+
+        if ('serviceWorker' in navigator && typeof navigator.serviceWorker.getRegistrations === 'function') {
+            navigator.serviceWorker.getRegistrations().then((regs) => {
+                regs.forEach((reg) => reg.unregister().catch(() => {}));
+            }).catch(() => {});
+        }
+
+        function toggleGalleryMenu(event) {
+            if (event) event.stopPropagation();
+            const pop = document.getElementById('galleryMenuPopover');
+            const btn = document.getElementById('galleryMenuBtn');
+            if (!pop || !btn) return;
+            const next = !pop.classList.contains('is-open');
+            pop.classList.toggle('is-open', next);
+            btn.classList.toggle('is-open', next);
+            btn.setAttribute('aria-expanded', next ? 'true' : 'false');
+        }
+
+        document.addEventListener('click', (e) => {
+            const pop = document.getElementById('galleryMenuPopover');
+            const btn = document.getElementById('galleryMenuBtn');
+            if (!pop || !pop.classList.contains('is-open')) return;
+            if (!pop.contains(e.target) && e.target !== btn) {
+                pop.classList.remove('is-open');
+                if (btn) {
+                    btn.classList.remove('is-open');
+                    btn.setAttribute('aria-expanded', 'false');
+                }
+            }
+        });
         let lastContentSignature = null;
         let lastAttrSignature = null;
         let lanBaseUrl = window.location.origin;
@@ -1022,6 +1129,13 @@
         document.addEventListener('DOMContentLoaded', function() {
             galleryI18n.mountSwitcher(document.getElementById('galleryLangSwitch'), 'gallery');
             galleryI18n.applyDOM();
+            if (isSingleScreenGallery && !isPrintRender) {
+                const drawBtn = document.getElementById('singleScreenDrawBtn');
+                if (drawBtn) drawBtn.style.display = 'inline-flex';
+            }
+            if (showControlsParam && !isPrintRender) {
+                toggleGalleryMenu();
+            }
             loadContent();
             if (!isPrintRender) {
                 setInterval(loadContent, CONFIG.refreshInterval);
