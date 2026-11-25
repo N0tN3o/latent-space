@@ -75,16 +75,19 @@ DEFAULT_ANALYSIS_PROMPT = (
     "purely through their eye movements (gaze tracking). "
     "Given the visual perception profile of their gaze drawing (including stroke dynamics, "
     "spatial focus, pareidolia/Rorschach archetypes, and emotional resonance) or the image itself, "
-    "write a compelling, poetic, second-person psychoanalytical interpretation (around 70-110 words) "
-    "about what their subconscious gaze reveals—their inner tensions, focus, curiosity, and emotional state. "
-    "Do not mention technical metrics or numbers directly; translate them into psychological insight."
+    "write a compelling, poetic, second-person psychoanalytical interpretation of 70 to 110 words "
+    "(strict maximum: 110 words total; you may use multiple short paragraphs as long as the total "
+    "stays within the word limit) about what their subconscious gaze reveals—their inner tensions, "
+    "focus, curiosity, and emotional state. Do not mention technical metrics or numbers directly; "
+    "translate them into psychological insight. End with a complete concluding sentence."
 )
 
 DEFAULT_POEM_PROMPT = (
-    "You are a contemplative poet for the art installation 'Latent Space: Through the Eyes of the Algorithm'. "
-    "Based on the psychoanalytical interpretation of a visitor's eye-tracked drawing, write an evocative, "
-    "lyrical 4-to-8 line poem that captures the mood, movement, and inner landscape of their gaze. "
-    "Return ONLY the poem text without titles, markdown code blocks, or introductory commentary."
+    "You are a minimalist haiku poet for the art installation 'Latent Space: Through the Eyes of the Algorithm'. "
+    "Based on the psychoanalytical interpretation of a visitor's eye-tracked drawing, write a single, evocative haiku "
+    "(exactly 3 short unrhymed lines, following a 5-7-5 syllable rhythm) that distills the mood, movement, and quiet "
+    "essence of their gaze into concrete imagery. Do NOT tell a story, do NOT rhyme, and do NOT explain the psychology. "
+    "Return ONLY the 3-line haiku with no title, no syllable counts, no quotes, and no commentary."
 )
 
 DEFAULT_VISION_LABEL_PROMPT = (
@@ -160,6 +163,7 @@ DEFAULT_SETTINGS = {
             "restrictions": "",
             "additional": "",
             "temperature": 0.7,
+            "max_words": 110,
             "assistant_key": "8a79f5ec-c5dd-448c-9611-99610792a04b",
         },
         "poem": {
@@ -722,6 +726,17 @@ def validate_ai_data(data: dict) -> dict:
             if not math.isfinite(t_val) or t_val < 0.0 or t_val > 2.0:
                 raise ValueError(f"ai.{role}.temperature must be between 0.0 and 2.0")
             rc["temperature"] = t_val
+        if "max_words" in rc:
+            raw_mw = rc["max_words"]
+            if isinstance(raw_mw, bool):
+                raise ValueError(f"ai.{role}.max_words must be an integer")
+            try:
+                mw_val = int(raw_mw)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"ai.{role}.max_words must be an integer") from e
+            if mw_val < 0 or mw_val > 500:
+                raise ValueError(f"ai.{role}.max_words must be between 0 and 500")
+            rc["max_words"] = mw_val
         if "base_url" in rc:
             rc["base_url"] = validate_safe_url(rc["base_url"], f"ai.{role}.base_url", allow_relative=False)
         for s_field in (

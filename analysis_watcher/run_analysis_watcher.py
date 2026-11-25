@@ -38,7 +38,7 @@ from config_manager import (
     write_content_json,
 )
 from analysis import analyze_drawing
-from chat import AIGenerationError, LLMModel
+from chat import AIGenerationError, LLMModel, enforce_analysis_word_limit
 from heatmap import draw_heatmap
 from preprocess_image import DrawingValidationError, preprocess_image
 
@@ -878,6 +878,26 @@ def run_analysis_pipeline(
         if cancel_event is not None:
             analysis_kwargs["cancel_event"] = cancel_event
         analysis_text = analysis_model.chat(**analysis_kwargs)
+        analysis_cfg = (settings.get("ai") or {}).get("analysis") or {}
+        try:
+            analysis_max_words = int(analysis_cfg.get("max_words", 110))
+        except (TypeError, ValueError):
+            analysis_max_words = 110
+        if analysis_max_words > 0:
+            analysis_text, wl_info = enforce_analysis_word_limit(
+                analysis_text,
+                max_words=analysis_max_words,
+                tolerance_pct=0.10,
+                llm_model=analysis_model,
+                cancel_event=cancel_event,
+                language_name="English",
+            )
+            if wl_info.get("action") not in ("unchanged", "disabled"):
+                main_logger.info(
+                    f"[{rid}] Analysis word-limit enforcer ({wl_info['action']}): "
+                    f"{wl_info['original_words']} -> {wl_info['final_words']} words "
+                    f"(max {wl_info['max_words']} ±10%, hard cap {wl_info['hard_max_words']})"
+                )
         main_logger.info(f"[{rid}] Psychoanalysis complete via {analysis_model._last_used_provider} ({analysis_model._last_used_model})")
         response_logger.info(
             json.dumps({

@@ -92,6 +92,286 @@ def _should_skip_primary_retry(exc: Exception) -> bool:
     return "not configured" in msg or "Unknown AI provider" in msg or "BUas init failed" in msg
 
 
+DEFAULT_ANALYSIS_MAX_WORDS = 110
+DEFAULT_WORD_LIMIT_TOLERANCE = 0.10
+
+_WORD_CHAR_RE = re.compile(r"\w", re.UNICODE)
+_ABBREV_END_RE = re.compile(
+    r"(?:^|\s)(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|vs|etc|e\.g|i\.e|cf|al|[A-Z])\.$",
+    re.IGNORECASE,
+)
+_SENTENCE_SPLIT_RE = re.compile(r'([.!?…]+["”’\'\)\]]*)(\s+)')
+_EDITOR_PREAMBLE_RE = re.compile(
+    r"^(?:(?:sure|certainly|of course)[,!.\s-]*)?"
+    r"(?:here(?:'s| is)\s+(?:the|a|your)\s+(?:condensed|tightened|shortened|revised|edited|updated)\b.*"
+    r"|(?:condensed|tightened|shortened|edited)\s+(?:version|interpretation|analysis)\s*:?)\s*$",
+    re.IGNORECASE,
+)
+_TRAILING_WORD_COUNT_LINE_RE = re.compile(
+    r"^[\(\[\*_\s]*(?:word\s*count\s*[:=]?\s*\d+|\d+\s*words?)[\)\]\*_\.\s]*$",
+    re.IGNORECASE,
+)
+_TRAILING_WORD_COUNT_INLINE_RE = re.compile(
+    r"\s+[\(\[]\s*(?:word\s*count\s*[:=]?\s*\d+|\d+\s*words?)\s*[\)\]]\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def count_words(text: str) -> int:
+    """Count words in text (Unicode-aware, ignores standalone punctuation tokens)."""
+    if not text:
+        return 0
+    return sum(1 for tok in str(text).split() if _WORD_CHAR_RE.search(tok))
+
+
+def compute_word_limit_bounds(
+    max_words: int = DEFAULT_ANALYSIS_MAX_WORDS,
+    tolerance_pct: float = DEFAULT_WORD_LIMIT_TOLERANCE,
+) -> tuple:
+    """Return (min_target_words, hard_max_words) for max_words ± tolerance_pct."""
+    try:
+        mw = int(max_words)
+    except (TypeError, ValueError):
+        mw = DEFAULT_ANALYSIS_MAX_WORDS
+    if mw <= 0:
+        return (0, 0)
+    tol = max(0.0, float(tolerance_pct))
+    min_target = max(1, int(round(mw * (1.0 - tol))))
+    hard_max = max(mw, int(round(mw * (1.0 + tol))))
+    return (min_target, hard_max)
+
+
+def _strip_editor_meta(text: str) -> str:
+    """Remove accidental LLM condensation preambles and trailing '(108 words)' notes."""
+    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not s:
+        return ""
+    lines = s.split("\n")
+    # Strip leading chatter line like "Here is the condensed version:"
+    while len(lines) >= 2 and _EDITOR_PREAMBLE_RE.match(lines[0].strip()):
+        lines.pop(0)
+        while lines and not lines[0].strip():
+            lines.pop(0)
+    # Strip standalone trailing word-count line like "(106 words)"
+    while len(lines) >= 2 and _TRAILING_WORD_COUNT_LINE_RE.match(lines[-1].strip()):
+        lines.pop()
+        while lines and not lines[-1].strip():
+            lines.pop()
+    s = "\n".join(lines).strip()
+    s = _TRAILING_WORD_COUNT_INLINE_RE.sub("", s).strip()
+    # Unwrap single outer quote pair if the model wrapped the entire answer in quotes
+    if len(s) >= 2:
+        for q_open, q_close in (('"', '"'), ("“", "”")):
+            if s.startswith(q_open) and s.endswith(q_close) and s.count(q_open) == 1 and s.count(q_close) == 1:
+                s = s[1:-1].strip()
+                break
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s
+
+
+def _split_sentences(paragraph: str) -> list:
+    """Split a paragraph into complete sentences while respecting abbreviations and closing quotes."""
+    p = (paragraph or "").strip()
+    if not p:
+        return []
+    sentences = []
+    start = 0
+    for m in _SENTENCE_SPLIT_RE.finditer(p):
+        cand_end = m.end(1)
+        chunk = p[start:cand_end].strip()
+        if not chunk:
+            continue
+        if _ABBREV_END_RE.search(chunk):
+            continue
+        sentences.append(chunk)
+        start = m.end(2)
+    tail = p[start:].strip()
+    if tail:
+        sentences.append(tail)
+    return sentences
+
+
+def trim_text_to_word_limit(
+    text: str,
+    max_words: int = DEFAULT_ANALYSIS_MAX_WORDS,
+    tolerance_pct: float = DEFAULT_WORD_LIMIT_TOLERANCE,
+) -> str:
+    """
+    Deterministically cap text to at most hard_max = round(max_words * (1 + tolerance_pct)) words
+    on complete sentence boundaries while preserving paragraph breaks. Never cuts mid-sentence.
+    """
+    cleaned = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    if not cleaned or int(max_words or 0) <= 0:
+        return cleaned
+
+    _, hard_max = compute_word_limit_bounds(max_words, tolerance_pct=tolerance_pct)
+    if count_words(cleaned) <= hard_max:
+        return cleaned
+
+    raw_paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", cleaned) if p.strip()]
+    if len(raw_paragraphs) == 1 and "\n" in raw_paragraphs[0]:
+        raw_paragraphs = [p.strip() for p in raw_paragraphs[0].splitlines() if p.strip()]
+
+    kept_paragraphs = []
+    running_words = 0
+
+    for para in raw_paragraphs:
+        sentences = _split_sentences(para)
+        kept_sents = []
+        stop_all = False
+        for sent in sentences:
+            sw = count_words(sent)
+            if sw == 0:
+                continue
+            if running_words + sw <= hard_max:
+                kept_sents.append(sent)
+                running_words += sw
+            else:
+                stop_all = True
+                break
+        if kept_sents:
+            kept_paragraphs.append(" ".join(kept_sents))
+        if stop_all:
+            break
+
+    if kept_paragraphs:
+        result = "\n\n".join(kept_paragraphs).strip()
+        if result and result[-1] not in '.!?…"”’\')':
+            result += "."
+        return result
+
+    # Extreme fallback: even the very first sentence alone exceeded hard_max (run-on without periods).
+    tokens = raw_paragraphs[0].split()
+    picked = []
+    wc = 0
+    for tok in tokens:
+        inc = 1 if _WORD_CHAR_RE.search(tok) else 0
+        if wc + inc > hard_max:
+            break
+        picked.append(tok)
+        wc += inc
+    if not picked:
+        return cleaned
+
+    min_clause_idx = max(1, int(len(picked) * 0.65))
+    clause_idx = -1
+    for idx in range(len(picked) - 1, min_clause_idx - 1, -1):
+        if picked[idx].endswith((",", ";", ":", "—", "–")):
+            clause_idx = idx
+            break
+    if clause_idx != -1:
+        picked = picked[: clause_idx + 1]
+    picked[-1] = picked[-1].rstrip(",;:—– ") + "."
+    return " ".join(picked).strip()
+
+
+def enforce_analysis_word_limit(
+    text: str,
+    max_words: int = DEFAULT_ANALYSIS_MAX_WORDS,
+    tolerance_pct: float = DEFAULT_WORD_LIMIT_TOLERANCE,
+    llm_model=None,
+    cancel_event=None,
+    language_name: str = "English",
+) -> tuple:
+    """
+    Guarantee an analysis obeys a hard max_words ± tolerance_pct ceiling (e.g. 110 ± 10% -> max 121 words)
+    without mid-sentence truncation while allowing multiple paragraphs:
+      1. If already <= hard_max words, return unchanged (zero extra latency).
+      2. If over hard_max and llm_model is provided, run one low-temperature condensation pass to preserve
+         the full narrative arc, closing sentence, and multi-paragraph flow within [min_target, max_words].
+      3. Apply deterministic sentence-boundary trimming as an absolute safety net.
+    Returns (final_text, info_dict).
+    """
+    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    raw = re.sub(r"\n{3,}", "\n\n", raw)
+    orig_words = count_words(raw)
+    try:
+        mw = int(max_words or 0)
+    except (TypeError, ValueError):
+        mw = DEFAULT_ANALYSIS_MAX_WORDS
+
+    if mw <= 0 or not raw:
+        return raw, {
+            "original_words": orig_words,
+            "final_words": orig_words,
+            "max_words": mw,
+            "hard_max_words": 0,
+            "action": "disabled",
+        }
+
+    min_target, hard_max = compute_word_limit_bounds(mw, tolerance_pct=tolerance_pct)
+    if orig_words <= hard_max:
+        return raw, {
+            "original_words": orig_words,
+            "final_words": orig_words,
+            "max_words": mw,
+            "hard_max_words": hard_max,
+            "action": "unchanged",
+        }
+
+    candidate = raw
+    used_condensation = False
+
+    if llm_model is not None and not (cancel_event is not None and cancel_event.is_set()):
+        editor_system = (
+            f"You are a precise literary editor for an interactive art installation. "
+            f"Condense the provided psychoanalytical interpretation in {language_name} so its total length "
+            f"is between {min_target} and {mw} words (strict hard maximum: {hard_max} words). "
+            f"Preserve the poetic second-person voice, vivid imagery, psychological insight, and emotional arc. "
+            f"Multiple short paragraphs are allowed as long as the total word count stays within {hard_max} words. "
+            f"Every sentence must be complete. "
+            f"Return ONLY the condensed interpretation—no title, no preamble, no quotes, and no word count."
+        )
+        editor_user = (
+            f"Condense this interpretation into {min_target} to {mw} words "
+            f"(strictly never exceed {hard_max} words total; keep complete sentences and full meaning):\n\n{raw}"
+        )
+        try:
+            chat_kwargs = {
+                "message": editor_user,
+                "image_path": None,
+                "allow_failover": True,
+                "temperature_override": 0.4,
+                "system_prompt_override": editor_system,
+            }
+            if cancel_event is not None:
+                chat_kwargs["cancel_event"] = cancel_event
+            try:
+                condensed_raw = llm_model.chat(**chat_kwargs)
+            except TypeError:
+                # Backwards-compatible fallback for simple test mocks without override kwargs
+                fallback_kwargs = {"message": editor_user, "allow_failover": True}
+                if cancel_event is not None:
+                    fallback_kwargs["cancel_event"] = cancel_event
+                condensed_raw = llm_model.chat(**fallback_kwargs)
+
+            condensed = _strip_editor_meta(condensed_raw)
+            cw = count_words(condensed)
+            min_viable = min(25, max(10, int(round(mw * 0.35))))
+            if cw >= min_viable and (cw <= hard_max or cw < orig_words):
+                candidate = condensed
+                used_condensation = True
+        except Exception as e:
+            logger.warning(f"[chat] Analysis condensation pass failed; falling back to sentence-boundary trim: {e}")
+
+    cand_words = count_words(candidate)
+    if cand_words <= hard_max:
+        final_text = candidate
+        action = "condensed" if used_condensation else "unchanged"
+    else:
+        final_text = trim_text_to_word_limit(candidate, max_words=mw, tolerance_pct=tolerance_pct)
+        action = "condensed_and_trimmed" if used_condensation else "trimmed"
+
+    return final_text, {
+        "original_words": orig_words,
+        "final_words": count_words(final_text),
+        "max_words": mw,
+        "hard_max_words": hard_max,
+        "action": action,
+    }
+
+
 class LLMModel:
     """
     Multi-provider LLM adapter for Latent Space.
@@ -116,6 +396,7 @@ class LLMModel:
         self._llm = ""
         self._creativity = 0.7
         self._temperature = 0.7
+        self._max_words = DEFAULT_ANALYSIS_MAX_WORDS if self.role == "analysis" else 0
         self._provider = "ollama"
         self._base_url = "http://localhost:11434/v1"
         self._api_key = ""
@@ -191,6 +472,12 @@ class LLMModel:
         self._additional = role_cfg.get("additional", "")
         self._temperature = float(role_cfg.get("temperature", 0.7))
         self._creativity = self._temperature
+        default_mw = DEFAULT_ANALYSIS_MAX_WORDS if self.role == "analysis" else 0
+        raw_mw = role_cfg.get("max_words", default_mw)
+        try:
+            self._max_words = max(0, int(raw_mw)) if raw_mw is not None else default_mw
+        except (TypeError, ValueError):
+            self._max_words = default_mw
         self.assistant_key = new_key
 
         if buas_preserved and self._buas_overrides:
@@ -223,6 +510,13 @@ class LLMModel:
         ]:
             if val and str(val).strip():
                 parts.append(f"{label}: {val.strip()}")
+        if self.role == "analysis" and self._max_words > 0:
+            _, hard_max = compute_word_limit_bounds(self._max_words)
+            parts.append(
+                f"Length Requirement: Keep your entire response within {self._max_words} words "
+                f"(strict hard maximum: {hard_max} words total). Multiple short paragraphs are allowed "
+                f"as long as the total stays within the limit. End with a complete sentence."
+            )
         return "\n\n".join(p for p in parts if p).strip()
 
     def initialize(self):
@@ -417,23 +711,31 @@ class LLMModel:
         return candidates
 
     def _call_provider(self, provider: str, model: str, base_url: str, api_key: str,
-                       message: str, img_b64: str = None, timeout=None) -> tuple:
+                       message: str, img_b64: str = None, timeout=None,
+                       temperature_override: float = None, system_prompt_override: str = None) -> tuple:
         req_timeout = timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC)
         used_model = model
         if provider == "gemini":
             same_prov_model = self._llm if self._provider == "gemini" else ""
             used_model = model or same_prov_model or "gemini-2.0-flash"
-            reply = self._chat_gemini(message, img_b64, model_name=used_model, api_key=api_key, timeout=req_timeout)
+            reply = self._chat_gemini(
+                message, img_b64, model_name=used_model, api_key=api_key, timeout=req_timeout,
+                temperature_override=temperature_override, system_prompt_override=system_prompt_override,
+            )
         elif provider == "anthropic":
             same_prov_model = self._llm if self._provider == "anthropic" else ""
             used_model = model or same_prov_model or "claude-3-5-haiku-latest"
-            reply = self._chat_anthropic(message, img_b64, model_name=used_model, api_key=api_key, timeout=req_timeout)
+            reply = self._chat_anthropic(
+                message, img_b64, model_name=used_model, api_key=api_key, timeout=req_timeout,
+                temperature_override=temperature_override, system_prompt_override=system_prompt_override,
+            )
         elif provider == "buas":
             reply = self._chat_buas(message, timeout=req_timeout)
         elif provider in ("ollama", "openai_compatible"):
             reply, used_model = self._chat_openai_or_ollama(
                 message, img_b64, provider=provider, model_name=model,
                 base_url=base_url, api_key=api_key, timeout=req_timeout,
+                temperature_override=temperature_override, system_prompt_override=system_prompt_override,
             )
         else:
             raise ValueError(f"Unknown AI provider: {provider}")
@@ -443,7 +745,8 @@ class LLMModel:
         return reply.strip(), used_model
 
     def chat(self, message: str, image_path: str = None, allow_failover: bool = True,
-             cancel_event=None) -> str:
+             cancel_event=None, temperature_override: float = None,
+             system_prompt_override: str = None) -> str:
         """
         Send a prompt (and optional drawing image for Vision LLMs) to the configured provider.
         Retries transient primary failures and fails over across providers within a bounded time budget.
@@ -474,6 +777,8 @@ class LLMModel:
                 reply, used_model = self._call_provider(
                     self._provider, self._llm, self._base_url, self._api_key,
                     message, img_b64, timeout=req_timeout,
+                    temperature_override=temperature_override,
+                    system_prompt_override=system_prompt_override,
                 )
                 self._last_used_provider = self._provider
                 self._last_used_model = used_model
@@ -501,7 +806,9 @@ class LLMModel:
                 try:
                     logger.warning(f"[chat] {self.role} failing over to {fb_prov} ({fb_model})...")
                     reply, used_model = self._call_provider(
-                        fb_prov, fb_model, fb_url, fb_key, message, img_b64, timeout=req_timeout
+                        fb_prov, fb_model, fb_url, fb_key, message, img_b64, timeout=req_timeout,
+                        temperature_override=temperature_override,
+                        system_prompt_override=system_prompt_override,
                     )
                     self._last_used_provider = fb_prov
                     self._last_used_model = used_model
@@ -596,6 +903,8 @@ class LLMModel:
         base_url: str = None,
         api_key: str = None,
         timeout=None,
+        temperature_override: float = None,
+        system_prompt_override: str = None,
     ) -> tuple:
         prov = (provider or self._provider).lower()
         same_prov_model = self._llm if prov == self._provider else ""
@@ -604,7 +913,8 @@ class LLMModel:
         key = api_key if api_key is not None else self._api_key
         req_timeout = timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC)
 
-        system_prompt = self._build_system_prompt()
+        system_prompt = system_prompt_override if system_prompt_override is not None else self._build_system_prompt()
+        eff_temp = float(temperature_override) if temperature_override is not None else float(self._temperature)
         clean_base = b_url.rstrip("/")
         if not clean_base.endswith("/v1") and "11434" in clean_base and "/api" not in clean_base:
             clean_base = clean_base + "/v1"
@@ -638,7 +948,7 @@ class LLMModel:
         payload = {
             "model": mod,
             "messages": build_messages(bool(send_img_b64)),
-            "temperature": float(self._temperature),
+            "temperature": eff_temp,
         }
 
         resp = requests.post(endpoint, json=payload, headers=headers, timeout=req_timeout)
@@ -681,7 +991,8 @@ class LLMModel:
         return content.strip(), used_model
 
     def _chat_gemini(self, message: str, img_b64: str = None, model_name: str = None,
-                     api_key: str = None, timeout=None) -> str:
+                     api_key: str = None, timeout=None,
+                     temperature_override: float = None, system_prompt_override: str = None) -> str:
         key = api_key if api_key is not None else self._api_key
         if not key:
             raise RuntimeError("GEMINI_API_KEY is not configured. Add it in Admin -> AI Config or .env")
@@ -695,7 +1006,8 @@ class LLMModel:
             "Content-Type": "application/json",
             "x-goog-api-key": key,
         }
-        system_prompt = self._build_system_prompt()
+        system_prompt = system_prompt_override if system_prompt_override is not None else self._build_system_prompt()
+        eff_temp = float(temperature_override) if temperature_override is not None else float(self._temperature)
 
         parts = [{"text": message}]
         if img_b64:
@@ -708,7 +1020,7 @@ class LLMModel:
 
         payload = {
             "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {"temperature": float(self._temperature)},
+            "generationConfig": {"temperature": eff_temp},
         }
         if system_prompt:
             payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
@@ -723,7 +1035,8 @@ class LLMModel:
         return "".join(text_parts).strip()
 
     def _chat_anthropic(self, message: str, img_b64: str = None, model_name: str = None,
-                        api_key: str = None, timeout=None) -> str:
+                        api_key: str = None, timeout=None,
+                        temperature_override: float = None, system_prompt_override: str = None) -> str:
         key = api_key if api_key is not None else self._api_key
         if not key:
             raise RuntimeError("ANTHROPIC_API_KEY is not configured. Add it in Admin -> AI Config or .env")
@@ -734,7 +1047,8 @@ class LLMModel:
             "x-api-key": key,
             "anthropic-version": "2023-06-01",
         }
-        system_prompt = self._build_system_prompt()
+        system_prompt = system_prompt_override if system_prompt_override is not None else self._build_system_prompt()
+        eff_temp = float(temperature_override) if temperature_override is not None else float(self._temperature)
 
         content = []
         if img_b64:
@@ -752,7 +1066,7 @@ class LLMModel:
         payload = {
             "model": model_name or same_prov_model or "claude-3-5-haiku-latest",
             "max_tokens": 600,
-            "temperature": float(self._temperature),
+            "temperature": eff_temp,
             "messages": [{"role": "user", "content": content}],
         }
         if system_prompt:
@@ -806,6 +1120,7 @@ class LLMModel:
         additional: str = None,
         llm: str = None,
         temperature: float = None,
+        max_words: int = None,
         provider: str = None,
         base_url: str = None,
         api_key: str = None,
@@ -830,6 +1145,10 @@ class LLMModel:
             "fallback_provider": (fallback_provider if fallback_provider is not None else self._fallback_provider).lower(),
             "fallback_model": fallback_model if fallback_model is not None else self._fallback_model,
         }
+        if max_words is not None:
+            role_updates["max_words"] = max_words
+        elif self.role == "analysis":
+            role_updates["max_words"] = int(self._max_words)
         if api_key is not None and api_key != "***":
             role_updates["api_key"] = api_key
 
@@ -891,6 +1210,7 @@ class LLMModel:
             "restrictions": self._restrictions,
             "additional": self._additional,
             "temperature": self._temperature,
+            "max_words": self._max_words,
             "vision_mode": self._vision_mode,
             "ollama_vision_model": settings.get("ai", {}).get("ollama_vision_model", "moondream"),
         }
