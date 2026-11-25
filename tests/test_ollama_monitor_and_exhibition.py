@@ -241,11 +241,172 @@ class TestOllamaMonitorAndExhibitionMode(unittest.TestCase):
         self.assertIn("draw.ex.done_qr_callout", draw_html)
         self.assertIn("draw.ex.open_gallery_btn", draw_html)
 
-        # Admin UI includes live Ollama panel and unload button wiring
+        # Admin UI includes live Ollama panel, unload/prewarm wiring, Smart Diagnostics, and Pipeline Stepper
         admin_html = (PROJECT_ROOT / "web_ui" / "admin.html").read_text(encoding="utf-8")
         self.assertIn("ollama_runtime", admin_html)
         self.assertIn("unloadOllamaModel", admin_html)
         self.assertIn("/api/ollama/unload", admin_html)
+        self.assertIn("/api/ollama/prewarm", admin_html)
+        self.assertIn("smartDiagCard", admin_html)
+        self.assertIn("applySmartFix", admin_html)
+        self.assertIn("aiPipelineStepper", admin_html)
+
+    def test_chat_ollama_cold_timeout_no_retry_and_thinking_cap(self):
+        import chat
+        import requests
+
+        config_manager.update_settings_section("ai", {
+            "vision_mode": "stroke_metrics",
+            "analysis": {
+                "provider": "ollama",
+                "model": "gemma4:e4b",
+                "base_url": "http://localhost:11434/v1",
+                "thinking_mode": "auto",
+                "max_tokens": 0,
+                "fallback_provider": "none",
+            },
+        })
+
+        # 1. Cold model uses OLLAMA_COLD_READ_TIMEOUT_SEC (120s) and NEVER retries ReadTimeout
+        seen_timeouts = []
+        seen_payloads = []
+
+        def fake_post_timeout(url, json=None, headers=None, timeout=None):
+            seen_timeouts.append(timeout)
+            seen_payloads.append(dict(json or {}))
+            raise requests.exceptions.ReadTimeout("Read timed out")
+
+        with mock.patch.object(chat, "_is_ollama_model_loaded", return_value=False), \
+             mock.patch.object(chat.requests, "post", side_effect=fake_post_timeout):
+            m = chat.LLMModel("analysis")
+            with self.assertRaises(chat.AIGenerationError):
+                m.chat("Interpret drawing", allow_failover=False)
+
+        # Exactly 1 chat attempt (no destructive retry that kills llama-server mid-load)
+        self.assertEqual(len(seen_timeouts), 1)
+        self.assertGreaterEqual(seen_timeouts[0][1], 115.0)
+        # Auto safety cap prevents unbounded thinking loops on boolean-thinking models
+        self.assertEqual(seen_payloads[0].get("reasoning_effort"), "low")
+        self.assertEqual(seen_payloads[0].get("max_tokens"), chat.OLLAMA_AUTO_THINKING_MAX_TOKENS["analysis"])
+
+        # 2. Warm model uses OLLAMA_WARM_READ_TIMEOUT_SEC (75s)
+        warm_timeouts = []
+        ok_resp = mock.MagicMock(status_code=200, ok=True)
+        ok_resp.json.return_value = {"choices": [{"message": {"content": "Warm reply."}}]}
+
+        def fake_post_warm(url, json=None, headers=None, timeout=None):
+            warm_timeouts.append(timeout)
+            return ok_resp
+
+        with mock.patch.object(chat, "_is_ollama_model_loaded", return_value=True), \
+             mock.patch.object(chat.requests, "post", side_effect=fake_post_warm):
+            reply = m.chat("Interpret drawing", allow_failover=False)
+        self.assertEqual(reply, "Warm reply.")
+        self.assertAlmostEqual(warm_timeouts[0][1], chat.OLLAMA_WARM_READ_TIMEOUT_SEC, delta=1.0)
+
+    def test_smart_diagnostics_prewarm_and_ollama_env_tuning(self):
+        import start_everything
+
+        # 1. Detect multi-model VRAM thrashing + unbounded thinking + cold load + tight VRAM
+        cfg = config_manager.load_settings()
+        cfg["ai"]["vision_mode"] = "auto"
+        cfg["ai"]["analysis"]["provider"] = "ollama"
+        cfg["ai"]["analysis"]["model"] = "gemma4:e4b"
+        cfg["ai"]["analysis"]["thinking_mode"] = "auto"
+        cfg["ai"]["analysis"]["max_tokens"] = 0
+        cfg["ai"]["poem"]["provider"] = "ollama"
+        cfg["ai"]["poem"]["model"] = "llama3.1:8b"
+        cfg["translation"]["enabled"] = True
+        cfg["translation"]["mode"] = "native_llm"
+
+        diag = monitoring_server.compute_smart_diagnostics(
+            settings=cfg,
+            gpu_stats={"available": True, "vram_total_gb": 8.0, "vram_used_gb": 0.0, "vram_percent": 0.0},
+            ollama_runtime={"running": True, "loaded_models": []},
+            model_sizes={"gemma4:e4b": 6.6, "llama3.1:8b": 4.9},
+        )
+        self.assertEqual(diag["status"], "critical")
+        self.assertEqual(diag["summary"]["swaps_per_drawing"], 3)
+        issue_ids = {i["id"]: i for i in diag["issues"]}
+        self.assertIn("vram_model_swap", issue_ids)
+        self.assertIn("vram_tight_fit", issue_ids)
+        self.assertIn("thinking_unbounded", issue_ids)
+        self.assertIn("ollama_cold_model", issue_ids)
+        swap_actions = {a["id"] for a in issue_ids["vram_model_swap"]["actions"]}
+        self.assertIn("sync_poem_to_analysis", swap_actions)
+
+        # 2. Live CPU spill detected from /api/ps
+        diag_spill = monitoring_server.compute_smart_diagnostics(
+            settings=cfg,
+            gpu_stats={"available": True, "vram_total_gb": 8.0},
+            ollama_runtime={
+                "running": True,
+                "loaded_models": [{"name": "gemma4:e4b", "gpu_percent": 70, "cpu_percent": 30, "ram_gb": 2.1}],
+            },
+            model_sizes={"gemma4:e4b": 6.6, "llama3.1:8b": 4.9},
+        )
+        self.assertIn("vram_cpu_spill_live", {i["id"] for i in diag_spill["issues"]})
+
+        # 3. Clean single-model warm setup reports status == "ok"
+        cfg_ok = json.loads(json.dumps(cfg))
+        cfg_ok["ai"]["poem"]["model"] = "gemma4:e4b"
+        cfg_ok["ai"]["analysis"]["thinking_mode"] = "off"
+        cfg_ok["ai"]["poem"]["thinking_mode"] = "off"
+        cfg_ok["translation"]["mode"] = "local_nmt"
+        diag_ok = monitoring_server.compute_smart_diagnostics(
+            settings=cfg_ok,
+            gpu_stats={"available": True, "vram_total_gb": 12.0},
+            ollama_runtime={
+                "running": True,
+                "loaded_models": [{"name": "gemma4:e4b", "gpu_percent": 100, "cpu_percent": 0, "ram_gb": 0.0}],
+            },
+            model_sizes={"gemma4:e4b": 6.6},
+        )
+        self.assertEqual(diag_ok["status"], "ok")
+        self.assertEqual(diag_ok["summary"]["swaps_per_drawing"], 0)
+        self.assertEqual(diag_ok["issues"], [])
+
+        # 4. POST /api/ollama/prewarm auth + validation + zero-token payload
+        st_unauth, _ = self._req("POST", "/api/ollama/prewarm", body={"model": "gemma4:e4b"})
+        self.assertEqual(st_unauth, 401)
+        auth = {"Authorization": "Bearer MonTestPass!99"}
+        st_bad, _ = self._req("POST", "/api/ollama/prewarm", body={"model": "bad; cmd"}, headers=auth)
+        self.assertEqual(st_bad, 400)
+
+        captured_pw = {}
+
+        class _OkResp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                return b'{"models": []}'
+
+        def fake_urlopen(req, timeout=None):
+            if req.full_url.endswith("/api/generate"):
+                captured_pw["url"] = req.full_url
+                captured_pw["body"] = json.loads(req.data.decode("utf-8"))
+            return _OkResp()
+
+        with mock.patch.object(monitoring_server.urllib.request, "urlopen", side_effect=fake_urlopen):
+            st_pw, raw_pw = self._req("POST", "/api/ollama/prewarm", body={"model": "gemma4:e4b"}, headers=auth)
+        self.assertEqual(st_pw, 200)
+        self.assertEqual(json.loads(raw_pw)["model"], "gemma4:e4b")
+        self.assertEqual(captured_pw["body"], {"model": "gemma4:e4b", "prompt": "", "keep_alive": "30m"})
+
+        # 5. start_everything VRAM env defaults honor user overrides
+        with mock.patch.dict(os.environ, {"OLLAMA_KEEP_ALIVE": "10m"}, clear=False):
+            os.environ.pop("OLLAMA_FLASH_ATTENTION", None)
+            os.environ.pop("OLLAMA_KV_CACHE_TYPE", None)
+            ol_env = start_everything._default_ollama_serve_env()
+            self.assertEqual(ol_env["OLLAMA_FLASH_ATTENTION"], "1")
+            self.assertEqual(ol_env["OLLAMA_KV_CACHE_TYPE"], "q8_0")
+            self.assertNotIn("OLLAMA_KEEP_ALIVE", ol_env)
 
 
 if __name__ == "__main__":
