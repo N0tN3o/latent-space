@@ -742,6 +742,40 @@ class TestServerLockdownHTTP(unittest.TestCase):
         self.assertFalse(yday_item["is_today"])
         self.assertTrue(yday_item["is_yesterday"])
 
+    def test_html_inline_scripts_have_valid_js_syntax(self):
+        import re
+        import subprocess
+
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("node binary not installed for JS syntax verification")
+
+        html_files = [
+            PROJECT_ROOT / "index.html",
+            PROJECT_ROOT / "web_ui" / "draw.html",
+            PROJECT_ROOT / "web_ui" / "kiosk.html",
+            PROJECT_ROOT / "web_ui" / "admin.html",
+        ]
+        checked_blocks = 0
+        for html_path in html_files:
+            text = html_path.read_text(encoding="utf-8")
+            for idx, match in enumerate(re.finditer(r"<script([^>]*)>(.*?)</script>", text, re.S)):
+                attrs, body = match.group(1), match.group(2)
+                if not body.strip():
+                    continue
+                ext = ".mjs" if "module" in attrs else ".js"
+                line_offset = text[: match.start(2)].count("\n")
+                tmp_script = TEST_TMP / f"{html_path.stem}_{idx}{ext}"
+                tmp_script.write_text(("\n" * line_offset) + body, encoding="utf-8")
+                proc = subprocess.run([node_bin, "--check", str(tmp_script)], capture_output=True, text=True)
+                self.assertEqual(
+                    proc.returncode,
+                    0,
+                    f"JavaScript syntax error in {html_path.name} script #{idx}:\n{proc.stderr}",
+                )
+                checked_blocks += 1
+        self.assertGreaterEqual(checked_blocks, 4)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
