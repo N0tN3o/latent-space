@@ -155,6 +155,19 @@ def find_python_executable(subproject: str = None) -> str:
     return sys.executable
 
 
+def _default_ollama_serve_env() -> dict:
+    """
+    Build VRAM-friendly default environment variables when launching `ollama serve`
+    without overriding any value the operator explicitly configured in their shell.
+    """
+    defaults = {
+        "OLLAMA_FLASH_ATTENTION": "1",
+        "OLLAMA_KV_CACHE_TYPE": "q8_0",
+        "OLLAMA_KEEP_ALIVE": "30m",
+    }
+    return {k: v for k, v in defaults.items() if not os.environ.get(k)}
+
+
 class LatentSpaceStarter:
     def __init__(self, mode: str = "server", port: int = 8000):
         ensure_directories()
@@ -210,7 +223,11 @@ class LatentSpaceStarter:
 
         ollama_bin = shutil.which("ollama")
         if ollama_bin:
-            self.ollama_proc = self.run_command([ollama_bin, "serve"], "Ollama Local AI Server")
+            ol_env = _default_ollama_serve_env()
+            if ol_env:
+                flags = ", ".join(f"{k}={v}" for k, v in ol_env.items())
+                print(f"  ⚡ Applying Ollama VRAM tuning: {flags}")
+            self.ollama_proc = self.run_command([ollama_bin, "serve"], "Ollama Local AI Server", env=ol_env)
 
     def start_server_and_pipeline(self):
         self.ensure_ollama_if_configured()

@@ -1416,7 +1416,7 @@
 
         async function pollPipelineUntilDone(submittedRunId, pollId) {
             const btn = document.getElementById('submitBtn');
-            for (let i = 0; i < 135; i++) {
+            for (let i = 0; i < 165; i++) {
                 await new Promise(r => setTimeout(r, 1200));
                 if (pollId !== activePollId) return;
                 try {

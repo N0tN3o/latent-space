@@ -1,4 +1,5 @@
 import base64
+import json
 import logging
 from pathlib import Path
 import re
@@ -6,6 +7,7 @@ import sys
 import threading
 import time
 from urllib.parse import urlparse
+import urllib.request
 import requests
 
 # Add project root so config_manager can be imported
@@ -64,6 +66,10 @@ ASSISTANT_KEY_TO_ROLE = {
 }
 
 MAX_CHAT_BUDGET_SEC = 65.0
+OLLAMA_WARM_READ_TIMEOUT_SEC = 75.0
+OLLAMA_COLD_READ_TIMEOUT_SEC = 120.0
+OLLAMA_CHAT_BUDGET_SEC = 125.0
+OLLAMA_AUTO_THINKING_MAX_TOKENS = {"analysis": 768, "poem": 512}
 CONNECT_TIMEOUT_SEC = 5.0
 READ_TIMEOUT_SEC = 45.0
 
@@ -103,15 +109,44 @@ def _redact_secret_text(text: str, *secret_vals: str) -> str:
     return cleaned
 
 
-def _should_skip_primary_retry(exc: Exception) -> bool:
-    """Skip redundant retries on non-transient configuration/auth/client/connect failures."""
+def _should_skip_primary_retry(exc: Exception, provider: str = "") -> bool:
+    """Skip redundant retries on non-transient failures or local Ollama read timeouts (which abort active loads)."""
     if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout)):
+        return True
+    if (provider or "").lower() == "ollama" and isinstance(exc, requests.exceptions.ReadTimeout):
         return True
     if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
         if exc.response.status_code in (400, 401, 403, 404):
             return True
     msg = str(exc)
     return "not configured" in msg or "Unknown AI provider" in msg or "BUas init failed" in msg
+
+
+def _is_ollama_model_loaded(base_url: str, model_name: str) -> bool:
+    """Fast non-blocking check (<0.5s) whether a local Ollama model is already warm in /api/ps."""
+    target = (model_name or "").strip().lower()
+    if not target:
+        return False
+    clean = (base_url or "").strip().rstrip("/")
+    if clean.endswith("/v1"):
+        clean = clean[:-3].rstrip("/")
+    if not clean.startswith(("http://", "https://")):
+        return False
+    try:
+        req = urllib.request.Request(f"{clean}/api/ps", method="GET")
+        with urllib.request.urlopen(req, timeout=0.45) as resp:
+            if resp.status != 200:
+                return False
+            data = json.loads(resp.read().decode("utf-8"))
+        for m in (data.get("models") or []):
+            name = str(m.get("name") or m.get("model") or "").strip().lower()
+            if not name:
+                continue
+            if name == target or name == f"{target}:latest" or (":" not in target and name.startswith(f"{target}:")):
+                return True
+    except Exception:
+        return False
+    return False
 
 
 DEFAULT_ANALYSIS_MAX_WORDS = 110
@@ -817,9 +852,23 @@ class LLMModel:
             and self._vision_mode in ("auto", "vision")
         )
         img_b64 = self._encode_image_base64(image_path, token_budget=self._vision_token_budget) if use_vision else None
-        deadline = time.monotonic() + MAX_CHAT_BUDGET_SEC
 
-        # Step A: Primary provider (1 quick retry only on transient failures)
+        if self._provider == "ollama":
+            is_warm = _is_ollama_model_loaded(self._base_url, self._llm)
+            read_cap = OLLAMA_WARM_READ_TIMEOUT_SEC if is_warm else OLLAMA_COLD_READ_TIMEOUT_SEC
+            budget_sec = max(MAX_CHAT_BUDGET_SEC, 85.0) if is_warm else OLLAMA_CHAT_BUDGET_SEC
+            if not is_warm:
+                logger.info(
+                    f"[chat] Local Ollama model '{self._llm}' is not warm in /api/ps; "
+                    f"using {read_cap:.0f}s uninterrupted cold-load read timeout."
+                )
+        else:
+            read_cap = READ_TIMEOUT_SEC
+            budget_sec = MAX_CHAT_BUDGET_SEC
+
+        deadline = time.monotonic() + budget_sec
+
+        # Step A: Primary provider (1 quick retry only on transient failures; never retry Ollama ReadTimeout)
         primary_err = None
         for attempt in range(2):
             if cancel_event is not None and cancel_event.is_set():
@@ -830,7 +879,7 @@ class LLMModel:
                     model=self._llm,
                 )
             rem = max(3.0, deadline - time.monotonic())
-            req_timeout = (min(CONNECT_TIMEOUT_SEC, rem), min(READ_TIMEOUT_SEC, rem))
+            req_timeout = (min(CONNECT_TIMEOUT_SEC, rem), min(read_cap, rem))
             try:
                 reply, used_model = self._call_provider(
                     self._provider, self._llm, self._base_url, self._api_key,
@@ -845,7 +894,7 @@ class LLMModel:
             except Exception as e:
                 primary_err = _redact_secret_text(str(e), self._api_key, self._access_token, self._user_key)
                 logger.warning(f"[chat] {self.role} primary attempt {attempt + 1} ({self._provider}/{self._llm}) failed: {primary_err}")
-                if _should_skip_primary_retry(e) or time.monotonic() >= deadline:
+                if _should_skip_primary_retry(e, provider=self._provider) or time.monotonic() >= deadline:
                     break
                 if attempt == 0:
                     time.sleep(0.5)
@@ -1059,6 +1108,9 @@ class LLMModel:
             payload["reasoning_effort"] = effort
         if self._max_tokens > 0:
             payload["max_tokens"] = int(self._max_tokens)
+        elif prov == "ollama" and eff_thinking == "auto" and effort == "low":
+            # Guard boolean-thinking models (e.g. gemma4:e4b) against runaway unbounded thinking loops
+            payload["max_tokens"] = OLLAMA_AUTO_THINKING_MAX_TOKENS.get(self.role, 768)
 
         resp = requests.post(endpoint, json=payload, headers=headers, timeout=req_timeout)
 
