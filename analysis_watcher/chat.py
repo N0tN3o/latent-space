@@ -972,6 +972,8 @@ class LLMModel:
             return False
         host_root = clean_base[:-3] if clean_base.endswith("/v1") else clean_base
         host_root = host_root.rstrip("/")
+        if host_root.lower().startswith("http://localhost:"):
+            host_root = "http://127.0.0.1:" + host_root[len("http://localhost:"):]
         cache_key = (host_root, model_name)
         with _OLLAMA_CAPS_LOCK:
             if cache_key in _OLLAMA_VISION_CAPS:
@@ -981,7 +983,7 @@ class LLMModel:
         thinking_supported = None
         if host_root.startswith(("http://", "https://")):
             try:
-                resp = requests.post(f"{host_root}/api/show", json={"model": model_name}, timeout=1.0)
+                resp = requests.post(f"{host_root}/api/show", json={"model": model_name}, timeout=0.6)
                 if resp.ok:
                     caps = resp.json().get("capabilities")
                     if isinstance(caps, list):
@@ -1008,6 +1010,8 @@ class LLMModel:
             return False
         host_root = clean_base[:-3] if clean_base.endswith("/v1") else clean_base
         host_root = host_root.rstrip("/")
+        if host_root.lower().startswith("http://localhost:"):
+            host_root = "http://127.0.0.1:" + host_root[len("http://localhost:"):]
         cache_key = (host_root, model_name)
         with _OLLAMA_CAPS_LOCK:
             if cache_key in _OLLAMA_THINKING_CAPS:

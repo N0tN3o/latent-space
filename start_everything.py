@@ -26,11 +26,13 @@ from config_manager import ensure_directories, get_configured_ollama_host, get_l
 
 def _is_ollama_running(host_url: str = None) -> bool:
     target = (host_url or get_configured_ollama_host()).rstrip("/")
+    if target.lower().startswith("http://localhost:"):
+        target = "http://127.0.0.1:" + target[len("http://localhost:"):]
     if not target.startswith(("http://", "https://")):
         return False
     try:
         req = urllib.request.Request(f"{target}/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
+        with urllib.request.urlopen(req, timeout=0.8) as resp:
             return resp.status == 200
     except Exception:
         return False

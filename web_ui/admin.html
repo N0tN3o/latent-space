@@ -1902,7 +1902,14 @@
 
     let adminAuthenticated = false;
     let monitorTimerId = null;
+    let monitorInFlight = false;
     let lastStatusPayload = null;
+
+    if ('serviceWorker' in navigator && typeof navigator.serviceWorker.getRegistrations === 'function') {
+        navigator.serviceWorker.getRegistrations().then((regs) => {
+            regs.forEach((reg) => reg.unregister().catch(() => {}));
+        }).catch(() => {});
+    }
     const _nativeFetch = window.fetch.bind(window);
     window.fetch = async function(input, init) {
         const res = await _nativeFetch(input, init);
@@ -2215,6 +2222,8 @@
 
     // --- 1. MONITOR ---
     async function updateMonitor() {
+        if (monitorInFlight) return;
+        monitorInFlight = true;
         try {
             const res = await fetch('/api/status?t=' + Date.now());
             if (!res.ok) return;
@@ -2423,8 +2432,8 @@
                     <div class="s-card" style="margin-bottom:0;">
                         <div class="s-card-kicker">${escapeHtml(t('admin.monitor.resources', { device: data.device || 'Host' }))}</div>
                         ${gpuRowsHtml}
-                        <div class="kv-row"><span class="kv-key">${escapeHtml(t('admin.monitor.cpu'))}</span><span class="kv-val">${sys.cpu_percent ?? 0}%</span></div>
-                        <div class="kv-row"><span class="kv-key">${escapeHtml(t('admin.monitor.mem'))}</span><span class="kv-val">${sys.memory_percent ?? 0}%</span></div>
+                        <div class="kv-row"><span class="kv-key">${escapeHtml(t('admin.monitor.cpu'))}</span><span class="kv-val">${sys.cpu_percent !== null && sys.cpu_percent !== undefined ? `${sys.cpu_percent}%` : 'N/A'}</span></div>
+                        <div class="kv-row"><span class="kv-key">${escapeHtml(t('admin.monitor.mem'))}</span><span class="kv-val">${sys.memory_percent !== null && sys.memory_percent !== undefined ? `${sys.memory_percent}%` : 'N/A'}</span></div>
                         <div class="kv-row"><span class="kv-key">${escapeHtml(t('admin.monitor.disk'))}</span><span class="kv-val">${sys.disk_usage ?? 0}%</span></div>
                         <div class="kv-row"><span class="kv-key">${escapeHtml(t('admin.monitor.temp'))}</span><span class="kv-val">${escapeHtml(sys.temperature || 'N/A')}</span></div>
                         <div class="kv-row"><span class="kv-key">${escapeHtml(t('admin.monitor.translation'))}</span><span class="kv-val">${escapeHtml(trLabel)}</span></div>
@@ -2440,6 +2449,8 @@
             document.getElementById('lastUpdate').textContent = t('admin.header.updated', { time: new Date().toLocaleTimeString() });
         } catch (e) {
             console.error(e);
+        } finally {
+            monitorInFlight = false;
         }
     }
 

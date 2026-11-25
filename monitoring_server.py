@@ -525,19 +525,85 @@ def get_service_status(service_name: str, cmdlines: list = None) -> str:
         return "unknown"
 
 
-def get_system_stats() -> dict:
-    if psutil is None:
-        return {"cpu_percent": 0, "memory_percent": 0, "disk_usage": 0, "temperature": get_device_temp()}
+def _fast_local_ollama_url(host: str) -> str:
+    """Replace 'http://localhost:' with 'http://127.0.0.1:' to avoid Windows 2s IPv6 ::1 refusal stalls."""
+    h = (host or "").strip().rstrip("/")
+    if h.lower().startswith("http://localhost:"):
+        return "http://127.0.0.1:" + h[len("http://localhost:"):]
+    if h.lower() == "http://localhost":
+        return "http://127.0.0.1"
+    return h
+
+
+def _get_memory_percent_stdlib():
+    """Return host RAM usage percent without requiring psutil (Windows ctypes / Linux /proc/meminfo)."""
     try:
-        sd = config_manager.SHARED_DIR
+        if os.name == "nt":
+            import ctypes
+
+            class _MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            stat = _MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(_MEMORYSTATUSEX)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                return float(stat.dwMemoryLoad)
+        else:
+            meminfo = Path("/proc/meminfo")
+            if meminfo.exists():
+                vals = {}
+                for ln in meminfo.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    parts = ln.split(":")
+                    if len(parts) == 2:
+                        num = parts[1].strip().split()[0]
+                        if num.isdigit():
+                            vals[parts[0].strip()] = int(num)
+                total = vals.get("MemTotal", 0)
+                avail = vals.get("MemAvailable", vals.get("MemFree", 0))
+                if total > 0:
+                    return round(100.0 * (total - avail) / total, 1)
+    except Exception:
+        pass
+    return None
+
+
+def get_system_stats() -> dict:
+    sd = config_manager.SHARED_DIR
+    disk_pct = 0.0
+    try:
+        target = sd if sd.exists() else PROJECT_DIR
+        du = shutil.disk_usage(str(target))
+        if du.total > 0:
+            disk_pct = round(100.0 * du.used / du.total, 1)
+    except Exception:
+        disk_pct = 0.0
+
+    if psutil is None:
+        return {
+            "cpu_percent": None,
+            "memory_percent": _get_memory_percent_stdlib(),
+            "disk_usage": disk_pct,
+            "temperature": get_device_temp(),
+        }
+    try:
         return {
             "cpu_percent": psutil.cpu_percent(interval=None),
             "memory_percent": psutil.virtual_memory().percent,
-            "disk_usage": psutil.disk_usage(str(sd)).percent if sd.exists() else 0,
+            "disk_usage": disk_pct,
             "temperature": get_device_temp(),
         }
     except Exception:
-        return {"cpu_percent": 0, "memory_percent": 0, "disk_usage": 0, "temperature": "N/A"}
+        return {"cpu_percent": None, "memory_percent": _get_memory_percent_stdlib(), "disk_usage": disk_pct, "temperature": "N/A"}
 
 
 def get_device_temp() -> str:
@@ -635,7 +701,7 @@ def _parse_iso_expires_in_sec(expires_raw: str):
 def get_ollama_runtime_status(settings: dict = None, force: bool = False) -> dict:
     """Query Ollama's GET /api/ps endpoint (3s cached) for live loaded models, VRAM/RAM split, and ctx."""
     cfg = settings if isinstance(settings, dict) else load_settings()
-    host = get_configured_ollama_host(cfg).rstrip("/")
+    host = _fast_local_ollama_url(get_configured_ollama_host(cfg))
     now = time.monotonic()
     with _ollama_runtime_lock:
         if (
@@ -738,10 +804,10 @@ def unload_ollama_model(model_name: str, settings: dict = None) -> dict:
     return {"status": "success", "model": clean_name, "message": f"Unloaded '{clean_name}' from Ollama memory"}
 
 
-def get_ollama_model_sizes(settings: dict = None, force: bool = False) -> dict:
-    """Query Ollama /api/tags (10s cached) for installed model sizes in GB (keyed by lowercased model name)."""
+def get_ollama_model_sizes(settings: dict = None, force: bool = False, ollama_running: bool = None) -> dict:
+    """Query Ollama /api/tags (10s cached) for installed model sizes in GB, with local manifest disk fallback."""
     cfg = settings if isinstance(settings, dict) else load_settings()
-    host = get_configured_ollama_host(cfg).rstrip("/")
+    host = _fast_local_ollama_url(get_configured_ollama_host(cfg))
     now = time.monotonic()
     with _ollama_tags_lock:
         if (
@@ -753,10 +819,10 @@ def get_ollama_model_sizes(settings: dict = None, force: bool = False) -> dict:
             return dict(_ollama_tags_cache["sizes"])
 
     sizes = {}
-    if host.startswith(("http://", "https://")):
+    if ollama_running is not False and host.startswith(("http://", "https://")):
         try:
             req = urllib.request.Request(f"{host}/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=0.8) as resp:
+            with urllib.request.urlopen(req, timeout=0.6) as resp:
                 if resp.status == 200:
                     payload = json.loads(resp.read().decode("utf-8"))
                     for m in (payload.get("models") or []):
@@ -767,6 +833,37 @@ def get_ollama_model_sizes(settings: dict = None, force: bool = False) -> dict:
                             sizes[name] = gb
                             if name.endswith(":latest"):
                                 sizes[name[:-7]] = gb
+        except Exception:
+            pass
+
+    if not sizes:
+        try:
+            ollama_root = Path(os.environ.get("OLLAMA_MODELS") or (Path.home() / ".ollama" / "models"))
+            manifests_dir = ollama_root / "manifests"
+            if manifests_dir.exists():
+                for mf in manifests_dir.rglob("*"):
+                    if not mf.is_file():
+                        continue
+                    rel_parts = mf.relative_to(manifests_dir).parts
+                    if len(rel_parts) < 3:
+                        continue
+                    tag = rel_parts[-1]
+                    mname = rel_parts[-2]
+                    if len(rel_parts) >= 4 and rel_parts[-3] != "library":
+                        mname = f"{rel_parts[-3]}/{mname}"
+                    full = f"{mname}:{tag}".lower()
+                    try:
+                        mjson = json.loads(mf.read_text(encoding="utf-8"))
+                        total_b = int((mjson.get("config") or {}).get("size") or 0)
+                        for layer in (mjson.get("layers") or []):
+                            total_b += int(layer.get("size") or 0)
+                        if total_b > 0:
+                            gb = round(total_b / (1024 ** 3), 2)
+                            sizes[full] = gb
+                            if full.endswith(":latest"):
+                                sizes[full[:-7]] = gb
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -1255,7 +1352,12 @@ def _check_ollama_status(cmdlines: list = None, force: bool = False) -> str:
 def api_get_status() -> dict:
     settings = load_settings()
     cmdlines = _snapshot_process_cmdlines()
-    ollama_state = _check_ollama_status(cmdlines=cmdlines)
+    ollama_runtime = get_ollama_runtime_status(settings)
+    if ollama_runtime.get("running"):
+        ollama_state = "running"
+    else:
+        proc_ol = get_service_status("ollama", cmdlines=cmdlines)
+        ollama_state = "running" if proc_ol == "running" else "stopped"
     gaze_state = get_service_status("run_gaze_painter", cmdlines=cmdlines)
     watcher_state = get_service_status("run_analysis_watcher", cmdlines=cmdlines)
     services = {
@@ -1284,10 +1386,7 @@ def api_get_status() -> dict:
     gpu_stats = get_gpu_stats()
     if sys_stats.get("temperature") == "N/A" and gpu_stats.get("available") and gpu_stats.get("temperature_c") is not None:
         sys_stats["temperature"] = f"{gpu_stats['temperature_c']:.0f}°C (GPU)"
-    ollama_runtime = get_ollama_runtime_status(settings)
-    if ollama_runtime.get("running") and services.get("ollama_server") != "running":
-        services["ollama_server"] = "running"
-    model_sizes = get_ollama_model_sizes(settings) if ollama_runtime.get("running") else {}
+    model_sizes = get_ollama_model_sizes(settings, ollama_running=bool(ollama_runtime.get("running")))
     diagnostics = compute_smart_diagnostics(
         settings=settings,
         gpu_stats=gpu_stats,

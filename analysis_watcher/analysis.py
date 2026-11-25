@@ -803,9 +803,11 @@ def list_local_ollama_models(settings: dict = None) -> tuple:
     """
     cfg = settings or load_settings()
     host = get_configured_ollama_host(cfg)
+    if host.lower().startswith("http://localhost:"):
+        host = "http://127.0.0.1:" + host[len("http://localhost:"):]
     if host.startswith(("http://", "https://")):
         try:
-            resp = requests.get(f"{host}/api/tags", timeout=0.8)
+            resp = requests.get(f"{host}/api/tags", timeout=0.6)
             if resp.ok:
                 names = [str(m.get("name", "")).strip() for m in resp.json().get("models", []) if m.get("name")]
                 return True, sorted(set(names))
@@ -897,6 +899,7 @@ def get_ai_availability(settings: dict = None) -> dict:
     missing_hf = [pkg for pkg, ok in (("torch", has_torch), ("transformers", has_transformers)) if not ok]
     hf_ready = has_torch and has_transformers
 
+    native_vision = _analysis_llm_handles_vision_natively(ollama_running_hint=ollama_running)
     vision_modes = {
         "auto": {
             "available": True,
@@ -941,10 +944,10 @@ def get_ai_availability(settings: dict = None) -> dict:
             ),
         },
         "vision": {
-            "available": _analysis_llm_handles_vision_natively(),
+            "available": native_vision,
             "reason": (
                 "Ready (Analysis LLM natively supports image input)"
-                if _analysis_llm_handles_vision_natively()
+                if native_vision
                 else "Analysis LLM is text-only; choose a vision-capable Analysis model (e.g. llava, moondream, gemini, claude, gpt-4o)"
             ),
         },
@@ -975,6 +978,8 @@ def _is_ollama_vision_model_ready() -> bool:
         ai_cfg = settings.get("ai", {})
         vision_model = ai_cfg.get("ollama_vision_model") or "moondream"
         host = get_configured_ollama_host(settings)
+        if host.lower().startswith("http://localhost:"):
+            host = "http://127.0.0.1:" + host[len("http://localhost:"):]
         if not host.startswith(("http://", "https://")):
             return False
         resp = requests.get(f"{host}/api/tags", timeout=0.6)
@@ -986,7 +991,7 @@ def _is_ollama_vision_model_ready() -> bool:
         return False
 
 
-def _analysis_llm_handles_vision_natively() -> bool:
+def _analysis_llm_handles_vision_natively(ollama_running_hint=None) -> bool:
     """Return True when the configured analysis LLM already receives the image directly."""
     try:
         from chat import LLMModel
@@ -999,6 +1004,8 @@ def _analysis_llm_handles_vision_natively() -> bool:
         if prov == "openai_compatible":
             return LLMModel._openai_compatible_supports_vision(mod)
         if prov == "ollama":
+            if ollama_running_hint is False:
+                return _is_vision_model_name(mod)
             base_url = (acfg.get("base_url") or f"{get_configured_ollama_host(settings)}/v1").rstrip("/")
             if not base_url.endswith("/v1") and "11434" in base_url and "/api" not in base_url:
                 base_url += "/v1"

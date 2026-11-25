@@ -847,6 +847,9 @@ def get_translation_availability(settings: dict = None) -> dict:
         root = raw_base.rstrip("/")
         if root.endswith("/v1"):
             root = root[:-3]
+        # Avoid Windows ~2s IPv6 ::1 localhost TCP refusal delay when Ollama is stopped
+        if root.lower().startswith("http://localhost:"):
+            root = "http://127.0.0.1:" + root[len("http://localhost:"):]
         if root.startswith(("http://", "https://")):
             r = requests.get(f"{root}/api/tags", timeout=0.6)
             if r.ok:
