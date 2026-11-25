@@ -10,6 +10,7 @@ venv/
 analysis_watcher/.env
 config/admin_pin.txt
 config/settings.json
+config/.*.lock
 gaze_painter/calibrations/calibration.json
 
 # Logs & Data
