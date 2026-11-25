@@ -141,6 +141,8 @@ _ollama_cache_lock = threading.Lock()
 _ollama_probe_lock = threading.Lock()
 _ollama_runtime_cache = {"data": None, "ts": 0.0, "host": ""}
 _ollama_runtime_lock = threading.Lock()
+_ollama_tags_cache = {"sizes": {}, "ts": 0.0, "host": ""}
+_ollama_tags_lock = threading.Lock()
 _gpu_stats_cache = {"data": None, "ts": 0.0}
 _gpu_stats_lock = threading.Lock()
 _lan_ip_cache = {"ip": "localhost", "ts": 0.0}
@@ -153,7 +155,7 @@ MAX_DRAWING_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB for drawing uploads
 MAX_IMAGE_WIDTH = 4096
 MAX_IMAGE_HEIGHT = 4096
 MAX_IMAGE_PIXELS = 4096 * 4096
-SYNC_PIPELINE_TIMEOUT_SEC = 155.0
+SYNC_PIPELINE_TIMEOUT_SEC = 185.0
 REQUEST_SOCKET_TIMEOUT_SEC = 30.0
 ADMIN_SESSION_COOKIE = "ls_admin_session"
 ADMIN_SESSION_TTL_SEC = 12 * 3600
@@ -736,6 +738,374 @@ def unload_ollama_model(model_name: str, settings: dict = None) -> dict:
     return {"status": "success", "model": clean_name, "message": f"Unloaded '{clean_name}' from Ollama memory"}
 
 
+def get_ollama_model_sizes(settings: dict = None, force: bool = False) -> dict:
+    """Query Ollama /api/tags (10s cached) for installed model sizes in GB (keyed by lowercased model name)."""
+    cfg = settings if isinstance(settings, dict) else load_settings()
+    host = get_configured_ollama_host(cfg).rstrip("/")
+    now = time.monotonic()
+    with _ollama_tags_lock:
+        if (
+            not force
+            and _ollama_tags_cache["host"] == host
+            and (now - _ollama_tags_cache["ts"]) < 10.0
+            and _ollama_tags_cache["sizes"]
+        ):
+            return dict(_ollama_tags_cache["sizes"])
+
+    sizes = {}
+    if host.startswith(("http://", "https://")):
+        try:
+            req = urllib.request.Request(f"{host}/api/tags", method="GET")
+            with urllib.request.urlopen(req, timeout=0.8) as resp:
+                if resp.status == 200:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    for m in (payload.get("models") or []):
+                        name = str(m.get("name") or "").strip().lower()
+                        size_b = int(m.get("size") or 0)
+                        if name and size_b > 0:
+                            gb = round(size_b / (1024 ** 3), 2)
+                            sizes[name] = gb
+                            if name.endswith(":latest"):
+                                sizes[name[:-7]] = gb
+        except Exception:
+            pass
+
+    with _ollama_tags_lock:
+        _ollama_tags_cache["sizes"] = dict(sizes)
+        _ollama_tags_cache["host"] = host
+        _ollama_tags_cache["ts"] = time.monotonic()
+    return sizes
+
+
+def prewarm_ollama_model(model_name: str = None, settings: dict = None, keep_alive: str = "30m") -> dict:
+    """Pre-load an Ollama model into VRAM with zero generated tokens so visitors avoid cold-load delays."""
+    cfg = settings if isinstance(settings, dict) else load_settings()
+    target = str(model_name or "").strip()
+    if not target:
+        acfg = (cfg.get("ai") or {}).get("analysis") or {}
+        if (acfg.get("provider") or "ollama").lower() == "ollama":
+            target = str(acfg.get("model") or "").strip()
+    if not target or not config_manager._OLLAMA_MODEL_NAME_RE.match(target):
+        raise ValueError("Invalid or unconfigured Ollama model name")
+    host = get_configured_ollama_host(cfg).rstrip("/")
+    if not host.startswith(("http://", "https://")):
+        raise RuntimeError("Invalid Ollama host URL")
+
+    t0 = time.monotonic()
+    body = json.dumps({"model": target, "prompt": "", "keep_alive": keep_alive}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{host}/api/generate",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=120.0) as resp:
+        resp.read()
+    elapsed = round(time.monotonic() - t0, 2)
+    with _ollama_runtime_lock:
+        _ollama_runtime_cache["data"] = None
+        _ollama_runtime_cache["ts"] = 0.0
+    rt = get_ollama_runtime_status(cfg, force=True)
+    return {
+        "status": "success",
+        "model": target,
+        "elapsed_sec": elapsed,
+        "runtime": rt,
+        "message": f"Pre-warmed '{target}' in {elapsed}s",
+    }
+
+
+def _match_model_name(a: str, b: str) -> bool:
+    al = (a or "").strip().lower()
+    bl = (b or "").strip().lower()
+    if not al or not bl:
+        return False
+    return (
+        al == bl
+        or al == f"{bl}:latest"
+        or bl == f"{al}:latest"
+    )
+
+
+def _lookup_model_size_gb(model_name: str, model_sizes: dict) -> float:
+    low = (model_name or "").strip().lower()
+    if not low or not isinstance(model_sizes, dict):
+        return 0.0
+    if low in model_sizes:
+        return float(model_sizes[low])
+    if f"{low}:latest" in model_sizes:
+        return float(model_sizes[f"{low}:latest"])
+    for k, v in model_sizes.items():
+        if ":" not in low and k.startswith(f"{low}:"):
+            return float(v)
+    return 0.0
+
+
+def _is_thinking_model_hint(model_name: str) -> bool:
+    low = (model_name or "").strip().lower()
+    if not low:
+        return False
+    hints = (
+        "gemma4", "qwen3", "deepseek-r1", "qwq", "gpt-oss", "magistral",
+        "cogito", "openthinker", "phi4-reasoning", "exaone-deep", "marco-o1",
+    )
+    return any(h in low for h in hints)
+
+
+def _is_vision_model_hint(model_name: str) -> bool:
+    low = (model_name or "").strip().lower()
+    if not low or low.startswith("gemma3:1b"):
+        return False
+    hints = (
+        "vision", "llava", "moondream", "bakllava", "minicpm-v",
+        "qwen2-vl", "qwen2.5-vl", "qwen2.5vl", "qwen3-vl", "qwen3vl", "qwen3.5",
+        "pixtral", "internvl", "mistral-small3.1", "mistral-small3.2",
+        "gemma3", "gemma4", "llama4", "llama-4",
+    )
+    return any(h in low for h in hints)
+
+
+def compute_smart_diagnostics(
+    settings: dict = None,
+    gpu_stats: dict = None,
+    ollama_runtime: dict = None,
+    model_sizes: dict = None,
+) -> dict:
+    """
+    Smart pre-flight & live runtime advisor detecting common local-GPU exhibition pitfalls:
+      - Ollama offline while configured for active stages
+      - Multi-model VRAM thrashing / model swaps per drawing (e.g. gemma4:e4b + llama3.1:8b on 8 GB VRAM)
+      - Active CPU/RAM offload spill reported by Ollama /api/ps
+      - Tight single-model VRAM margin (>78% of GPU VRAM)
+      - Unbounded thinking on boolean/thinking models (e.g. gemma4:e4b with max_tokens=0)
+      - Primary Ollama model currently cold (not loaded in /api/ps)
+    Returns structured diagnostics with actionable 1-click UI fix descriptors.
+    """
+    cfg = settings if isinstance(settings, dict) else load_settings()
+    gpu = gpu_stats if isinstance(gpu_stats, dict) else get_gpu_stats()
+    ol_rt = ollama_runtime if isinstance(ollama_runtime, dict) else get_ollama_runtime_status(cfg)
+    sizes = model_sizes if isinstance(model_sizes, dict) else get_ollama_model_sizes(cfg)
+
+    ai_cfg = cfg.get("ai") or {}
+    analysis_cfg = ai_cfg.get("analysis") or {}
+    poem_cfg = ai_cfg.get("poem") or {}
+    tr_cfg = cfg.get("translation") or {}
+
+    vision_mode = str(ai_cfg.get("vision_mode") or "auto").strip().lower()
+    ollama_vision_model = str(ai_cfg.get("ollama_vision_model") or "moondream").strip()
+    a_prov = str(analysis_cfg.get("provider") or "ollama").strip().lower()
+    a_mod = str(analysis_cfg.get("model") or "").strip()
+    p_prov = str(poem_cfg.get("provider") or "ollama").strip().lower()
+    p_mod = str(poem_cfg.get("model") or "").strip()
+    tr_enabled = bool(tr_cfg.get("enabled", True))
+    tr_mode = str(tr_cfg.get("mode") or "local_nmt").strip().lower()
+    tr_ollama_mod = str(tr_cfg.get("ollama_model") or "translategemma:4b").strip()
+
+    # Determine ordered per-drawing Ollama stage sequence to accurately count model swaps
+    ollama_stage_seq = []
+    analysis_handles_vision = (
+        a_prov in ("gemini", "anthropic")
+        or (a_prov == "ollama" and _is_vision_model_hint(a_mod))
+        or (a_prov == "openai_compatible" and _is_vision_model_hint(a_mod))
+    )
+    if vision_mode == "ollama_vision" or (vision_mode == "auto" and not analysis_handles_vision and ollama_vision_model):
+        if ollama_vision_model:
+            ollama_stage_seq.append(("vision", ollama_vision_model))
+    if a_prov == "ollama" and a_mod:
+        ollama_stage_seq.append(("analysis", a_mod))
+    if p_prov == "ollama" and p_mod:
+        ollama_stage_seq.append(("poem", p_mod))
+    if tr_enabled and tr_mode == "ollama" and tr_ollama_mod:
+        ollama_stage_seq.append(("translation", tr_ollama_mod))
+    elif tr_enabled and tr_mode == "native_llm":
+        if a_prov == "ollama" and a_mod:
+            ollama_stage_seq.append(("translation_analysis", a_mod))
+        if p_prov == "ollama" and p_mod:
+            ollama_stage_seq.append(("translation_poem", p_mod))
+
+    distinct_models = []
+    for _, mname in ollama_stage_seq:
+        if not any(_match_model_name(mname, ex) for ex in distinct_models):
+            distinct_models.append(mname)
+
+    swaps_per_drawing = 0
+    for idx in range(1, len(ollama_stage_seq)):
+        if not _match_model_name(ollama_stage_seq[idx - 1][1], ollama_stage_seq[idx][1]):
+            swaps_per_drawing += 1
+
+    vram_total_gb = float(gpu.get("vram_total_gb") or 0.0) if gpu.get("available") else 0.0
+    model_size_map = {m: _lookup_model_size_gb(m, sizes) for m in distinct_models}
+    combined_gb = round(sum(model_size_map.values()), 2)
+    largest_gb = max(model_size_map.values()) if model_size_map else 0.0
+    loaded_models = ol_rt.get("loaded_models") if isinstance(ol_rt.get("loaded_models"), list) else []
+
+    issues = []
+
+    # 1. Ollama offline when required by active stages
+    if ollama_stage_seq and not ol_rt.get("running"):
+        issues.append({
+            "id": "ollama_offline",
+            "severity": "critical",
+            "title": "Ollama server is offline",
+            "detail": f"Active pipeline stages ({', '.join(distinct_models)}) require local Ollama, but the server is not reachable.",
+            "recommendation": "Start Ollama via 'python start_everything.py' or 'ollama serve' before accepting visitors.",
+            "metrics": {"models": distinct_models},
+            "actions": [],
+        })
+
+    # 2. Multi-model VRAM swap / thrashing detection
+    if len(distinct_models) >= 2:
+        exceeds_vram = (
+            (vram_total_gb > 0 and combined_gb > 0 and combined_gb > (vram_total_gb * 0.85))
+            or (vram_total_gb > 0 and combined_gb == 0 and vram_total_gb <= 12.5)
+            or (vram_total_gb == 0 and combined_gb > 7.5)
+        )
+        if exceeds_vram:
+            actions = []
+            if a_prov == "ollama" and p_prov == "ollama" and a_mod and not _match_model_name(a_mod, p_mod):
+                actions.append({
+                    "id": "sync_poem_to_analysis",
+                    "label": f"Use {a_mod} for Poem too",
+                    "params": {"model": a_mod},
+                })
+            if tr_enabled and tr_mode == "ollama":
+                actions.append({
+                    "id": "switch_translation_local_nmt",
+                    "label": "Use 0-VRAM CPU Translation (NMT)",
+                    "params": {},
+                })
+            size_desc = ", ".join(
+                f"{m} ({model_size_map[m]} GB)" if model_size_map.get(m) else m
+                for m in distinct_models
+            )
+            vram_str = f"{vram_total_gb:.1f} GB GPU VRAM" if vram_total_gb > 0 else "available VRAM"
+            issues.append({
+                "id": "vram_model_swap",
+                "severity": "critical" if swaps_per_drawing >= 2 else "warning",
+                "title": f"VRAM model thrashing ({swaps_per_drawing} cold swaps/drawing)",
+                "detail": (
+                    f"Pipeline loads {size_desc} (total {combined_gb:.1f} GB vs {vram_str}). "
+                    f"Ollama will evict and reload models {swaps_per_drawing}× per drawing, adding 20–90s+ of stall time."
+                ),
+                "recommendation": "Keep one Ollama model shared across Analysis & Poem, and use zero-VRAM CPU NMT (or Native LLM with that same single model) for Hungarian.",
+                "metrics": {
+                    "distinct_models": distinct_models,
+                    "combined_gb": combined_gb,
+                    "vram_total_gb": vram_total_gb,
+                    "swaps_per_drawing": swaps_per_drawing,
+                },
+                "actions": actions,
+            })
+
+    # 3. Live CPU/RAM offload spill from /api/ps
+    spilling = [m for m in loaded_models if int(m.get("cpu_percent") or 0) > 0]
+    if spilling:
+        top = spilling[0]
+        issues.append({
+            "id": "vram_cpu_spill_live",
+            "severity": "warning",
+            "title": f"Active CPU offload on {top.get('name')} ({top.get('gpu_percent')}% GPU / {top.get('cpu_percent')}% CPU)",
+            "detail": (
+                f"{top.get('ram_gb')} GB of {top.get('name')} spilled into system RAM instead of GPU VRAM, "
+                "which significantly slows image encoding and token generation."
+            ),
+            "recommendation": "Launch via start_everything.py (auto-enables OLLAMA_FLASH_ATTENTION=1 & OLLAMA_KV_CACHE_TYPE=q8_0), unload unused models, or switch to gemma3:4b.",
+            "metrics": {
+                "model": top.get("name"),
+                "gpu_percent": top.get("gpu_percent"),
+                "cpu_percent": top.get("cpu_percent"),
+                "ram_gb": top.get("ram_gb"),
+            },
+            "actions": [],
+        })
+    elif vram_total_gb > 0 and largest_gb > (vram_total_gb * 0.78):
+        # 4. Tight single-model VRAM margin
+        big_model = max(model_size_map.items(), key=lambda kv: kv[1])[0]
+        issues.append({
+            "id": "vram_tight_fit",
+            "severity": "warning",
+            "title": f"Tight VRAM headroom for {big_model} ({largest_gb:.1f} GB on {vram_total_gb:.1f} GB GPU)",
+            "detail": (
+                f"Model weights ({largest_gb:.1f} GB) leave little room for KV cache and vision projector on a {vram_total_gb:.1f} GB GPU. "
+                "Cold loads may take 20–45s and can spill to CPU RAM without Q8 KV cache."
+            ),
+            "recommendation": "Run via start_everything.py (enables Flash Attention + Q8_0 KV cache + 30m keep-alive) and pre-warm before visitors arrive.",
+            "metrics": {"model": big_model, "model_gb": largest_gb, "vram_total_gb": vram_total_gb},
+            "actions": (
+                [{"id": "prewarm_ollama", "label": f"Pre-warm {big_model}", "params": {"model": big_model}}]
+                if ol_rt.get("running")
+                else []
+            ),
+        })
+
+    # 5. Unbounded thinking risk on Ollama thinking models
+    unbounded_roles = []
+    for role_name, rcfg in (("analysis", analysis_cfg), ("poem", poem_cfg)):
+        if (rcfg.get("provider") or "ollama").lower() != "ollama":
+            continue
+        rmod = str(rcfg.get("model") or "").strip()
+        tmode = str(rcfg.get("thinking_mode") or "auto").strip().lower()
+        try:
+            mtok = int(rcfg.get("max_tokens") or 0)
+        except (TypeError, ValueError):
+            mtok = 0
+        if _is_thinking_model_hint(rmod) and tmode != "off" and mtok == 0:
+            unbounded_roles.append((role_name, rmod, tmode))
+    if unbounded_roles:
+        desc = ", ".join(f"{r} ({m}, thinking={tm})" for r, m, tm in unbounded_roles)
+        issues.append({
+            "id": "thinking_unbounded",
+            "severity": "warning",
+            "title": "Uncapped thinking mode on local model",
+            "detail": (
+                f"{desc} has Max Tokens = 0 (uncapped). Boolean-thinking models like gemma4:e4b can spend "
+                "hundreds of tokens reasoning before answering (auto safety cap applies at runtime, or set an explicit cap)."
+            ),
+            "recommendation": "Cap Max Tokens to 560 for brief thinking, or set Thinking Mode to Off for fastest exhibition responses.",
+            "metrics": {"roles": [r for r, _, _ in unbounded_roles]},
+            "actions": [
+                {"id": "cap_thinking_tokens", "label": "Cap Max Tokens (560)", "params": {"roles": [r for r, _, _ in unbounded_roles], "max_tokens": 560}},
+                {"id": "disable_thinking", "label": "Set Thinking Off (Fastest)", "params": {"roles": [r for r, _, _ in unbounded_roles]}},
+            ],
+        })
+
+    # 6. Cold primary Ollama model (running, but not yet loaded in VRAM)
+    if ol_rt.get("running") and a_prov == "ollama" and a_mod:
+        is_loaded = any(_match_model_name(m.get("name", ""), a_mod) for m in loaded_models)
+        if not is_loaded:
+            issues.append({
+                "id": "ollama_cold_model",
+                "severity": "info",
+                "title": f"Primary model '{a_mod}' is cold (not in VRAM)",
+                "detail": "Ollama is running with no active instance of your Analysis model. The first visitor will wait an extra 15–45s while it loads from disk.",
+                "recommendation": "Pre-warm the model into VRAM now so the first exhibition drawing responds immediately.",
+                "metrics": {"model": a_mod},
+                "actions": [
+                    {"id": "prewarm_ollama", "label": f"Pre-warm {a_mod} Now", "params": {"model": a_mod}},
+                ],
+            })
+
+    overall = "ok"
+    if any(i["severity"] == "critical" for i in issues):
+        overall = "critical"
+    elif any(i["severity"] == "warning" for i in issues):
+        overall = "warning"
+    elif issues:
+        overall = "info"
+
+    return {
+        "status": overall,
+        "summary": {
+            "distinct_ollama_models": distinct_models,
+            "model_sizes_gb": model_size_map,
+            "combined_ollama_gb": combined_gb,
+            "swaps_per_drawing": swaps_per_drawing,
+            "vram_total_gb": vram_total_gb,
+        },
+        "issues": issues,
+    }
+
+
 def _read_last_stage_timings() -> dict:
     """Read last completed run stage timings from shared_output/content.json if present."""
     content_file = config_manager.SHARED_DIR / "content.json"
@@ -917,6 +1287,13 @@ def api_get_status() -> dict:
     ollama_runtime = get_ollama_runtime_status(settings)
     if ollama_runtime.get("running") and services.get("ollama_server") != "running":
         services["ollama_server"] = "running"
+    model_sizes = get_ollama_model_sizes(settings) if ollama_runtime.get("running") else {}
+    diagnostics = compute_smart_diagnostics(
+        settings=settings,
+        gpu_stats=gpu_stats,
+        ollama_runtime=ollama_runtime,
+        model_sizes=model_sizes,
+    )
     with _pipeline_lock:
         pipe_snapshot = dict(_pipeline_state)
         pipe_snapshot["queue_length"] = _pipeline_queue.qsize()
@@ -940,6 +1317,7 @@ def api_get_status() -> dict:
         "system": sys_stats,
         "gpu": gpu_stats,
         "ollama_runtime": ollama_runtime,
+        "diagnostics": diagnostics,
         "last_timings": _read_last_stage_timings(),
         "ai_summary": {
             "vision_mode": settings.get("ai", {}).get("vision_mode", "auto"),
@@ -2032,6 +2410,17 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self._send_json({"status": "error", "error": str(e)}, 500)
 
+        if path == "/api/ollama/prewarm":
+            data = self._read_json_body()
+            model_name = data.get("model", "")
+            try:
+                res = prewarm_ollama_model(model_name=model_name or None)
+                return self._send_json(res)
+            except ValueError as ve:
+                return self._send_json({"status": "error", "error": str(ve)}, 400)
+            except Exception as e:
+                return self._send_json({"status": "error", "error": str(e)}, 500)
+
         if path == "/api/files/print":
             data = self._read_json_body()
             filename = data.get("filename", "")
@@ -2144,6 +2533,27 @@ def run_server(host="0.0.0.0", port=8000):
                 threading.Thread(target=_bg_preload, daemon=True, name="ls_nmt_preload").start()
         except Exception:
             pass
+        if os.environ.get("LATENT_SPACE_SKIP_PREWARM", "").strip() != "1":
+            try:
+                boot_cfg = load_settings()
+                boot_acfg = (boot_cfg.get("ai") or {}).get("analysis") or {}
+                if (boot_acfg.get("provider") or "ollama").lower() == "ollama" and boot_acfg.get("model"):
+                    def _bg_ollama_prewarm():
+                        time.sleep(2.0)
+                        try:
+                            rt = get_ollama_runtime_status(boot_cfg, force=True)
+                            if not rt.get("running"):
+                                return
+                            target_m = str(boot_acfg.get("model") or "").strip()
+                            if any(_match_model_name(m.get("name", ""), target_m) for m in rt.get("loaded_models") or []):
+                                return
+                            res = prewarm_ollama_model(model_name=target_m, settings=boot_cfg)
+                            print(f"[ollama] Pre-warmed '{res['model']}' into VRAM in {res['elapsed_sec']}s")
+                        except Exception as pw_err:
+                            print(f"[ollama] Background pre-warm note: {pw_err}")
+                    threading.Thread(target=_bg_ollama_prewarm, daemon=True, name="ls_ollama_prewarm").start()
+            except Exception:
+                pass
     start_background_watcher()
     admin_pw, auth_src = get_or_create_admin_password()
     server = LockedThreadingHTTPServer((host, port), LatentSpaceRequestHandler)
