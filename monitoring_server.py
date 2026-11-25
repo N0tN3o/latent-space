@@ -164,6 +164,7 @@ _upload_timestamps = {}  # client_ip -> [monotonic_timestamps]
 ALLOWED_AI_CONFIG_KEYS = {
     "name", "description", "purpose", "expertise", "capabilities",
     "restrictions", "additional", "llm", "model", "temperature", "max_words",
+    "thinking_mode", "max_tokens",
     "provider", "base_url", "api_key", "fallback_provider",
     "fallback_model", "vision_mode", "ollama_vision_model",
 }

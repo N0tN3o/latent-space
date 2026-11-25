@@ -106,6 +106,8 @@ DEFAULT_VISION_DESCRIPTION_PROMPT = (
 )
 
 ALLOWED_VISION_BADGE_STYLES = {"vision_only", "combined", "geometry_only"}
+ALLOWED_THINKING_MODES = {"auto", "off", "low", "medium", "high"}
+ALLOWED_VISION_TOKEN_BUDGETS = (70, 140, 280, 560, 1120)
 ALLOWED_VISION_KEYS = {
     "ollama_label_prompt",
     "ollama_description_prompt",
@@ -113,6 +115,8 @@ ALLOWED_VISION_KEYS = {
     "ollama_temperature",
     "ollama_max_tokens",
     "ollama_timeout",
+    "ollama_thinking",
+    "vision_token_budget",
     "clean_label",
     "badge_style",
     "zero_shot_archetypes",
@@ -145,8 +149,10 @@ DEFAULT_SETTINGS = {
             "ollama_description_prompt": DEFAULT_VISION_DESCRIPTION_PROMPT,
             "ollama_include_description": True,
             "ollama_temperature": 0.4,
-            "ollama_max_tokens": 96,
+            "ollama_max_tokens": 280,
             "ollama_timeout": 60,
+            "ollama_thinking": "auto",  # "auto" | "off" | "low" | "medium" | "high"
+            "vision_token_budget": 280,  # Gemma 4 visual soft-token tier: 70 | 140 | 280 | 560 | 1120
             "clean_label": True,
             "badge_style": "vision_only",  # "vision_only" | "combined" | "geometry_only"
             "zero_shot_archetypes": "",
@@ -169,6 +175,8 @@ DEFAULT_SETTINGS = {
             "additional": "",
             "temperature": 0.7,
             "max_words": 110,
+            "thinking_mode": "auto",  # "auto" | "off" | "low" | "medium" | "high"
+            "max_tokens": 0,  # 0 = model default; 64..4096 caps thinking + output tokens
             "assistant_key": "8a79f5ec-c5dd-448c-9611-99610792a04b",
         },
         "poem": {
@@ -186,6 +194,8 @@ DEFAULT_SETTINGS = {
             "restrictions": "",
             "additional": "",
             "temperature": 0.8,
+            "thinking_mode": "auto",  # "auto" | "off" | "low" | "medium" | "high"
+            "max_tokens": 0,  # 0 = model default; 64..4096 caps thinking + output tokens
             "assistant_key": "959058ad-4417-49e3-9e71-252ee2fb033d",
         },
     },
@@ -690,9 +700,27 @@ def validate_ai_data(data: dict) -> dict:
                 mt = int(raw_mt)
             except (TypeError, ValueError) as e:
                 raise ValueError("ai.vision.ollama_max_tokens must be an integer") from e
-            if mt < 16 or mt > 1024:
-                raise ValueError("ai.vision.ollama_max_tokens must be between 16 and 1024")
+            if mt < 16 or mt > 2048:
+                raise ValueError("ai.vision.ollama_max_tokens must be between 16 and 2048")
             vc_clean["ollama_max_tokens"] = mt
+        if "ollama_thinking" in vc_clean:
+            ot = str(vc_clean["ollama_thinking"] or "auto").strip().lower()
+            if ot not in ALLOWED_THINKING_MODES:
+                raise ValueError(f"ai.vision.ollama_thinking must be one of {sorted(ALLOWED_THINKING_MODES)}")
+            vc_clean["ollama_thinking"] = ot
+        if "vision_token_budget" in vc_clean:
+            raw_vtb = vc_clean["vision_token_budget"]
+            if isinstance(raw_vtb, bool):
+                raise ValueError("ai.vision.vision_token_budget must be an integer")
+            try:
+                vtb = int(raw_vtb)
+            except (TypeError, ValueError) as e:
+                raise ValueError("ai.vision.vision_token_budget must be an integer") from e
+            if vtb not in ALLOWED_VISION_TOKEN_BUDGETS:
+                raise ValueError(
+                    f"ai.vision.vision_token_budget must be one of {list(ALLOWED_VISION_TOKEN_BUDGETS)}"
+                )
+            vc_clean["vision_token_budget"] = vtb
         if "ollama_timeout" in vc_clean:
             raw_to = vc_clean["ollama_timeout"]
             if isinstance(raw_to, bool):
@@ -755,6 +783,22 @@ def validate_ai_data(data: dict) -> dict:
             if mw_val < 0 or mw_val > 500:
                 raise ValueError(f"ai.{role}.max_words must be between 0 and 500")
             rc["max_words"] = mw_val
+        if "thinking_mode" in rc:
+            tm = str(rc["thinking_mode"] or "auto").strip().lower()
+            if tm not in ALLOWED_THINKING_MODES:
+                raise ValueError(f"ai.{role}.thinking_mode must be one of {sorted(ALLOWED_THINKING_MODES)}")
+            rc["thinking_mode"] = tm
+        if "max_tokens" in rc:
+            raw_mtok = rc["max_tokens"]
+            if isinstance(raw_mtok, bool):
+                raise ValueError(f"ai.{role}.max_tokens must be an integer")
+            try:
+                mtok_val = int(raw_mtok)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"ai.{role}.max_tokens must be an integer") from e
+            if mtok_val != 0 and (mtok_val < 64 or mtok_val > 4096):
+                raise ValueError(f"ai.{role}.max_tokens must be 0 (auto) or between 64 and 4096")
+            rc["max_tokens"] = mtok_val
         if "base_url" in rc:
             rc["base_url"] = validate_safe_url(rc["base_url"], f"ai.{role}.base_url", allow_relative=False)
         for s_field in (

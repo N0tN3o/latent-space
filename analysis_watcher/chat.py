@@ -24,15 +24,37 @@ logger = logging.getLogger("image_analysis_pipeline")
 
 _OLLAMA_CAPS_LOCK = threading.Lock()
 _OLLAMA_VISION_CAPS = {}
+_OLLAMA_THINKING_CAPS = {}
 _VISION_NAME_HINTS = (
     "vision", "llava", "bakllava", "moondream", "minicpm-v",
-    "qwen2-vl", "qwen2.5-vl", "qwen2.5vl", "qwen3-vl", "pixtral",
-    "mistral-small3.1", "gemma3:latest", "gemma3:4b", "gemma3:12b", "gemma3:27b",
+    "qwen2-vl", "qwen2.5-vl", "qwen2.5vl", "qwen3-vl", "qwen3vl", "qwen3.5",
+    "pixtral", "internvl", "mistral-small3.1", "mistral-small3.2",
+    "gemma3:latest", "gemma3:4b", "gemma3:12b", "gemma3:27b", "gemma4",
+    "llama4", "llama-4",
 )
 _OPENAI_COMPAT_VISION_HINTS = _VISION_NAME_HINTS + (
-    "gpt-4o", "gpt-4-turbo", "gpt-4.1", "gpt-4.5", "chatgpt-4o",
+    "gpt-4o", "gpt-4-turbo", "gpt-4.1", "gpt-4.5", "gpt-5", "chatgpt-4o",
     "llama-3.2-11b-vision", "llama-3.2-90b-vision", "llama-4-",
 )
+_THINKING_NAME_HINTS = (
+    "gemma4", "qwen3", "deepseek-r1", "qwq", "gpt-oss", "magistral",
+    "cogito", "openthinker", "phi4-reasoning", "exaone-deep", "marco-o1",
+)
+_THINK_TAG_RE = re.compile(r"<(?:think|thought)>.*?</(?:think|thought)>", re.DOTALL | re.IGNORECASE)
+_GEMMA4_PX_PER_SOFT_TOKEN = 48 * 48
+
+
+def _is_thinking_model_name(model_name: str) -> bool:
+    low = (model_name or "").strip().lower()
+    if not low:
+        return False
+    return any(h in low for h in _THINKING_NAME_HINTS)
+
+
+def _strip_think_tags(text: str) -> str:
+    if not text:
+        return ""
+    return _THINK_TAG_RE.sub("", str(text)).strip()
 
 ASSISTANT_KEY_TO_ROLE = {
     "8a79f5ec-c5dd-448c-9611-99610792a04b": "analysis",
@@ -334,6 +356,7 @@ def enforce_analysis_word_limit(
                 "allow_failover": True,
                 "temperature_override": 0.4,
                 "system_prompt_override": editor_system,
+                "thinking_override": "off",
             }
             if cancel_event is not None:
                 chat_kwargs["cancel_event"] = cancel_event
@@ -397,6 +420,9 @@ class LLMModel:
         self._creativity = 0.7
         self._temperature = 0.7
         self._max_words = DEFAULT_ANALYSIS_MAX_WORDS if self.role == "analysis" else 0
+        self._thinking_mode = "auto"
+        self._max_tokens = 0
+        self._vision_token_budget = 280
         self._provider = "ollama"
         self._base_url = "http://localhost:11434/v1"
         self._api_key = ""
@@ -447,6 +473,11 @@ class LLMModel:
         env = load_env_vars()
         ai_cfg = settings.get("ai", {})
         self._vision_mode = ai_cfg.get("vision_mode", "auto")
+        vision_cfg = ai_cfg.get("vision", {}) if isinstance(ai_cfg.get("vision"), dict) else {}
+        try:
+            self._vision_token_budget = int(vision_cfg.get("vision_token_budget", 280) or 280)
+        except (TypeError, ValueError):
+            self._vision_token_budget = 280
         role_cfg = ai_cfg.get(self.role, {})
 
         new_provider = role_cfg.get("provider", "ollama").lower()
@@ -478,6 +509,11 @@ class LLMModel:
             self._max_words = max(0, int(raw_mw)) if raw_mw is not None else default_mw
         except (TypeError, ValueError):
             self._max_words = default_mw
+        self._thinking_mode = str(role_cfg.get("thinking_mode") or "auto").strip().lower()
+        try:
+            self._max_tokens = max(0, int(role_cfg.get("max_tokens", 0) or 0))
+        except (TypeError, ValueError):
+            self._max_tokens = 0
         self.assistant_key = new_key
 
         if buas_preserved and self._buas_overrides:
@@ -569,11 +605,30 @@ class LLMModel:
         }
 
     @staticmethod
-    def _encode_image_base64(image_path: str):
+    def _encode_image_base64(image_path: str, token_budget: int = 280):
         if not image_path or not Path(image_path).exists():
             return None
         try:
-            return base64.b64encode(Path(image_path).read_bytes()).decode("utf-8")
+            raw_bytes = Path(image_path).read_bytes()
+            budget = int(token_budget or 0)
+            if budget > 0:
+                max_pixels = budget * _GEMMA4_PX_PER_SOFT_TOKEN
+                try:
+                    import cv2
+                    img = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
+                    if img is not None and img.size > 0:
+                        h, w = img.shape[:2]
+                        if h * w > max_pixels:
+                            scale = (max_pixels / float(h * w)) ** 0.5
+                            new_w = max(32, int(round(w * scale)))
+                            new_h = max(32, int(round(h * scale)))
+                            resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                            ok, buf = cv2.imencode(".png", resized)
+                            if ok:
+                                return base64.b64encode(buf.tobytes()).decode("utf-8")
+                except Exception:
+                    pass
+            return base64.b64encode(raw_bytes).decode("utf-8")
         except Exception:
             return None
 
@@ -712,7 +767,8 @@ class LLMModel:
 
     def _call_provider(self, provider: str, model: str, base_url: str, api_key: str,
                        message: str, img_b64: str = None, timeout=None,
-                       temperature_override: float = None, system_prompt_override: str = None) -> tuple:
+                       temperature_override: float = None, system_prompt_override: str = None,
+                       thinking_override: str = None) -> tuple:
         req_timeout = timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC)
         used_model = model
         if provider == "gemini":
@@ -721,6 +777,7 @@ class LLMModel:
             reply = self._chat_gemini(
                 message, img_b64, model_name=used_model, api_key=api_key, timeout=req_timeout,
                 temperature_override=temperature_override, system_prompt_override=system_prompt_override,
+                thinking_override=thinking_override,
             )
         elif provider == "anthropic":
             same_prov_model = self._llm if self._provider == "anthropic" else ""
@@ -736,6 +793,7 @@ class LLMModel:
                 message, img_b64, provider=provider, model_name=model,
                 base_url=base_url, api_key=api_key, timeout=req_timeout,
                 temperature_override=temperature_override, system_prompt_override=system_prompt_override,
+                thinking_override=thinking_override,
             )
         else:
             raise ValueError(f"Unknown AI provider: {provider}")
@@ -746,7 +804,7 @@ class LLMModel:
 
     def chat(self, message: str, image_path: str = None, allow_failover: bool = True,
              cancel_event=None, temperature_override: float = None,
-             system_prompt_override: str = None) -> str:
+             system_prompt_override: str = None, thinking_override: str = None) -> str:
         """
         Send a prompt (and optional drawing image for Vision LLMs) to the configured provider.
         Retries transient primary failures and fails over across providers within a bounded time budget.
@@ -758,7 +816,7 @@ class LLMModel:
             and self.role == "analysis"
             and self._vision_mode in ("auto", "vision")
         )
-        img_b64 = self._encode_image_base64(image_path) if use_vision else None
+        img_b64 = self._encode_image_base64(image_path, token_budget=self._vision_token_budget) if use_vision else None
         deadline = time.monotonic() + MAX_CHAT_BUDGET_SEC
 
         # Step A: Primary provider (1 quick retry only on transient failures)
@@ -779,6 +837,7 @@ class LLMModel:
                     message, img_b64, timeout=req_timeout,
                     temperature_override=temperature_override,
                     system_prompt_override=system_prompt_override,
+                    thinking_override=thinking_override,
                 )
                 self._last_used_provider = self._provider
                 self._last_used_model = used_model
@@ -809,6 +868,7 @@ class LLMModel:
                         fb_prov, fb_model, fb_url, fb_key, message, img_b64, timeout=req_timeout,
                         temperature_override=temperature_override,
                         system_prompt_override=system_prompt_override,
+                        thinking_override=thinking_override,
                     )
                     self._last_used_provider = fb_prov
                     self._last_used_model = used_model
@@ -869,22 +929,41 @@ class LLMModel:
                 return _OLLAMA_VISION_CAPS[cache_key]
 
         supported = None
+        thinking_supported = None
         if host_root.startswith(("http://", "https://")):
             try:
                 resp = requests.post(f"{host_root}/api/show", json={"model": model_name}, timeout=1.0)
                 if resp.ok:
                     caps = resp.json().get("capabilities")
                     if isinstance(caps, list):
-                        supported = "vision" in [str(c).lower() for c in caps]
+                        caps_low = [str(c).lower() for c in caps]
+                        supported = "vision" in caps_low
+                        thinking_supported = "thinking" in caps_low
             except Exception:
                 supported = None
+                thinking_supported = None
 
         if supported is not None:
             with _OLLAMA_CAPS_LOCK:
                 _OLLAMA_VISION_CAPS[cache_key] = bool(supported)
+                if thinking_supported is not None:
+                    _OLLAMA_THINKING_CAPS[cache_key] = bool(thinking_supported)
             return bool(supported)
 
         return any(hint in low for hint in _VISION_NAME_HINTS)
+
+    @staticmethod
+    def _ollama_supports_thinking(clean_base: str, model_name: str) -> bool:
+        """Check cached Ollama /api/show capability (or model name hint) for thinking support."""
+        if not model_name:
+            return False
+        host_root = clean_base[:-3] if clean_base.endswith("/v1") else clean_base
+        host_root = host_root.rstrip("/")
+        cache_key = (host_root, model_name)
+        with _OLLAMA_CAPS_LOCK:
+            if cache_key in _OLLAMA_THINKING_CAPS:
+                return _OLLAMA_THINKING_CAPS[cache_key]
+        return _is_thinking_model_name(model_name)
 
     @staticmethod
     def _openai_compatible_supports_vision(model_name: str) -> bool:
@@ -905,6 +984,7 @@ class LLMModel:
         timeout=None,
         temperature_override: float = None,
         system_prompt_override: str = None,
+        thinking_override: str = None,
     ) -> tuple:
         prov = (provider or self._provider).lower()
         same_prov_model = self._llm if prov == self._provider else ""
@@ -915,6 +995,8 @@ class LLMModel:
 
         system_prompt = system_prompt_override if system_prompt_override is not None else self._build_system_prompt()
         eff_temp = float(temperature_override) if temperature_override is not None else float(self._temperature)
+        eff_thinking = (thinking_override if thinking_override is not None else self._thinking_mode) or "auto"
+        eff_thinking = str(eff_thinking).strip().lower()
         clean_base = b_url.rstrip("/")
         if not clean_base.endswith("/v1") and "11434" in clean_base and "/api" not in clean_base:
             clean_base = clean_base + "/v1"
@@ -936,22 +1018,54 @@ class LLMModel:
             if system_prompt:
                 msgs.append({"role": "system", "content": system_prompt})
             if include_img and img_b64:
+                img_obj = {"url": f"data:image/png;base64,{img_b64}"}
+                if prov == "openai_compatible":
+                    budget = int(getattr(self, "_vision_token_budget", 280) or 280)
+                    if budget <= 140:
+                        img_obj["detail"] = "low"
+                    elif budget >= 560:
+                        img_obj["detail"] = "high"
                 user_content = [
                     {"type": "text", "text": message},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                    {"type": "image_url", "image_url": img_obj},
                 ]
             else:
                 user_content = message
             msgs.append({"role": "user", "content": user_content})
             return msgs
 
+        def resolve_reasoning_effort(target_model: str):
+            is_thinking = (
+                self._ollama_supports_thinking(clean_base, target_model)
+                if prov == "ollama"
+                else _is_thinking_model_name(target_model)
+            )
+            if eff_thinking == "auto":
+                # Allow brief "low" thinking on thinking-capable models to balance quality & ~25-30s exhibition wait time
+                return "low" if is_thinking else None
+            if eff_thinking == "off":
+                return "none" if is_thinking else None
+            if eff_thinking in ("low", "medium", "high"):
+                return eff_thinking
+            return None
+
         payload = {
             "model": mod,
             "messages": build_messages(bool(send_img_b64)),
             "temperature": eff_temp,
         }
+        effort = resolve_reasoning_effort(mod)
+        if effort is not None:
+            payload["reasoning_effort"] = effort
+        if self._max_tokens > 0:
+            payload["max_tokens"] = int(self._max_tokens)
 
         resp = requests.post(endpoint, json=payload, headers=headers, timeout=req_timeout)
+
+        # If server rejects reasoning_effort (e.g. non-thinking model or older runtime), strip it first while keeping image
+        if resp.status_code in (400, 422) and "reasoning_effort" in payload:
+            payload.pop("reasoning_effort", None)
+            resp = requests.post(endpoint, json=payload, headers=headers, timeout=req_timeout)
 
         # Only retry without image when server specifically rejects the multimodal request shape
         if resp.status_code in (400, 422) and send_img_b64 is not None:
@@ -967,6 +1081,11 @@ class LLMModel:
                 if fallback_model:
                     logger.warning(f"[chat] Ollama model '{mod}' not found locally; retrying with '{fallback_model}'")
                     payload["model"] = fallback_model
+                    fb_effort = resolve_reasoning_effort(fallback_model)
+                    if fb_effort is not None:
+                        payload["reasoning_effort"] = fb_effort
+                    else:
+                        payload.pop("reasoning_effort", None)
                     keep_img = bool(
                         img_b64 and (
                             self._vision_mode == "vision"
@@ -986,13 +1105,37 @@ class LLMModel:
         content = msg.get("content")
         if isinstance(content, list):
             content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
-        if not isinstance(content, str) or not content.strip():
+        content = _strip_think_tags(content) if isinstance(content, str) else ""
+
+        # Safety net: if thinking consumed max_tokens leaving empty content, retry once directly without thinking
+        if (
+            not content
+            and (msg.get("reasoning") or msg.get("thinking") or msg.get("reasoning_content"))
+            and payload.get("reasoning_effort") != "none"
+        ):
+            logger.warning(
+                f"[chat] {prov} ({used_model}) returned empty content with reasoning output; "
+                "retrying once with reasoning_effort='none'."
+            )
+            payload["reasoning_effort"] = "none"
+            if payload.get("max_tokens", 0) and payload["max_tokens"] < 512:
+                payload.pop("max_tokens", None)
+            retry_resp = requests.post(endpoint, json=payload, headers=headers, timeout=req_timeout)
+            if retry_resp.ok:
+                retry_msg = (retry_resp.json().get("choices") or [{}])[0].get("message") or {}
+                retry_c = retry_msg.get("content")
+                if isinstance(retry_c, list):
+                    retry_c = "".join(part.get("text", "") for part in retry_c if isinstance(part, dict))
+                content = _strip_think_tags(retry_c) if isinstance(retry_c, str) else ""
+
+        if not content:
             raise RuntimeError(f"Empty or null message content from {prov} ({used_model})")
         return content.strip(), used_model
 
     def _chat_gemini(self, message: str, img_b64: str = None, model_name: str = None,
                      api_key: str = None, timeout=None,
-                     temperature_override: float = None, system_prompt_override: str = None) -> str:
+                     temperature_override: float = None, system_prompt_override: str = None,
+                     thinking_override: str = None) -> str:
         key = api_key if api_key is not None else self._api_key
         if not key:
             raise RuntimeError("GEMINI_API_KEY is not configured. Add it in Admin -> AI Config or .env")
@@ -1008,6 +1151,7 @@ class LLMModel:
         }
         system_prompt = system_prompt_override if system_prompt_override is not None else self._build_system_prompt()
         eff_temp = float(temperature_override) if temperature_override is not None else float(self._temperature)
+        eff_thinking = str((thinking_override if thinking_override is not None else self._thinking_mode) or "auto").strip().lower()
 
         parts = [{"text": message}]
         if img_b64:
@@ -1018,20 +1162,36 @@ class LLMModel:
                 }
             })
 
+        gen_cfg = {"temperature": eff_temp}
+        if self._max_tokens > 0:
+            gen_cfg["maxOutputTokens"] = int(self._max_tokens)
+        mod_low = mod.lower()
+        if ("gemini-2.5" in mod_low or "gemini-3" in mod_low) and eff_thinking in ("off", "low", "medium", "high"):
+            budget_map = {"off": 0, "low": 256, "medium": 1024, "high": 2048}
+            gen_cfg["thinkingConfig"] = {"thinkingBudget": budget_map[eff_thinking]}
+
         payload = {
             "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {"temperature": eff_temp},
+            "generationConfig": gen_cfg,
         }
         if system_prompt:
             payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
 
-        resp = requests.post(url, json=payload, headers=headers, timeout=timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC))
+        req_to = timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC)
+        resp = requests.post(url, json=payload, headers=headers, timeout=req_to)
+        if resp.status_code == 400 and "thinkingConfig" in gen_cfg:
+            gen_cfg.pop("thinkingConfig", None)
+            resp = requests.post(url, json=payload, headers=headers, timeout=req_to)
         resp.raise_for_status()
         data = resp.json()
         candidates = data.get("candidates", [])
         if not candidates:
             raise RuntimeError(f"Gemini returned no candidates: {data}")
-        text_parts = [p.get("text", "") for p in candidates[0].get("content", {}).get("parts", [])]
+        text_parts = [
+            p.get("text", "")
+            for p in candidates[0].get("content", {}).get("parts", [])
+            if not p.get("thought")
+        ]
         return "".join(text_parts).strip()
 
     def _chat_anthropic(self, message: str, img_b64: str = None, model_name: str = None,
@@ -1065,7 +1225,7 @@ class LLMModel:
         same_prov_model = self._llm if self._provider == "anthropic" else ""
         payload = {
             "model": model_name or same_prov_model or "claude-3-5-haiku-latest",
-            "max_tokens": 600,
+            "max_tokens": max(int(self._max_tokens), 64) if self._max_tokens > 0 else 600,
             "temperature": eff_temp,
             "messages": [{"role": "user", "content": content}],
         }
@@ -1121,6 +1281,8 @@ class LLMModel:
         llm: str = None,
         temperature: float = None,
         max_words: int = None,
+        thinking_mode: str = None,
+        max_tokens: int = None,
         provider: str = None,
         base_url: str = None,
         api_key: str = None,
@@ -1140,6 +1302,8 @@ class LLMModel:
             "additional": additional if additional is not None else self._additional,
             "model": llm if llm is not None else self._llm,
             "temperature": float(temperature) if temperature is not None else float(self._temperature),
+            "thinking_mode": (thinking_mode if thinking_mode is not None else self._thinking_mode).lower(),
+            "max_tokens": int(max_tokens) if max_tokens is not None else int(self._max_tokens),
             "provider": (provider or self._provider).lower(),
             "base_url": base_url if base_url is not None else self._base_url,
             "fallback_provider": (fallback_provider if fallback_provider is not None else self._fallback_provider).lower(),
@@ -1211,6 +1375,8 @@ class LLMModel:
             "additional": self._additional,
             "temperature": self._temperature,
             "max_words": self._max_words,
+            "thinking_mode": self._thinking_mode,
+            "max_tokens": self._max_tokens,
             "vision_mode": self._vision_mode,
             "ollama_vision_model": settings.get("ai", {}).get("ollama_vision_model", "moondream"),
         }

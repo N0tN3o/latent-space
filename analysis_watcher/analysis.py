@@ -495,11 +495,62 @@ def _redact_error_secrets(text: str) -> str:
     return safe
 
 
+_THINKING_MODEL_HINTS = (
+    "gemma4", "qwen3", "deepseek-r1", "qwq", "gpt-oss", "magistral",
+    "cogito", "openthinker", "phi4-reasoning", "exaone-deep", "marco-o1",
+)
+_THINK_TAG_RE = re.compile(r"<(?:think|thought)>.*?</(?:think|thought)>", re.DOTALL | re.IGNORECASE)
+_GEMMA4_PX_PER_SOFT_TOKEN = 48 * 48  # 2304 px/token -> 280 tokens ~= 645K px
+
+
+def _is_thinking_model_name(model_name: str) -> bool:
+    low = (model_name or "").strip().lower()
+    if not low:
+        return False
+    return any(h in low for h in _THINKING_MODEL_HINTS)
+
+
+def _strip_think_tags(text: str) -> str:
+    if not text:
+        return ""
+    return _THINK_TAG_RE.sub("", str(text)).strip()
+
+
+def _encode_image_for_vision(filename: str, token_budget: int = 280) -> str:
+    """
+    Encode drawing PNG to base64, optionally downscaling (aspect-ratio preserved)
+    to match the configured Gemma 4 soft-token pixel budget (token_budget * 2304 px).
+    Never upscales, and falls back to raw file bytes if image decoding fails.
+    """
+    raw_bytes = Path(filename).read_bytes()
+    try:
+        budget = int(token_budget or 0)
+    except (TypeError, ValueError):
+        budget = 0
+    if budget > 0:
+        max_pixels = budget * _GEMMA4_PX_PER_SOFT_TOKEN
+        try:
+            img = cv2.imread(str(filename), cv2.IMREAD_UNCHANGED)
+            if img is not None and img.size > 0:
+                h, w = img.shape[:2]
+                if h * w > max_pixels:
+                    scale = (max_pixels / float(h * w)) ** 0.5
+                    new_w = max(32, int(round(w * scale)))
+                    new_h = max(32, int(round(h * scale)))
+                    resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                    ok, buf = cv2.imencode(".png", resized)
+                    if ok:
+                        return base64.b64encode(buf.tobytes()).decode("utf-8")
+        except Exception:
+            pass
+    return base64.b64encode(raw_bytes).decode("utf-8")
+
+
 def run_ollama_vision_analysis(filename: str):
     """
-    100% Self-Hosted Local Ollama Vision Analyzer (e.g. moondream, llava, llama3.2-vision).
+    100% Self-Hosted Local Ollama Vision Analyzer (e.g. moondream, llava, gemma3, gemma4).
     Uses separate configurable pareidolia label & visual description prompts, Ollama options
-    (temperature, num_predict, timeout), and clean badge label filtering.
+    (temperature, num_predict, timeout, thinking mode, vision token budget), and clean badge filtering.
     """
     global _LAST_OLLAMA_VISION_ERROR
     _LAST_OLLAMA_VISION_ERROR = ""
@@ -517,31 +568,73 @@ def run_ollama_vision_analysis(filename: str):
         desc_prompt = (vision_cfg.get("ollama_description_prompt") or "").strip()
         include_desc = vision_cfg.get("ollama_include_description", True) is not False
         temperature = float(vision_cfg.get("ollama_temperature", 0.4))
-        max_tokens = int(vision_cfg.get("ollama_max_tokens", 96))
+        max_tokens = int(vision_cfg.get("ollama_max_tokens", 280))
         timeout_sec = int(vision_cfg.get("ollama_timeout", 60))
+        thinking_mode = str(vision_cfg.get("ollama_thinking") or "auto").strip().lower()
+        token_budget = int(vision_cfg.get("vision_token_budget", 280) or 280)
         clean_label = vision_cfg.get("clean_label", True) is not False
 
-        img_b64 = base64.b64encode(Path(filename).read_bytes()).decode("utf-8")
+        img_b64 = _encode_image_for_vision(filename, token_budget=token_budget)
+
+        is_thinking_model = _is_thinking_model_name(vision_model)
+        if thinking_mode in ("auto", "off"):
+            # Fast exhibition perception: disable thinking on thinking-capable VLMs unless explicitly requested,
+            # and omit 'think' completely for non-thinking models (Ollama returns 400 if unsupported).
+            think_arg = False if is_thinking_model else None
+        elif thinking_mode in ("low", "medium", "high"):
+            think_arg = thinking_mode
+        else:
+            think_arg = False if is_thinking_model else None
+
+        thinking_active = think_arg in ("low", "medium", "high", True)
 
         def _call_ollama_vision(prompt_text: str, num_predict: int) -> str:
-            resp = requests.post(
-                f"{host}/api/generate",
-                json={
-                    "model": vision_model,
-                    "prompt": prompt_text,
-                    "images": [img_b64],
-                    "stream": False,
-                    "options": {
-                        "temperature": temperature,
-                        "num_predict": num_predict,
-                    },
+            payload = {
+                "model": vision_model,
+                "prompt": prompt_text,
+                "images": [img_b64],
+                "stream": False,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": num_predict,
                 },
-                timeout=timeout_sec,
-            )
-            resp.raise_for_status()
-            return (resp.json().get("response") or "").strip()
+            }
+            if think_arg is not None:
+                payload["think"] = think_arg
 
-        raw_label_text = _call_ollama_vision(label_prompt, min(max_tokens, 48))
+            resp = requests.post(f"{host}/api/generate", json=payload, timeout=timeout_sec)
+
+            # Graceful fallback if a model only supports boolean think or does not support thinking at all
+            if resp.status_code == 400 and "think" in payload:
+                if isinstance(payload["think"], str):
+                    payload["think"] = True
+                    resp = requests.post(f"{host}/api/generate", json=payload, timeout=timeout_sec)
+                if resp.status_code == 400 and "think" in payload:
+                    payload.pop("think", None)
+                    resp = requests.post(f"{host}/api/generate", json=payload, timeout=timeout_sec)
+
+            resp.raise_for_status()
+            data = resp.json()
+            text_out = _strip_think_tags(data.get("response") or "")
+
+            # Safety net: if thinking consumed the entire num_predict budget leaving empty response, retry with think=False
+            if not text_out and data.get("thinking") and payload.get("think") is not False:
+                print(
+                    f"[analysis] Note: Ollama vision '{vision_model}' exhausted token budget ({num_predict}) "
+                    "during thinking; retrying directly with think=False."
+                )
+                payload["think"] = False
+                retry_resp = requests.post(f"{host}/api/generate", json=payload, timeout=timeout_sec)
+                if retry_resp.ok:
+                    text_out = _strip_think_tags(retry_resp.json().get("response") or "")
+
+            return text_out
+
+        # Do not clamp Pass 1 to 48/64 tokens when thinking is active or thinking tokens will starve the badge output
+        pass1_tokens = max(max_tokens, 280) if thinking_active else min(max_tokens, 64)
+        pass2_tokens = max(max_tokens, 280) if thinking_active else max_tokens
+
+        raw_label_text = _call_ollama_vision(label_prompt, pass1_tokens)
         if not raw_label_text:
             _LAST_OLLAMA_VISION_ERROR = f"Ollama vision model '{vision_model}' returned empty response"
             return None
@@ -555,7 +648,7 @@ def run_ollama_vision_analysis(filename: str):
         visual_desc = ""
         if include_desc and desc_prompt:
             try:
-                visual_desc = _call_ollama_vision(desc_prompt, max_tokens)
+                visual_desc = _call_ollama_vision(desc_prompt, pass2_tokens)
             except Exception as desc_err:
                 print(f"[analysis] Note: Ollama vision description pass skipped ({_redact_error_secrets(desc_err)}).")
 
@@ -577,6 +670,8 @@ def run_ollama_vision_analysis(filename: str):
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "timeout": timeout_sec,
+                "thinking": thinking_mode,
+                "vision_token_budget": token_budget,
                 "clean_label": clean_label,
                 "include_description": include_desc,
             },
@@ -758,8 +853,10 @@ def _is_vision_model_name(model_name: str) -> bool:
         return False
     vision_hints = (
         "vision", "llava", "moondream", "bakllava", "minicpm-v", "qwen2-vl", "qwen2.5-vl",
-        "qwen2.5vl", "pixtral", "internvl", "granite3.2-vision", "gemma3", "gpt-4o",
-        "gpt-4-vision", "gpt-4.1", "gpt-5", "claude-3", "claude-4", "gemini",
+        "qwen2.5vl", "qwen3-vl", "qwen3vl", "qwen3.5", "pixtral", "internvl",
+        "granite3.2-vision", "mistral-small3.1", "mistral-small3.2", "gemma3", "gemma4",
+        "llama4", "llama-4", "gpt-4o", "gpt-4-vision", "gpt-4.1", "gpt-5",
+        "claude-3", "claude-4", "gemini",
     )
     return any(h in low for h in vision_hints)
 

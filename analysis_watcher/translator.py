@@ -458,19 +458,46 @@ def _call_ollama_translate(
         "messages": messages,
         "temperature": float(tcfg["ollama_temperature"]),
     }
+    from chat import _is_thinking_model_name, _strip_think_tags
+    if _is_thinking_model_name(model_name):
+        payload["reasoning_effort"] = "none"
+
     resp = requests.post(
         endpoint,
         json=payload,
         headers={"Content-Type": "application/json"},
         timeout=timeout,
     )
+    if resp.status_code in (400, 422) and "reasoning_effort" in payload:
+        payload.pop("reasoning_effort", None)
+        resp = requests.post(
+            endpoint,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=timeout,
+        )
     resp.raise_for_status()
     data = resp.json()
     msg = (data.get("choices") or [{}])[0].get("message") or {}
     content = msg.get("content")
     if isinstance(content, list):
         content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
-    if not isinstance(content, str) or not content.strip():
+    content = _strip_think_tags(content) if isinstance(content, str) else ""
+    if not content and (msg.get("reasoning") or msg.get("thinking") or msg.get("reasoning_content")):
+        payload["reasoning_effort"] = "none"
+        retry_resp = requests.post(
+            endpoint,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=timeout,
+        )
+        if retry_resp.ok:
+            retry_msg = (retry_resp.json().get("choices") or [{}])[0].get("message") or {}
+            retry_c = retry_msg.get("content")
+            if isinstance(retry_c, list):
+                retry_c = "".join(part.get("text", "") for part in retry_c if isinstance(part, dict))
+            content = _strip_think_tags(retry_c) if isinstance(retry_c, str) else ""
+    if not content:
         raise RuntimeError(f"Empty translation response from Ollama ({model_name})")
     return _clean_translated_output(content, is_poem=(kind == "poem"))
 
@@ -482,8 +509,9 @@ def _chat_with_overrides(
     cancel_event=None,
     temperature_override: float = None,
     system_prompt_override: str = None,
+    thinking_override: str = None,
 ) -> str:
-    """Call LLMModel.chat with optional temperature/system overrides, with TypeError fallback for simple mocks."""
+    """Call LLMModel.chat with optional temperature/system/thinking overrides, with TypeError fallback for simple mocks."""
     kwargs = {"message": message, "allow_failover": allow_failover}
     if cancel_event is not None:
         kwargs["cancel_event"] = cancel_event
@@ -491,6 +519,8 @@ def _chat_with_overrides(
         kwargs["temperature_override"] = temperature_override
     if system_prompt_override is not None:
         kwargs["system_prompt_override"] = system_prompt_override
+    if thinking_override is not None:
+        kwargs["thinking_override"] = thinking_override
     try:
         return model.chat(**kwargs)
     except TypeError:
@@ -578,6 +608,7 @@ def _translate_native_llm(
             cancel_event=cancel_event,
             temperature_override=analysis_tr_temp,
             system_prompt_override=a_system,
+            thinking_override="off",
         ),
         is_poem=False,
     )
@@ -621,6 +652,7 @@ def _translate_native_llm(
             cancel_event=cancel_event,
             temperature_override=poem_tr_temp,
             system_prompt_override=p_system,
+            thinking_override="off",
         ),
         is_poem=True,
     )
@@ -639,6 +671,7 @@ def _translate_native_llm(
             cancel_event=cancel_event,
             temperature_override=0.1,
             system_prompt_override=arch_system,
+            thinking_override="off",
         )
 
     tr_archetype = _translate_archetype_parts(archetype, target_lang, _llm_part_translate)
