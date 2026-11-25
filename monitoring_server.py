@@ -14,7 +14,7 @@ Serves:
 """
 
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from email.parser import BytesParser
 from email.policy import default as email_default_policy
 import hmac
@@ -26,12 +26,16 @@ import mimetypes
 import os
 from pathlib import Path
 import queue
+import re
 import secrets
+import shutil
 import struct
+import subprocess
 import sys
 import threading
 import time
 from urllib.parse import parse_qs, unquote, urlparse
+import urllib.request
 
 try:
     import psutil
@@ -135,6 +139,10 @@ _watcher_lock_fd = None
 _ollama_cache = {"status": "unknown", "ts": 0.0}
 _ollama_cache_lock = threading.Lock()
 _ollama_probe_lock = threading.Lock()
+_ollama_runtime_cache = {"data": None, "ts": 0.0, "host": ""}
+_ollama_runtime_lock = threading.Lock()
+_gpu_stats_cache = {"data": None, "ts": 0.0}
+_gpu_stats_lock = threading.Lock()
 _lan_ip_cache = {"ip": "localhost", "ts": 0.0}
 _lan_ip_lock = threading.Lock()
 _prints_meta_cache = {}  # meta_path_str -> (mtime_ns, size, meta_dict)
@@ -541,6 +549,215 @@ def get_device_temp() -> str:
     return "N/A"
 
 
+def get_gpu_stats(force: bool = False) -> dict:
+    """Query NVIDIA GPU utilization, VRAM usage, and temperature via nvidia-smi (3s cached)."""
+    now = time.monotonic()
+    with _gpu_stats_lock:
+        if not force and _gpu_stats_cache["data"] is not None and (now - _gpu_stats_cache["ts"]) < 3.0:
+            return dict(_gpu_stats_cache["data"])
+
+    result = {"available": False}
+    nvidia_smi = shutil.which("nvidia-smi")
+    if nvidia_smi:
+        try:
+            run_kwargs = {
+                "capture_output": True,
+                "text": True,
+                "timeout": 1.5,
+            }
+            if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+                run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+            proc = subprocess.run(
+                [
+                    nvidia_smi,
+                    "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+                    "--format=csv,noheader,nounits",
+                ],
+                **run_kwargs,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                first_line = proc.stdout.strip().splitlines()[0]
+                parts = [p.strip() for p in first_line.split(",")]
+                if len(parts) >= 5:
+                    name = parts[0]
+                    util = float(parts[1]) if parts[1] not in ("", "N/A", "[N/A]") else 0.0
+                    used_mb = float(parts[2])
+                    total_mb = float(parts[3])
+                    temp_c = float(parts[4]) if parts[4] not in ("", "N/A", "[N/A]") else None
+                    vram_pct = round((used_mb / total_mb) * 100.0, 1) if total_mb > 0 else 0.0
+                    result = {
+                        "available": True,
+                        "name": name,
+                        "utilization_percent": round(util, 1),
+                        "vram_used_mb": int(round(used_mb)),
+                        "vram_total_mb": int(round(total_mb)),
+                        "vram_used_gb": round(used_mb / 1024.0, 2),
+                        "vram_total_gb": round(total_mb / 1024.0, 2),
+                        "vram_percent": vram_pct,
+                        "temperature_c": round(temp_c, 1) if temp_c is not None else None,
+                    }
+        except Exception:
+            result = {"available": False}
+
+    with _gpu_stats_lock:
+        _gpu_stats_cache["data"] = dict(result)
+        _gpu_stats_cache["ts"] = time.monotonic()
+    return result
+
+
+_ISO_FRAC_RE = re.compile(r"(\.\d{6})\d+")
+
+
+def _parse_iso_expires_in_sec(expires_raw: str):
+    """Parse an Ollama RFC3339/ISO8601 expires_at timestamp into seconds remaining (Python 3.10 safe)."""
+    if not expires_raw or not isinstance(expires_raw, str):
+        return None
+    s = expires_raw.strip()
+    if not s or s.startswith("0001-"):
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        s = _ISO_FRAC_RE.sub(r"\1", s)
+        dt = datetime.fromisoformat(s)
+        if dt.year >= 2200:
+            return None  # keep_alive=-1 (pinned indefinitely)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        now_utc = datetime.now(timezone.utc)
+        return max(0, int((dt - now_utc).total_seconds()))
+    except Exception:
+        return None
+
+
+def get_ollama_runtime_status(settings: dict = None, force: bool = False) -> dict:
+    """Query Ollama's GET /api/ps endpoint (3s cached) for live loaded models, VRAM/RAM split, and ctx."""
+    cfg = settings if isinstance(settings, dict) else load_settings()
+    host = get_configured_ollama_host(cfg).rstrip("/")
+    now = time.monotonic()
+    with _ollama_runtime_lock:
+        if (
+            not force
+            and _ollama_runtime_cache["data"] is not None
+            and _ollama_runtime_cache["host"] == host
+            and (now - _ollama_runtime_cache["ts"]) < 3.0
+        ):
+            return dict(_ollama_runtime_cache["data"])
+
+    result = {
+        "running": False,
+        "host": host,
+        "loaded_models": [],
+        "total_size_gb": 0.0,
+        "total_vram_gb": 0.0,
+        "total_ram_gb": 0.0,
+    }
+    if host.startswith(("http://", "https://")):
+        try:
+            req = urllib.request.Request(f"{host}/api/ps", method="GET")
+            with urllib.request.urlopen(req, timeout=0.8) as resp:
+                if resp.status == 200:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    raw_models = payload.get("models") if isinstance(payload, dict) else []
+                    models_out = []
+                    total_bytes = 0
+                    total_vram_bytes = 0
+                    for m in (raw_models or []):
+                        if not isinstance(m, dict):
+                            continue
+                        name = str(m.get("name") or m.get("model") or "").strip()
+                        if not name:
+                            continue
+                        size_b = max(0, int(m.get("size") or 0))
+                        vram_b = max(0, int(m.get("size_vram") or 0))
+                        ram_b = max(0, size_b - vram_b)
+                        gpu_pct = int(round((vram_b / size_b) * 100.0)) if size_b > 0 else 0
+                        gpu_pct = max(0, min(100, gpu_pct))
+                        cpu_pct = max(0, 100 - gpu_pct) if size_b > 0 else 0
+                        details = m.get("details") if isinstance(m.get("details"), dict) else {}
+                        exp_raw = str(m.get("expires_at") or "")
+                        total_bytes += size_b
+                        total_vram_bytes += vram_b
+                        models_out.append({
+                            "name": name,
+                            "size_bytes": size_b,
+                            "size_vram_bytes": vram_b,
+                            "size_gb": round(size_b / (1024 ** 3), 2),
+                            "vram_gb": round(vram_b / (1024 ** 3), 2),
+                            "ram_gb": round(ram_b / (1024 ** 3), 2),
+                            "gpu_percent": gpu_pct,
+                            "cpu_percent": cpu_pct,
+                            "context_length": int(m.get("context_length") or 0),
+                            "expires_at": exp_raw,
+                            "expires_in_sec": _parse_iso_expires_in_sec(exp_raw),
+                            "quantization": str(details.get("quantization_level") or ""),
+                            "parameter_size": str(details.get("parameter_size") or ""),
+                        })
+                    total_ram_bytes = max(0, total_bytes - total_vram_bytes)
+                    result = {
+                        "running": True,
+                        "host": host,
+                        "loaded_models": models_out,
+                        "total_size_gb": round(total_bytes / (1024 ** 3), 2),
+                        "total_vram_gb": round(total_vram_bytes / (1024 ** 3), 2),
+                        "total_ram_gb": round(total_ram_bytes / (1024 ** 3), 2),
+                    }
+        except Exception:
+            pass
+
+    with _ollama_runtime_lock:
+        _ollama_runtime_cache["data"] = dict(result)
+        _ollama_runtime_cache["host"] = host
+        _ollama_runtime_cache["ts"] = time.monotonic()
+    return result
+
+
+def unload_ollama_model(model_name: str, settings: dict = None) -> dict:
+    """Unload a single loaded Ollama model from VRAM/RAM (keep_alive: 0) without stopping Ollama."""
+    clean_name = str(model_name or "").strip()
+    if not clean_name or not config_manager._OLLAMA_MODEL_NAME_RE.match(clean_name):
+        raise ValueError("Invalid Ollama model name")
+    cfg = settings if isinstance(settings, dict) else load_settings()
+    host = get_configured_ollama_host(cfg).rstrip("/")
+    if not host.startswith(("http://", "https://")):
+        raise RuntimeError("Invalid Ollama host URL")
+    body = json.dumps({"model": clean_name, "keep_alive": 0}).encode("utf-8")
+    req = urllib.request.Request(
+        f"{host}/api/generate",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=6.0) as resp:
+        resp.read()
+    with _ollama_runtime_lock:
+        _ollama_runtime_cache["data"] = None
+        _ollama_runtime_cache["ts"] = 0.0
+    return {"status": "success", "model": clean_name, "message": f"Unloaded '{clean_name}' from Ollama memory"}
+
+
+def _read_last_stage_timings() -> dict:
+    """Read last completed run stage timings from shared_output/content.json if present."""
+    content_file = config_manager.SHARED_DIR / "content.json"
+    if not content_file.exists():
+        return {}
+    try:
+        data = json.loads(content_file.read_text(encoding="utf-8"))
+        timings = data.get("stageTimings")
+        if isinstance(timings, dict) and timings:
+            out = dict(timings)
+            if data.get("runId"):
+                out["run_id"] = data["runId"]
+            if data.get("analysisProvider"):
+                out["analysis_provider"] = data["analysisProvider"]
+            if data.get("translationProvider"):
+                out["translation_provider"] = data["translationProvider"]
+            return out
+    except Exception:
+        pass
+    return {}
+
+
 def _get_printed_set() -> set:
     print_log = config_manager.DOCS_DIR / "print_history.json"
     if not print_log.exists():
@@ -694,6 +911,12 @@ def api_get_status() -> dict:
     port = get_server_port(settings)
     lan_ip = _get_lan_ip()
     sys_stats = get_system_stats()
+    gpu_stats = get_gpu_stats()
+    if sys_stats.get("temperature") == "N/A" and gpu_stats.get("available") and gpu_stats.get("temperature_c") is not None:
+        sys_stats["temperature"] = f"{gpu_stats['temperature_c']:.0f}°C (GPU)"
+    ollama_runtime = get_ollama_runtime_status(settings)
+    if ollama_runtime.get("running") and services.get("ollama_server") != "running":
+        services["ollama_server"] = "running"
     with _pipeline_lock:
         pipe_snapshot = dict(_pipeline_state)
         pipe_snapshot["queue_length"] = _pipeline_queue.qsize()
@@ -715,6 +938,9 @@ def api_get_status() -> dict:
         "services": services,
         "pipeline": pipe_snapshot,
         "system": sys_stats,
+        "gpu": gpu_stats,
+        "ollama_runtime": ollama_runtime,
+        "last_timings": _read_last_stage_timings(),
         "ai_summary": {
             "vision_mode": settings.get("ai", {}).get("vision_mode", "auto"),
             "ollama_vision_model": settings.get("ai", {}).get("ollama_vision_model", "moondream"),
@@ -1790,7 +2016,21 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             with _ollama_cache_lock:
                 _ollama_cache["status"] = "stopped"
                 _ollama_cache["ts"] = time.monotonic()
+            with _ollama_runtime_lock:
+                _ollama_runtime_cache["data"] = None
+                _ollama_runtime_cache["ts"] = 0.0
             return self._send_json({"status": "success", "message": "Ollama models unloaded and server stopped"})
+
+        if path == "/api/ollama/unload":
+            data = self._read_json_body()
+            model_name = data.get("model", "")
+            try:
+                res = unload_ollama_model(model_name)
+                return self._send_json(res)
+            except ValueError as ve:
+                return self._send_json({"status": "error", "error": str(ve)}, 400)
+            except Exception as e:
+                return self._send_json({"status": "error", "error": str(e)}, 500)
 
         if path == "/api/files/print":
             data = self._read_json_body()

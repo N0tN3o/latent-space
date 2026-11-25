@@ -927,6 +927,7 @@ def run_analysis_pipeline(
     heatmap_run = config_manager.SHARED_DIR / f"heatmap_{rid}.png"
     poem_audio = ""
     wrote_live_content = False
+    pipeline_t0 = time.monotonic()
 
     def _check_cancelled():
         if cancel_event is not None and cancel_event.is_set():
@@ -996,6 +997,7 @@ def run_analysis_pipeline(
         _check_cancelled()
 
         # 4. Psychoanalytical Interpretation
+        analysis_t0 = time.monotonic()
         main_logger.info(f"[{rid}] Starting psychoanalysis via {analysis_model._provider} ({analysis_model._llm})")
         analysis_kwargs = {"message": prompt_context, "image_path": str(image_path), "allow_failover": True}
         if cancel_event is not None:
@@ -1021,6 +1023,7 @@ def run_analysis_pipeline(
                     f"{wl_info['original_words']} -> {wl_info['final_words']} words "
                     f"(max {wl_info['max_words']} ±10%, hard cap {wl_info['hard_max_words']})"
                 )
+        analysis_elapsed = round(time.monotonic() - analysis_t0, 2)
         main_logger.info(f"[{rid}] Psychoanalysis complete via {analysis_model._last_used_provider} ({analysis_model._last_used_model})")
         response_logger.info(
             json.dumps({
@@ -1053,11 +1056,13 @@ def run_analysis_pipeline(
 
         try:
             # 5. Poem Generation (runs on GPU while CPU NMT translates analysis in parallel)
+            poem_t0 = time.monotonic()
             main_logger.info(f"[{rid}] Starting poem generation via {poem_model._provider} ({poem_model._llm})")
             poem_kwargs = {"message": analysis_text, "allow_failover": True}
             if cancel_event is not None:
                 poem_kwargs["cancel_event"] = cancel_event
             poem_text = _clean_translated_output(poem_model.chat(**poem_kwargs), is_poem=True)
+            poem_elapsed = round(time.monotonic() - poem_t0, 2)
             main_logger.info(f"[{rid}] Poem complete via {poem_model._last_used_provider} ({poem_model._last_used_model})")
             response_logger.info(
                 json.dumps({
@@ -1197,6 +1202,13 @@ def run_analysis_pipeline(
             "pdfRendering": True,
             "analysisProvider": f"{analysis_model._last_used_provider}:{analysis_model._last_used_model}",
             "poemProvider": f"{poem_model._last_used_provider}:{poem_model._last_used_model}",
+            "stageTimings": {
+                "vision_sec": round(float(perception.get("elapsed_sec") or 0.0), 2),
+                "analysis_sec": analysis_elapsed,
+                "poem_sec": poem_elapsed,
+                "translation_sec": translation_elapsed,
+                "total_sec": round(time.monotonic() - pipeline_t0, 2),
+            },
             "attributions": latest_settings.get("attributions", {}),
             "timestamp": datetime.now().isoformat(),
         }
@@ -1230,6 +1242,8 @@ def run_analysis_pipeline(
         latest_settings = load_settings()
         website_data["attributions"] = latest_settings.get("attributions", {})
         website_data["pdfRendering"] = False
+        if isinstance(website_data.get("stageTimings"), dict):
+            website_data["stageTimings"]["total_sec"] = round(time.monotonic() - pipeline_t0, 2)
 
         if pdf_file:
             main_logger.info(f"[{rid}] Saved print PDF: {pdf_file}")
