@@ -260,6 +260,8 @@ DEFAULT_SETTINGS = {
     "server": {
         "host": "0.0.0.0",
         "port": 8000,
+        "https_enabled": True,
+        "https_port": 8443,
         "remote_server_url": "",
     },
 }
@@ -961,6 +963,19 @@ def validate_server_data(data: dict) -> dict:
         if port_num < 1 or port_num > 65535:
             raise ValueError("server.port must be between 1 and 65535")
         cleaned["port"] = port_num
+    if "https_enabled" in cleaned:
+        cleaned["https_enabled"] = bool(cleaned["https_enabled"])
+    if "https_port" in cleaned:
+        raw_hport = cleaned["https_port"]
+        if isinstance(raw_hport, bool):
+            raise ValueError("server.https_port must be an integer")
+        try:
+            hport_num = int(raw_hport)
+        except (TypeError, ValueError) as e:
+            raise ValueError("server.https_port must be an integer") from e
+        if hport_num < 0 or hport_num > 65535:
+            raise ValueError("server.https_port must be between 0 and 65535")
+        cleaned["https_port"] = hport_num
     if "remote_server_url" in cleaned:
         remote = validate_safe_url(cleaned["remote_server_url"], "server.remote_server_url", allow_relative=False)
         remote = remote.rstrip("/")
@@ -1027,6 +1042,248 @@ def get_server_host(settings: dict = None) -> str:
     cfg = settings or load_settings()
     raw_cfg_host = (cfg.get("server", {}).get("host") or "").strip()
     return raw_cfg_host or "0.0.0.0"
+
+
+def get_https_enabled(settings: dict = None) -> bool:
+    """Resolve whether the companion offline LAN HTTPS listener should start (default True)."""
+    env = load_env_vars()
+    raw = (env.get("HTTPS_ENABLED") or env.get("LATENT_SPACE_HTTPS") or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    cfg = settings or load_settings()
+    return bool(cfg.get("server", {}).get("https_enabled", True))
+
+
+def get_https_port(settings: dict = None) -> int:
+    """Resolve companion HTTPS port from env/.env HTTPS_PORT, then settings.server.https_port (default 8443; 0 disables)."""
+    env = load_env_vars()
+    raw_env_port = (env.get("HTTPS_PORT") or "").strip()
+    if raw_env_port:
+        try:
+            p = int(raw_env_port)
+            if 0 <= p <= 65535:
+                return p
+        except (TypeError, ValueError):
+            pass
+    cfg = settings or load_settings()
+    raw_cfg_port = cfg.get("server", {}).get("https_port", 8443)
+    try:
+        p = int(raw_cfg_port)
+        if 0 <= p <= 65535:
+            return p
+    except (TypeError, ValueError):
+        pass
+    return 8443
+
+
+def get_all_local_ipv4s() -> list:
+    """Collect 127.0.0.1 plus all detected local LAN IPv4 addresses for TLS certificate SAN entries."""
+    ips = {"127.0.0.1"}
+    primary = get_lan_ip()
+    if primary and primary != "localhost":
+        ips.add(primary)
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            addr = info[4][0]
+            if addr and not addr.startswith("169.254."):
+                ips.add(addr)
+    except Exception:
+        pass
+    return sorted(ips)
+
+
+def _find_openssl_binary() -> str:
+    """Locate openssl executable, including standard Git-for-Windows paths if not on PATH."""
+    found = shutil.which("openssl")
+    if found:
+        return found
+    if platform.system() == "Windows":
+        for candidate in (
+            r"C:\Program Files\Git\mingw64\bin\openssl.exe",
+            r"C:\Program Files\Git\usr\bin\openssl.exe",
+            r"C:\Program Files (x86)\Git\mingw64\bin\openssl.exe",
+            r"C:\Program Files\OpenSSL-Win64\bin\openssl.exe",
+        ):
+            if Path(candidate).is_file():
+                return candidate
+    return ""
+
+
+def _chmod_private(path: Path):
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
+
+
+def ensure_lan_tls_cert(cert_dir: Path = None, extra_ips: list = None) -> tuple:
+    """
+    Ensure a valid local CA (`ca.crt`) and SAN-equipped server certificate (`server.crt`, `server.key`)
+    exist for offline LAN HTTPS (phone/tablet camera access on iOS Safari & Android Chrome).
+    Automatically regenerates the leaf cert if the host LAN IP changes or approaches expiry.
+    Returns (cert_path, key_path, ca_cert_path) or (None, None, None) if TLS tooling is unavailable.
+    """
+    target_dir = Path(cert_dir) if cert_dir else (CONFIG_DIR / "certs")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    ca_key = target_dir / "ca.key"
+    ca_crt = target_dir / "ca.crt"
+    srv_key = target_dir / "server.key"
+    srv_crt = target_dir / "server.crt"
+    meta_file = target_dir / "cert_meta.json"
+
+    ips = set(get_all_local_ipv4s())
+    for ip in (extra_ips or []):
+        ip_s = str(ip or "").strip()
+        if ip_s and re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", ip_s):
+            ips.add(ip_s)
+    sorted_ips = sorted(ips)
+
+    raw_host = ""
+    try:
+        raw_host = socket.gethostname().strip()
+    except Exception:
+        raw_host = ""
+    dns_names = ["localhost"]
+    if raw_host and re.match(r"^[A-Za-z0-9._-]+$", raw_host) and raw_host.lower() != "localhost":
+        dns_names.append(raw_host)
+        if "." not in raw_host:
+            dns_names.append(f"{raw_host}.local")
+
+    # Fast reuse check if certs exist, cover all current LAN IPs, and are under 300 days old
+    if ca_crt.exists() and srv_crt.exists() and srv_key.exists() and meta_file.exists():
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            age_sec = time.time() - float(meta.get("generated_at", 0))
+            covered_ips = set(meta.get("ips") or [])
+            if age_sec < 300 * 86400 and set(sorted_ips).issubset(covered_ips):
+                return srv_crt, srv_key, ca_crt
+        except Exception:
+            pass
+
+    openssl_bin = _find_openssl_binary()
+    if not openssl_bin:
+        print("[tls] Note: openssl executable not found; offline LAN HTTPS listener skipped.")
+        return None, None, None
+
+    run_kwargs = {"capture_output": True, "text": True, "timeout": 30, "check": True}
+    if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+        run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
+    with tempfile.TemporaryDirectory(prefix="ls_tls_") as tmp_s:
+        tmp = Path(tmp_s)
+        try:
+            # 1. Create a persistent 10-year local Root CA once (can optionally be trusted on exhibition tablets)
+            if not (ca_key.exists() and ca_crt.exists()):
+                ca_cnf = tmp / "ca.cnf"
+                ca_cnf.write_text(
+                    "[req]\n"
+                    "distinguished_name = dn\n"
+                    "x509_extensions = v3_ca\n"
+                    "prompt = no\n"
+                    "[dn]\n"
+                    "CN = Latent Space Local Exhibition CA\n"
+                    "O = Latent Space Installation\n"
+                    "[v3_ca]\n"
+                    "subjectKeyIdentifier = hash\n"
+                    "authorityKeyIdentifier = keyid:always,issuer\n"
+                    "basicConstraints = critical, CA:TRUE, pathlen:0\n"
+                    "keyUsage = critical, keyCertSign, cRLSign\n",
+                    encoding="utf-8",
+                )
+                tmp_ca_key = tmp / "ca.key"
+                tmp_ca_crt = tmp / "ca.crt"
+                subprocess.run(
+                    [
+                        openssl_bin, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                        "-keyout", str(tmp_ca_key),
+                        "-out", str(tmp_ca_crt),
+                        "-days", "3650",
+                        "-sha256",
+                        "-config", str(ca_cnf),
+                    ],
+                    **run_kwargs,
+                )
+                atomic_write_bytes(ca_key, tmp_ca_key.read_bytes())
+                _chmod_private(ca_key)
+                atomic_write_bytes(ca_crt, tmp_ca_crt.read_bytes())
+
+            # 2. Generate 365-day leaf server certificate with SANs for localhost + all current LAN IPs
+            san_entries = [f"DNS:{d}" for d in dns_names] + [f"IP:{ip}" for ip in sorted_ips]
+            san_line = ", ".join(san_entries)
+
+            req_cnf = tmp / "req.cnf"
+            req_cnf.write_text(
+                "[req]\n"
+                "distinguished_name = dn\n"
+                "prompt = no\n"
+                "[dn]\n"
+                f"CN = {sorted_ips[-1] if len(sorted_ips) > 1 else 'localhost'}\n"
+                "O = Latent Space Installation\n",
+                encoding="utf-8",
+            )
+            ext_cnf = tmp / "ext.cnf"
+            ext_cnf.write_text(
+                "authorityKeyIdentifier = keyid,issuer\n"
+                "basicConstraints = critical, CA:FALSE\n"
+                "keyUsage = critical, digitalSignature, keyEncipherment\n"
+                "extendedKeyUsage = serverAuth\n"
+                f"subjectAltName = {san_line}\n",
+                encoding="utf-8",
+            )
+
+            tmp_srv_key = tmp / "server.key"
+            tmp_srv_csr = tmp / "server.csr"
+            tmp_srv_crt = tmp / "server.crt"
+            tmp_srl = tmp / "ca.srl"
+
+            subprocess.run(
+                [
+                    openssl_bin, "req", "-new", "-newkey", "rsa:2048", "-nodes",
+                    "-keyout", str(tmp_srv_key),
+                    "-out", str(tmp_srv_csr),
+                    "-config", str(req_cnf),
+                ],
+                **run_kwargs,
+            )
+            subprocess.run(
+                [
+                    openssl_bin, "x509", "-req",
+                    "-in", str(tmp_srv_csr),
+                    "-CA", str(ca_crt),
+                    "-CAkey", str(ca_key),
+                    "-CAcreateserial",
+                    "-CAserial", str(tmp_srl),
+                    "-out", str(tmp_srv_crt),
+                    "-days", "365",
+                    "-sha256",
+                    "-extfile", str(ext_cnf),
+                ],
+                **run_kwargs,
+            )
+
+            atomic_write_bytes(srv_key, tmp_srv_key.read_bytes())
+            _chmod_private(srv_key)
+            fullchain = tmp_srv_crt.read_bytes().strip() + b"\n" + ca_crt.read_bytes().strip() + b"\n"
+            atomic_write_bytes(srv_crt, fullchain)
+            atomic_write_text(
+                meta_file,
+                json.dumps(
+                    {
+                        "ips": sorted_ips,
+                        "dns": dns_names,
+                        "generated_at": time.time(),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            return srv_crt, srv_key, ca_crt
+        except Exception as exc:
+            err_detail = getattr(exc, "stderr", "") or str(exc)
+            print(f"[tls] Warning: could not generate LAN HTTPS certificate ({err_detail.strip()}); continuing with HTTP only.")
+            return None, None, None
 
 
 def get_lan_ip() -> str:

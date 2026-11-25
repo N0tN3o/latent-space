@@ -21,7 +21,15 @@ PROJECT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_DIR))
 
 import config_manager
-from config_manager import ensure_directories, get_configured_ollama_host, get_lan_ip, get_server_port, load_settings
+from config_manager import (
+    ensure_directories,
+    get_configured_ollama_host,
+    get_https_enabled,
+    get_https_port,
+    get_lan_ip,
+    get_server_port,
+    load_settings,
+)
 
 
 def _is_ollama_running(host_url: str = None) -> bool:
@@ -171,10 +179,11 @@ def _default_ollama_serve_env() -> dict:
 
 
 class LatentSpaceStarter:
-    def __init__(self, mode: str = "server", port: int = 8000):
+    def __init__(self, mode: str = "server", port: int = 8000, https_port: int = 8443):
         ensure_directories()
         self.mode = mode
         self.port = port
+        self.https_port = https_port
         self.processes = []
         self.ollama_proc = None
         self.server_proc = None
@@ -237,9 +246,14 @@ class LatentSpaceStarter:
         server_script = PROJECT_DIR / "monitoring_server.py"
         self.server_proc = self.run_command(
             [py, str(server_script)],
-            f"Unified Server & Analysis Pipeline (Port {self.port})",
+            f"Unified Server & Analysis Pipeline (HTTP :{self.port}" + (f" + HTTPS :{self.https_port})" if self.https_port else ")"),
             cwd=PROJECT_DIR,
-            env={"PORT": str(self.port), "LATENT_SPACE_MANAGED": "1"},
+            env={
+                "PORT": str(self.port),
+                "HTTPS_PORT": str(self.https_port),
+                "HTTPS_ENABLED": "1" if self.https_port else "0",
+                "LATENT_SPACE_MANAGED": "1",
+            },
         )
 
     def start_desktop_gaze_painter(self):
@@ -322,9 +336,16 @@ class LatentSpaceStarter:
             print(f"  🎛️  Admin Command Center: http://localhost:{self.port}/admin")
             if ip != "localhost":
                 print(f"\n  📱 Access from Tablet / Phone / Other Devices on LAN:")
-                print(f"      http://{ip}:{self.port}/kiosk  (Print Kiosk)")
-                print(f"      http://{ip}:{self.port}/draw   (Gaze Painter)")
-                print(f"      http://{ip}:{self.port}/admin  (Admin Panel)")
+                if self.https_port:
+                    print(f"      https://{ip}:{self.https_port}/draw   (Gaze Painter — Camera Enabled)")
+                    print(f"      https://{ip}:{self.https_port}/kiosk  (Print Kiosk — HTTPS)")
+                    print(f"      https://{ip}:{self.https_port}/admin  (Admin Panel — HTTPS)")
+                    print(f"      http://{ip}:{self.port}/kiosk   (Print Kiosk — HTTP)")
+                    print(f"      http://{ip}:{self.port}/        (Gallery / QR Downloads — HTTP)")
+                else:
+                    print(f"      http://{ip}:{self.port}/kiosk  (Print Kiosk)")
+                    print(f"      http://{ip}:{self.port}/draw   (Gaze Painter)")
+                    print(f"      http://{ip}:{self.port}/admin  (Admin Panel)")
             print("=" * 64)
 
         print("\nPress Ctrl+C to stop all services.\n")
@@ -339,6 +360,7 @@ class LatentSpaceStarter:
 def main():
     settings = load_settings()
     default_port = get_server_port(settings)
+    default_https_port = get_https_port(settings) if get_https_enabled(settings) else 0
 
     parser = argparse.ArgumentParser(description="Start the Latent Space installation.")
     parser.add_argument(
@@ -352,10 +374,11 @@ def main():
             "'kiosk': Desktop PyQt6 Print Kiosk only."
         ),
     )
-    parser.add_argument("--port", type=int, default=default_port, help="Port for the unified web server (default 8000)")
+    parser.add_argument("--port", type=int, default=default_port, help="HTTP port for the unified web server (default 8000)")
+    parser.add_argument("--https-port", type=int, default=default_https_port, help="Offline LAN HTTPS port for mobile camera access (default 8443; 0 disables)")
     args = parser.parse_args()
 
-    starter = LatentSpaceStarter(mode=args.mode, port=args.port)
+    starter = LatentSpaceStarter(mode=args.mode, port=args.port, https_port=args.https_port)
     starter.run()
 
 

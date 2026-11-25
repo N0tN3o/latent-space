@@ -29,6 +29,7 @@ import queue
 import re
 import secrets
 import shutil
+import ssl
 import struct
 import subprocess
 import sys
@@ -53,7 +54,10 @@ import config_manager
 from config_manager import (
     atomic_write_bytes,
     ensure_directories,
+    ensure_lan_tls_cert,
     get_configured_ollama_host,
+    get_https_enabled,
+    get_https_port,
     get_lan_ip,
     get_or_create_admin_password,
     get_public_base_url,
@@ -1410,6 +1414,8 @@ def api_get_status() -> dict:
     return {
         "device": host_name,
         "lan_url": f"http://{lan_ip}:{port}",
+        "https_url": f"https://{lan_ip}:{_active_https_port}" if _active_https_port else "",
+        "https_port": _active_https_port,
         "public_url": get_public_base_url(settings, lan_ip=lan_ip),
         "services": services,
         "pipeline": pipe_snapshot,
@@ -1575,9 +1581,36 @@ class PayloadTooLargeError(ValueError):
     """Raised when request body exceeds the configured limit."""
 
 
+_active_https_port = 0
+_active_ca_cert_path = None
+
+
 class LockedThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
     daemon_threads = True
+
+
+class LockedThreadingHTTPSServer(LockedThreadingHTTPServer):
+    """
+    Threading HTTPS server that performs the TLS handshake inside each per-connection
+    worker thread so aborted self-signed probes from mobile browsers never block accept().
+    """
+
+    def __init__(self, server_address, RequestHandlerClass, ssl_context: ssl.SSLContext):
+        self.ssl_context = ssl_context
+        super().__init__(server_address, RequestHandlerClass)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            request.settimeout(10.0)
+            tls_sock = self.ssl_context.wrap_socket(request, server_side=True)
+        except (ssl.SSLError, OSError):
+            try:
+                request.close()
+            except Exception:
+                pass
+            return
+        super().process_request_thread(tls_sock, client_address)
 
 
 class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
@@ -1693,7 +1726,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, ssl.SSLError):
             pass
 
     def _send_text(self, text: str, status=200, content_type="text/plain; charset=utf-8"):
@@ -1705,7 +1738,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, ssl.SSLError):
             pass
 
     def _send_file(self, file_path: Path, cacheable: bool = False):
@@ -1804,7 +1837,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                             break
                         self.wfile.write(chunk)
                         remaining -= len(chunk)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, ssl.SSLError):
             pass
 
     def _read_chunked_body(self, max_bytes: int) -> bytes:
@@ -2003,6 +2036,27 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                 return self._send_text("Print PDF not found", status=404)
             return self._send_file(Path(pdf_target), cacheable=True)
 
+        if path == "/api/tls/ca.crt":
+            ca_file = _active_ca_cert_path
+            if not ca_file or not Path(ca_file).is_file():
+                candidate = config_manager.CONFIG_DIR / "certs" / "ca.crt"
+                ca_file = candidate if candidate.is_file() else None
+            if not ca_file:
+                return self._send_text("Local CA certificate not generated", status=404)
+            try:
+                raw_pem = Path(ca_file).read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-x509-ca-cert")
+                self.send_header("Content-Disposition", 'attachment; filename="latent-space-local-ca.crt"')
+                self.send_header("Content-Length", str(len(raw_pem)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(raw_pem)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, ssl.SSLError):
+                pass
+            return
+
         if path == "/api/public/info":
             settings = load_settings()
             port = get_server_port(settings)
@@ -2011,6 +2065,8 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             return self._send_json({
                 "lan_url": get_public_base_url(settings, lan_ip=lan_ip),
                 "local_lan_url": f"http://{lan_ip}:{port}",
+                "https_url": f"https://{lan_ip}:{_active_https_port}" if _active_https_port else "",
+                "https_port": _active_https_port,
                 "supported_languages": list(config_manager.SUPPORTED_LANGUAGES),
                 "translation_enabled": bool(tr_cfg.get("enabled", True) and tr_cfg.get("mode", "local_nmt") != "off"),
             })
@@ -2110,7 +2166,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             self._handle_post()
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, ssl.SSLError):
             pass
         except PayloadTooLargeError as e:
             self._send_json({"status": "error", "error": str(e)}, status=413)
@@ -2617,7 +2673,16 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         return self._send_json({"error": "Not Found"}, 404)
 
 
-def run_server(host="0.0.0.0", port=8000):
+def _build_https_ssl_context(cert_path: Path, key_path: Path) -> ssl.SSLContext:
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    if hasattr(ssl, "TLSVersion"):
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+    return ctx
+
+
+def run_server(host="0.0.0.0", port=8000, https_port=None):
+    global _active_https_port, _active_ca_cert_path
     if AI_AVAILABLE:
         cleanup_orphaned_temp_files()
         try:
@@ -2656,6 +2721,41 @@ def run_server(host="0.0.0.0", port=8000):
     start_background_watcher()
     admin_pw, auth_src = get_or_create_admin_password()
     server = LockedThreadingHTTPServer((host, port), LatentSpaceRequestHandler)
+
+    # Start companion offline LAN HTTPS listener (default :8443) so phones/tablets can use camera eye-tracking
+    boot_settings = load_settings()
+    if https_port is None:
+        resolved_https_port = get_https_port(boot_settings) if get_https_enabled(boot_settings) else 0
+    else:
+        resolved_https_port = int(https_port or 0)
+
+    https_server = None
+    _active_https_port = 0
+    _active_ca_cert_path = None
+    if resolved_https_port > 0 and resolved_https_port != port:
+        cert_path, key_path, ca_path = ensure_lan_tls_cert()
+        if cert_path and key_path:
+            try:
+                ssl_ctx = _build_https_ssl_context(cert_path, key_path)
+                https_server = LockedThreadingHTTPSServer((host, resolved_https_port), LatentSpaceRequestHandler, ssl_ctx)
+                _active_https_port = resolved_https_port
+                _active_ca_cert_path = ca_path
+                threading.Thread(
+                    target=https_server.serve_forever,
+                    daemon=True,
+                    name="ls_https_server",
+                ).start()
+            except Exception as tls_err:
+                print(f"[tls] Warning: could not bind HTTPS listener on port {resolved_https_port} ({tls_err}); HTTP :{port} remains active.")
+                if https_server is not None:
+                    try:
+                        https_server.server_close()
+                    except Exception:
+                        pass
+                https_server = None
+                _active_https_port = 0
+
+    lan_ip = _get_lan_ip()
     print("=" * 64)
     print("LATENT SPACE UNIFIED SERVER")
     print(f"Project Root:  {PROJECT_DIR}")
@@ -2669,6 +2769,15 @@ def run_server(host="0.0.0.0", port=8000):
     print(f"  Browser Gaze Draw:  http://localhost:{port}/draw")
     print(f"  Web Print Kiosk:    http://localhost:{port}/kiosk")
     print(f"  Admin Dashboard:    http://localhost:{port}/admin")
+    if _active_https_port:
+        target_host = lan_ip if lan_ip != "localhost" else "localhost"
+        print("-" * 64)
+        print(f"  Phone / Tablet HTTPS (Camera Enabled — Offline LAN):")
+        print(f"    Gaze Draw:        https://{target_host}:{_active_https_port}/draw")
+        print(f"    Print Kiosk:      https://{target_host}:{_active_https_port}/kiosk")
+        print(f"    Gallery:          https://{target_host}:{_active_https_port}/")
+        print(f"    Admin Dashboard:  https://{target_host}:{_active_https_port}/admin")
+        print(f"    Optional CA Cert: http://{target_host}:{port}/api/tls/ca.crt")
     print("=" * 64)
     try:
         server.serve_forever()
@@ -2677,6 +2786,13 @@ def run_server(host="0.0.0.0", port=8000):
         _watcher_stop.set()
         release_nonblocking_lock(_watcher_lock_fd)
         server.server_close()
+        if https_server is not None:
+            try:
+                https_server.shutdown()
+                https_server.server_close()
+            except Exception:
+                pass
+        _active_https_port = 0
         if os.environ.get("LATENT_SPACE_MANAGED") != "1":
             try:
                 from start_everything import stop_ollama_serving
@@ -2689,4 +2805,5 @@ if __name__ == "__main__":
     settings = load_settings()
     port = get_server_port(settings)
     host = get_server_host(settings)
-    run_server(host=host, port=port)
+    hport = get_https_port(settings) if get_https_enabled(settings) else 0
+    run_server(host=host, port=port, https_port=hport)
