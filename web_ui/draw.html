@@ -194,10 +194,499 @@
             font-size: 0.9rem;
             text-align: center;
         }
+
+        /* --- Exhibition Mode (Default ON for Live Visitors) --- */
+        .ex-topbar {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 24px;
+            background: rgba(15, 17, 22, 0.92);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            z-index: 60;
+            position: relative;
+        }
+
+        body.exhibition-mode header#operatorHeader {
+            display: none;
+        }
+
+        body.exhibition-mode .ex-topbar {
+            display: flex;
+        }
+
+        body.exhibition-mode .instructions-bar {
+            display: none;
+        }
+
+        .ex-brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .ex-brand-name {
+            font-size: 1.05rem;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #e5e7eb;
+        }
+
+        .ex-cam-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.78rem;
+            color: var(--muted);
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            padding: 4px 10px;
+            border-radius: 999px;
+        }
+
+        .ex-cam-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #6b7280;
+        }
+
+        .ex-cam-pill.is-live .ex-cam-dot {
+            background: #10b981;
+            box-shadow: 0 0 8px rgba(16, 185, 129, 0.8);
+        }
+
+        .ex-cam-pill.is-live {
+            color: #a7f3d0;
+            border-color: rgba(16, 185, 129, 0.35);
+        }
+
+        .ex-topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .ex-staff-btn {
+            background: transparent;
+            color: #6b7280;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            padding: 5px 10px;
+            border-radius: 6px;
+            font-size: 0.74rem;
+            cursor: pointer;
+            transition: color 0.15s, border-color 0.15s;
+        }
+
+        .ex-staff-btn:hover {
+            color: #d1d5db;
+            border-color: rgba(255, 255, 255, 0.25);
+        }
+
+        /* Floating HUD during live Exhibition Calibration & 15s Drawing */
+        .ex-progress-track {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 6px;
+            background: rgba(15, 17, 22, 0.16);
+            z-index: 10;
+            pointer-events: none;
+        }
+
+        .ex-progress-fill {
+            height: 100%;
+            width: 100%;
+            background: linear-gradient(90deg, #10b981, #34d399);
+            transition: width 0.1s linear;
+        }
+
+        .ex-progress-fill.is-urgent {
+            background: linear-gradient(90deg, #f59e0b, #ef4444);
+        }
+
+        .ex-timer-pill {
+            display: none;
+            position: absolute;
+            top: 16px;
+            right: 18px;
+            background: rgba(15, 17, 22, 0.86);
+            color: #f9fafb;
+            border: 1px solid rgba(16, 185, 129, 0.45);
+            padding: 7px 16px;
+            border-radius: 999px;
+            font-size: 1rem;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: 0.02em;
+            z-index: 12;
+            pointer-events: none;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+        }
+
+        .ex-timer-pill.is-urgent {
+            border-color: rgba(245, 158, 11, 0.8);
+            color: #fde68a;
+        }
+
+        .ex-drawing-actions {
+            display: none;
+            margin-top: 14px;
+            gap: 12px;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Full-screen Exhibition Stage Overlay */
+        .ex-overlay {
+            display: none;
+            position: fixed;
+            inset: 57px 0 0 0;
+            background: radial-gradient(circle at 50% 20%, rgba(22, 32, 42, 0.96), rgba(11, 13, 18, 0.98));
+            z-index: 45;
+            padding: 28px 24px;
+            overflow-y: auto;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .ex-overlay.is-visible {
+            display: flex;
+        }
+
+        .ex-overlay.is-translucent {
+            background: rgba(11, 13, 18, 0.68);
+            backdrop-filter: blur(4px);
+        }
+
+        .ex-card {
+            width: 100%;
+            max-width: 860px;
+            background: rgba(24, 27, 34, 0.94);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 40px 42px;
+            text-align: center;
+            box-shadow: 0 28px 70px rgba(0, 0, 0, 0.65);
+        }
+
+        .ex-kicker {
+            display: inline-block;
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: #34d399;
+            margin-bottom: 12px;
+        }
+
+        .ex-headline {
+            font-size: clamp(1.9rem, 3.6vw, 2.8rem);
+            font-weight: 300;
+            letter-spacing: 0.04em;
+            color: #ffffff;
+            margin-bottom: 6px;
+        }
+
+        .ex-subtitle {
+            font-size: 1.05rem;
+            color: #9ca3af;
+            font-style: italic;
+            margin-bottom: 22px;
+        }
+
+        .ex-desc {
+            font-size: 1.05rem;
+            line-height: 1.65;
+            color: #d1d5db;
+            max-width: 620px;
+            margin: 0 auto 28px auto;
+        }
+
+        .ex-brush-wrap {
+            margin: 0 auto 28px auto;
+        }
+
+        .ex-brush-label {
+            font-size: 0.78rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #9ca3af;
+            margin-bottom: 10px;
+        }
+
+        .ex-brush-pills {
+            display: inline-flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: center;
+        }
+
+        .ex-brush-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: #20242f;
+            color: #d1d5db;
+            border: 1px solid #323846;
+            border-radius: 999px;
+            padding: 8px 16px;
+            font-size: 0.86rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: border-color 0.15s, background 0.15s, transform 0.15s;
+        }
+
+        .ex-brush-pill:hover {
+            border-color: #6b7280;
+            transform: translateY(-1px);
+        }
+
+        .ex-brush-pill.is-active {
+            border-color: #10b981;
+            background: rgba(16, 185, 129, 0.16);
+            color: #ffffff;
+        }
+
+        .ex-swatch {
+            width: 11px;
+            height: 11px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .ex-cta-primary {
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: #ffffff;
+            border: none;
+            border-radius: 12px;
+            padding: 15px 38px;
+            font-size: 1.12rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            box-shadow: 0 12px 30px rgba(16, 185, 129, 0.35);
+            transition: transform 0.15s, box-shadow 0.15s, filter 0.15s;
+        }
+
+        .ex-cta-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 16px 36px rgba(16, 185, 129, 0.45);
+            filter: brightness(1.06);
+        }
+
+        .ex-cta-secondary {
+            background: #252934;
+            color: #e5e7eb;
+            border: 1px solid #374151;
+            border-radius: 12px;
+            padding: 14px 26px;
+            font-size: 0.98rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: background 0.15s;
+        }
+
+        .ex-cta-secondary:hover {
+            background: #323846;
+        }
+
+        .ex-link-subtle {
+            background: none;
+            border: none;
+            color: #9ca3af;
+            font-size: 0.86rem;
+            cursor: pointer;
+            text-decoration: underline;
+            text-underline-offset: 3px;
+            padding: 6px 10px;
+        }
+
+        .ex-link-subtle:hover {
+            color: #f3f4f6;
+        }
+
+        .ex-actions-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .ex-sub-links {
+            margin-top: 18px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .ex-tut-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 16px;
+            margin: 24px 0 30px 0;
+            text-align: left;
+        }
+
+        @media (max-width: 760px) {
+            .ex-tut-grid {
+                grid-template-columns: 1fr;
+            }
+            .ex-card {
+                padding: 26px 20px;
+            }
+        }
+
+        .ex-step-card {
+            background: #12151c;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 14px;
+            padding: 20px 18px;
+        }
+
+        .ex-step-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            background: rgba(16, 185, 129, 0.14);
+            border: 1px solid rgba(16, 185, 129, 0.35);
+            color: #34d399;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 12px;
+        }
+
+        .ex-step-title {
+            font-size: 0.96rem;
+            font-weight: 700;
+            color: #f9fafb;
+            margin-bottom: 8px;
+        }
+
+        .ex-step-desc {
+            font-size: 0.87rem;
+            line-height: 1.55;
+            color: #9ca3af;
+        }
+
+        .ex-countdown-num {
+            font-size: clamp(4.5rem, 12vw, 7.5rem);
+            font-weight: 800;
+            color: #34d399;
+            line-height: 1;
+            margin-bottom: 12px;
+            text-shadow: 0 10px 40px rgba(16, 185, 129, 0.5);
+        }
+
+        .ex-handoff-split {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 28px;
+            align-items: center;
+            justify-content: center;
+            text-align: left;
+        }
+
+        .ex-preview-frame {
+            flex: 0 0 260px;
+            background: #ffffff;
+            border-radius: 12px;
+            padding: 8px;
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+        }
+
+        .ex-preview-frame img {
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            object-fit: contain;
+            display: block;
+            border-radius: 6px;
+        }
+
+        .ex-handoff-body {
+            flex: 1 1 320px;
+        }
+
+        .ex-qr-callout {
+            margin: 18px 0 22px 0;
+            padding: 14px 16px;
+            border-radius: 12px;
+            background: rgba(16, 185, 129, 0.12);
+            border: 1px solid rgba(16, 185, 129, 0.4);
+            color: #d1fae5;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            font-size: 0.94rem;
+            line-height: 1.5;
+        }
+
+        .ex-spinner {
+            width: 36px;
+            height: 36px;
+            border: 3px solid rgba(16, 185, 129, 0.2);
+            border-top-color: #10b981;
+            border-radius: 50%;
+            animation: exSpin 0.9s linear infinite;
+            margin: 0 auto 16px auto;
+        }
+
+        @keyframes exSpin {
+            to { transform: rotate(360deg); }
+        }
+
+        .ex-status-pill {
+            display: inline-block;
+            margin-top: 12px;
+            padding: 6px 14px;
+            border-radius: 999px;
+            background: rgba(16, 185, 129, 0.14);
+            border: 1px solid rgba(16, 185, 129, 0.35);
+            color: #6ee7b7;
+            font-size: 0.84rem;
+            font-weight: 600;
+        }
+
+        .ex-auto-note {
+            margin-top: 14px;
+            font-size: 0.82rem;
+            color: #9ca3af;
+        }
     </style>
 </head>
 <body>
-    <header>
+    <div class="ex-topbar" id="exTopbar">
+        <div class="ex-brand">
+            <span class="ex-brand-name">Latent Space</span>
+            <span class="ex-cam-pill" id="exCamStatus">
+                <span class="ex-cam-dot"></span>
+                <span id="exCamStatusText" data-i18n="draw.ex.cam_standby">Camera activates on start</span>
+            </span>
+        </div>
+        <div class="ex-topbar-right">
+            <span id="exLangSwitch"></span>
+            <button class="ex-staff-btn" onclick="setExhibitionMode(false)" data-i18n="draw.ex.staff_btn" title="Shortcut: Shift+E">Staff Controls</button>
+        </div>
+    </div>
+
+    <header id="operatorHeader">
         <div class="title-group">
             <h2 style="font-size: 1.2rem;" data-i18n="draw.heading">Latent Space — Gaze Painter</h2>
             <span class="status-badge" id="statusBadge">Ready (Move eyes or mouse/touch to draw)</span>
@@ -213,9 +702,11 @@
                 <option value="ember" data-i18n="draw.brush.ember">Velocity Ember</option>
                 <option value="indigo" data-i18n="draw.brush.indigo">Midnight Indigo</option>
             </select>
+            <button class="btn" id="displayModeBtn" onclick="toggleDisplayMode()">Display: Dual Screen (Separate Gallery)</button>
             <button class="btn" onclick="startTimedSession()" data-i18n="draw.btn.session_15s">15s Session</button>
             <button class="btn" onclick="clearCanvas()" data-i18n="draw.btn.clear">Clear</button>
             <button class="btn btn-primary" id="submitBtn" onclick="submitDrawing()" data-i18n="draw.btn.submit">Submit &amp; Analyze</button>
+            <button class="btn" id="exhibitionModeBtn" onclick="setExhibitionMode(true)" data-i18n="draw.ex.exit_staff_btn" title="Shortcut: Shift+E">Exhibition Mode</button>
             <a href="/" class="btn" data-i18n="draw.btn.gallery">Gallery</a>
             <a href="/kiosk" class="btn" data-i18n="draw.btn.kiosk">Kiosk</a>
         </div>
@@ -224,12 +715,22 @@
     <div class="workspace">
         <div class="draw-error-banner" id="drawErrorBanner"></div>
         <div class="canvas-shell">
+            <div class="ex-progress-track" id="exProgressTrack"><div class="ex-progress-fill" id="exProgressFill"></div></div>
+            <div class="ex-timer-pill" id="exTimerPill">15.0s left</div>
             <canvas id="artCanvas" width="1280" height="720"></canvas>
             <canvas id="cursorCanvas" width="1280" height="720"></canvas>
+        </div>
+        <div class="ex-drawing-actions" id="exDrawingActions">
+            <button class="btn" id="exCenterBtn" onclick="recenterCursorNow()" style="display:none;" data-i18n="draw.btn.center">Center Cursor [Space]</button>
+            <button class="btn" onclick="resetExhibitionToWelcome()" data-i18n="draw.ex.hud_restart">Restart</button>
         </div>
         <div class="instructions-bar" id="helperText" data-i18n-html="draw.helper_html">
             Tip: Press <strong>Spacebar</strong> while drawing to re-center the cursor to your current gaze (especially helpful when wearing glasses).
         </div>
+    </div>
+
+    <div class="ex-overlay" id="exhibitionOverlay" role="dialog" aria-live="polite">
+        <div class="ex-card" id="exhibitionCard"></div>
     </div>
 
     <div class="pip-box" id="pipBox" style="display:none;">
@@ -268,10 +769,54 @@
         let lastStatusVars = null;
         let camBtnState = 'idle'; // 'idle' | 'loading' | 'active'
 
+        const pageParams = new URLSearchParams(window.location.search);
+        const rawExParam = (pageParams.get('exhibition') || '').toLowerCase();
+        const rawOpParam = (pageParams.get('operator') || '').toLowerCase();
+        const rawSsParam = (pageParams.get('single_screen') || '').toLowerCase();
+
+        // Exhibition Mode is ON by default (use ?exhibition=0 or ?operator=1 or Shift+E for Staff Controls).
+        let exhibitionMode = !(rawExParam === '0' || rawExParam === 'false' || rawOpParam === '1' || rawOpParam === 'true');
+
+        // Dual-screen (separate Gallery screen) is default; single-screen preserved via ?single_screen=1 or staff toggle.
+        let singleScreenMode = false;
+        if (rawSsParam === '1' || rawSsParam === 'true') {
+            singleScreenMode = true;
+        } else if (rawSsParam === '0' || rawSsParam === 'false') {
+            singleScreenMode = false;
+        } else {
+            try {
+                singleScreenMode = localStorage.getItem('ls_draw_display_mode') === 'single';
+            } catch (_) {}
+        }
+
+        // Exhibition stage: 'welcome' | 'tutorial' | 'loading_cam' | 'cam_fallback' | 'calibrating' | 'countdown' | 'drawing' | 'blank' | 'processing' | 'complete' | 'error'
+        let exStage = 'welcome';
+        let exInputMode = 'gaze'; // 'gaze' | 'pointer'
+        let exCountdownTimerId = null;
+        let exWalkawayTimerId = null;
+        let exAutoResetIntervalId = null;
+        let exAutoResetRemaining = 0;
+        let exLastPreviewDataUrl = '';
+        let exLastErrorText = '';
+        let exLastProcStatusKey = 'draw.status.sending';
+        let exLastProcStatusVars = null;
+
+        function escapeHtml(str) {
+            return String(str || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         const drawI18n = window.LS_I18N.createPageController('draw', {
             titleKey: 'draw.page_title',
             onChange: () => {
                 refreshDynamicDrawText();
+                if (exhibitionMode) {
+                    renderExhibitionStage();
+                }
             },
         });
         const t = drawI18n.t;
@@ -280,6 +825,27 @@
             lastStatusKey = key;
             lastStatusVars = vars;
             statusBadge.textContent = t(key, vars);
+            if (exhibitionMode && exStage === 'processing') {
+                exLastProcStatusKey = key;
+                exLastProcStatusVars = vars;
+                const pill = document.getElementById('exProcStatusPill');
+                if (pill) pill.textContent = t(key, vars);
+            }
+        }
+
+        function updateDisplayModeUI() {
+            const btn = document.getElementById('displayModeBtn');
+            if (btn) {
+                btn.textContent = singleScreenMode ? t('draw.ex.display_single') : t('draw.ex.display_dual');
+            }
+        }
+
+        function updateExhibitionCamBadge() {
+            const pill = document.getElementById('exCamStatus');
+            const textEl = document.getElementById('exCamStatusText');
+            if (!pill || !textEl) return;
+            pill.classList.toggle('is-live', webcamRunning);
+            textEl.textContent = webcamRunning ? t('draw.ex.cam_ready') : t('draw.ex.cam_standby');
         }
 
         function refreshDynamicDrawText() {
@@ -300,6 +866,8 @@
             if (subBtn) {
                 subBtn.textContent = subBtn.disabled ? t('draw.btn.submitting') : t('draw.btn.submit');
             }
+            updateDisplayModeUI();
+            updateExhibitionCamBadge();
         }
 
         const W = 1280;
@@ -452,6 +1020,7 @@
                 lastPointerTs = 0;
                 resetVisitorTrackingState();
                 calibStartTs = performance.now();
+                lastGazeTs = calibStartTs;
                 prevPoint = null;
                 drawCalibrationTarget(0);
                 setStatusKey('draw.status.calibrating_start');
@@ -459,6 +1028,7 @@
                 hideDrawError();
                 prevPoint = null;
                 prevTime = performance.now();
+                lastGazeTs = prevTime;
                 cursorCtx.clearRect(0, 0, W, H);
             } else if (nextState === STATES.SUBMITTING) {
                 cursorCtx.clearRect(0, 0, W, H);
@@ -620,6 +1190,7 @@
         // Pointer / Touch drawing support (explicitly gated by state machine)
         let pointerDown = false;
         function canAcceptPointerStroke() {
+            if (exhibitionMode && exStage !== 'drawing') return false;
             return gazeState === STATES.IDLE || gazeState === STATES.DRAWING;
         }
         function getNormFromEvent(e) {
@@ -736,6 +1307,7 @@
             timedEndTimestamp = performance.now() + 15000;
             const modeTag = () => t(gazeControlMode === 'flow' ? 'draw.mode_tag.flow' : 'draw.mode_tag.hybrid');
             setStatusKey('draw.status.timed_remaining', { mode: modeTag(), sec: '15.0' });
+            updateExhibitionTimerHud(15.0);
             sessionTimerId = setInterval(() => {
                 if (gazeState !== STATES.DRAWING) {
                     clearSessionTimer();
@@ -744,8 +1316,12 @@
                 const rem = (timedEndTimestamp - performance.now()) / 1000;
                 if (rem <= 0) {
                     clearSessionTimer();
+                    updateExhibitionTimerHud(0);
                     if (hasDrawn) {
                         window.submitDrawing();
+                    } else if (exhibitionMode) {
+                        setState(STATES.IDLE);
+                        enterExhibitionStage('blank');
                     } else if (webcamRunning) {
                         setState(STATES.SEARCHING);
                     } else {
@@ -754,6 +1330,7 @@
                     }
                 } else {
                     setStatusKey('draw.status.timed_remaining', { mode: modeTag(), sec: rem.toFixed(1) });
+                    updateExhibitionTimerHud(rem);
                 }
             }, 100);
         };
@@ -763,19 +1340,29 @@
                 return;
             }
             if (!hasDrawn) {
-                alert(t('draw.alert.blank'));
+                if (exhibitionMode) {
+                    enterExhibitionStage('blank');
+                } else {
+                    alert(t('draw.alert.blank'));
+                }
                 return;
             }
             hideDrawError();
+            const dataUrl = artCanvas.toDataURL('image/png');
+            exLastPreviewDataUrl = dataUrl;
             setState(STATES.SUBMITTING);
             const pollId = ++activePollId;
             const btn = document.getElementById('submitBtn');
             btn.disabled = true;
             btn.textContent = t('draw.btn.submitting');
             setStatusKey('draw.status.sending');
+            if (exhibitionMode) {
+                exLastProcStatusKey = 'draw.status.sending';
+                exLastProcStatusVars = null;
+                enterExhibitionStage('processing');
+            }
 
             try {
-                const dataUrl = artCanvas.toDataURL('image/png');
                 const res = await fetch('/api/drawings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -796,6 +1383,10 @@
                     btn.textContent = t('draw.btn.submit');
                     setState(STATES.IDLE);
                     setStatusKey('draw.status.upload_failed_code', { code: result.error_code || res.status });
+                    if (exhibitionMode) {
+                        exLastErrorText = result.error || t('draw.err.default');
+                        enterExhibitionStage('error');
+                    }
                 }
             } catch (e) {
                 if (pollId !== activePollId) return;
@@ -804,6 +1395,10 @@
                 btn.textContent = t('draw.btn.submit');
                 setState(STATES.IDLE);
                 setStatusKey('draw.status.upload_failed');
+                if (exhibitionMode) {
+                    exLastErrorText = t('draw.err.upload', { err: e });
+                    enterExhibitionStage('error');
+                }
             }
         };
 
@@ -869,10 +1464,25 @@
                             showDrawError(code, t('draw.err.reading_failed', { msg: errMsg || 'AI error' }));
                             setStatusKey('draw.status.failed_code', { code });
                             setState(STATES.IDLE);
+                            if (exhibitionMode) {
+                                exLastErrorText = t('draw.err.reading_failed', { msg: errMsg || 'AI error' });
+                                enterExhibitionStage('error');
+                            }
                         } else {
                             hideDrawError();
-                            setStatusKey(webcamRunning ? 'draw.status.ready_next_visitor' : 'draw.status.ready_redirect');
-                            if (!webcamRunning) {
+                            const shouldRedirectSingle = singleScreenMode || (!exhibitionMode && !webcamRunning);
+                            setStatusKey(shouldRedirectSingle ? 'draw.status.ready_redirect' : 'draw.status.ready_next_visitor');
+                            if (exhibitionMode) {
+                                setState(STATES.IDLE);
+                                enterExhibitionStage('complete');
+                                if (singleScreenMode) {
+                                    pendingPostSubmitTimerId = setTimeout(() => {
+                                        if (pollId === activePollId && exStage === 'complete') {
+                                            window.location.href = '/';
+                                        }
+                                    }, 3000);
+                                }
+                            } else if (shouldRedirectSingle) {
                                 pendingPostSubmitTimerId = setTimeout(() => {
                                     if (pollId === activePollId) window.location.href = '/';
                                 }, 1200);
@@ -894,6 +1504,10 @@
             showDrawError('ERR_PIPELINE_TIMEOUT', t('draw.err.timeout'));
             setStatusKey('draw.status.timeout');
             setState(STATES.IDLE);
+            if (exhibitionMode) {
+                exLastErrorText = t('draw.err.timeout');
+                enterExhibitionStage('error');
+            }
         }
 
         function solveLinear3x3(A, b) {
@@ -965,13 +1579,35 @@
             if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT')) {
                 return;
             }
-            if (e.code === 'Space' && webcamRunning && gazeState === STATES.DRAWING) {
+            if (e.shiftKey && (e.key === 'E' || e.key === 'e')) {
+                e.preventDefault();
+                window.setExhibitionMode(!exhibitionMode);
+                return;
+            }
+            if (exhibitionMode && (e.code === 'Space' || e.code === 'Enter')) {
+                if (exStage === 'welcome') {
+                    e.preventDefault();
+                    window.exOpenTutorial('gaze');
+                    return;
+                }
+                if (exStage === 'tutorial') {
+                    e.preventDefault();
+                    window.exStartSessionFromTutorial();
+                    return;
+                }
+                if (exStage === 'complete' && !singleScreenMode) {
+                    e.preventDefault();
+                    window.resetExhibitionToWelcome();
+                    return;
+                }
+            }
+            if (e.code === 'Space' && webcamRunning && gazeState === STATES.DRAWING && !(exhibitionMode && exInputMode === 'pointer')) {
                 e.preventDefault();
                 window.recenterCursorNow();
-            } else if ((e.key === 'c' || e.key === 'C') && webcamRunning) {
+            } else if ((e.key === 'c' || e.key === 'C') && webcamRunning && !exhibitionMode) {
                 e.preventDefault();
                 window.startCalibration();
-            } else if (e.key === 'm' || e.key === 'M') {
+            } else if ((e.key === 'm' || e.key === 'M') && !exhibitionMode) {
                 e.preventDefault();
                 window.toggleGazeMode();
             }
@@ -1000,8 +1636,8 @@
             return { vision, fileset, modelAssetPath };
         }
 
-        window.startWebcamGaze = async function() {
-            if (webcamRunning) return;
+        window.startWebcamGaze = async function(opts = {}) {
+            if (webcamRunning) return true;
             const camBtn = document.getElementById('camBtn');
             camBtn.disabled = true;
             camBtnState = 'loading';
@@ -1042,18 +1678,33 @@
                 camBtnState = 'active';
                 camBtn.textContent = t('draw.btn.cam_active');
                 webcamRunning = true;
-                setState(STATES.SEARCHING);
+                updateExhibitionCamBadge();
+                if (opts && opts.prewarmOnly) {
+                    setState(STATES.IDLE);
+                } else if (opts && opts.autoCalibrate) {
+                    setState(STATES.CALIBRATING);
+                } else {
+                    setState(exhibitionMode ? STATES.IDLE : STATES.SEARCHING);
+                }
                 requestAnimationFrame(processVideoFrame);
+                if (exhibitionMode && exStage === 'welcome') {
+                    renderExhibitionStage();
+                }
+                return true;
             } catch (err) {
                 if (stream) {
                     try { stream.getTracks().forEach(t => t.stop()); } catch (_) {}
                 }
                 console.error(err);
-                showDrawError('ERR_WEBCAM_UNAVAILABLE', t('draw.err.webcam'));
+                if (!exhibitionMode) {
+                    showDrawError('ERR_WEBCAM_UNAVAILABLE', t('draw.err.webcam'));
+                }
                 camBtn.disabled = false;
                 camBtnState = 'idle';
                 camBtn.textContent = t('draw.btn.start_cam');
                 setStatusKey('draw.status.mouse_active');
+                updateExhibitionCamBadge();
+                return false;
             }
         };
 
@@ -1223,7 +1874,7 @@
                         lastGazeTs = now;
                         faceStreak += 1;
 
-                        if (gazeState === STATES.SEARCHING && faceStreak >= CONSECUTIVE_FACE_FRAMES) {
+                        if (!exhibitionMode && gazeState === STATES.SEARCHING && faceStreak >= CONSECUTIVE_FACE_FRAMES) {
                             setState(STATES.CALIBRATING);
                         }
 
@@ -1308,10 +1959,15 @@
                                 weightsX = fitRidgeAffineAxis(dx, dy, txOff, 0, 4.5, 14.0, 9.0);
                                 weightsY = fitRidgeAffineAxis(dx, dy, tyOff, 1, 6.0, 18.0, 13.0);
 
-                                setState(STATES.DRAWING);
-                                window.startTimedSession();
+                                if (exhibitionMode) {
+                                    setState(STATES.IDLE);
+                                    startExhibitionCountdown();
+                                } else {
+                                    setState(STATES.DRAWING);
+                                    window.startTimedSession();
+                                }
                             }
-                        } else if (gazeState === STATES.DRAWING && smoothedNorm && !pointerDown) {
+                        } else if (gazeState === STATES.DRAWING && smoothedNorm && !pointerDown && !(exhibitionMode && exInputMode === 'pointer')) {
                             if (!isBlinking) {
                                 const dx = smoothedNorm[0] - centerNorm[0];
                                 const dy = smoothedNorm[1] - centerNorm[1];
@@ -1350,12 +2006,21 @@
                             prevTime = now;
                         }
                         const pointerRecentlyUsed = lastPointerTs > 0 && (now - lastPointerTs) <= 10000;
-                        if (!pointerDown && !pointerRecentlyUsed && lastGazeTs > 0 && (now - lastGazeTs) > GAZE_LOSS_TIMEOUT_MS) {
+                        if (!pointerDown && !pointerRecentlyUsed && !(exhibitionMode && exInputMode === 'pointer') && lastGazeTs > 0 && (now - lastGazeTs) > GAZE_LOSS_TIMEOUT_MS) {
                             if (gazeState === STATES.CALIBRATING) {
-                                setState(STATES.SEARCHING);
+                                if (exhibitionMode) {
+                                    if ((now - lastGazeTs) > 8000) {
+                                        window.resetExhibitionToWelcome();
+                                    }
+                                } else {
+                                    setState(STATES.SEARCHING);
+                                }
                             } else if (gazeState === STATES.DRAWING) {
                                 if (hasDrawn) {
                                     window.submitDrawing();
+                                } else if (exhibitionMode) {
+                                    setState(STATES.IDLE);
+                                    enterExhibitionStage('blank');
                                 } else {
                                     setState(STATES.SEARCHING);
                                 }
@@ -1372,9 +2037,435 @@
             }
         }
 
+        // --- Exhibition Mode Guided Visitor Controller ---
+        function clearExhibitionTimers() {
+            if (exCountdownTimerId !== null) {
+                clearTimeout(exCountdownTimerId);
+                exCountdownTimerId = null;
+            }
+            if (exWalkawayTimerId !== null) {
+                clearTimeout(exWalkawayTimerId);
+                exWalkawayTimerId = null;
+            }
+            if (exAutoResetIntervalId !== null) {
+                clearInterval(exAutoResetIntervalId);
+                exAutoResetIntervalId = null;
+            }
+        }
+
+        function updateExhibitionTimerHud(remSec) {
+            const track = document.getElementById('exProgressTrack');
+            const fill = document.getElementById('exProgressFill');
+            const pill = document.getElementById('exTimerPill');
+            if (!track || !fill || !pill) return;
+            if (!exhibitionMode || exStage !== 'drawing') {
+                track.style.display = 'none';
+                pill.style.display = 'none';
+                return;
+            }
+            const clamped = Math.max(0, Math.min(15, Number(remSec) || 0));
+            const pct = (clamped / 15) * 100;
+            const urgent = clamped <= 3.0;
+            track.style.display = 'block';
+            pill.style.display = 'block';
+            fill.style.width = `${pct.toFixed(1)}%`;
+            fill.classList.toggle('is-urgent', urgent);
+            pill.classList.toggle('is-urgent', urgent);
+            pill.textContent = t('draw.ex.hud_time_left', { sec: clamped.toFixed(1) });
+        }
+
+        function syncExhibitionChrome() {
+            document.body.classList.toggle('exhibition-mode', exhibitionMode);
+            const overlay = document.getElementById('exhibitionOverlay');
+            const drawActions = document.getElementById('exDrawingActions');
+            const exCenterBtn = document.getElementById('exCenterBtn');
+            const pipBox = document.getElementById('pipBox');
+
+            if (pipBox) {
+                pipBox.style.display = (webcamRunning && !(exhibitionMode && exInputMode === 'pointer')) ? 'block' : 'none';
+            }
+
+            if (!exhibitionMode) {
+                overlay.classList.remove('is-visible', 'is-translucent');
+                drawActions.style.display = 'none';
+                updateExhibitionTimerHud(0);
+                return;
+            }
+
+            const canvasLive = (exStage === 'calibrating' || exStage === 'drawing');
+            overlay.classList.toggle('is-visible', !canvasLive);
+            overlay.classList.toggle('is-translucent', exStage === 'countdown');
+            drawActions.style.display = canvasLive ? 'flex' : 'none';
+            if (exCenterBtn) {
+                exCenterBtn.style.display = (webcamRunning && exStage === 'drawing' && exInputMode === 'gaze') ? 'inline-block' : 'none';
+            }
+            if (exStage !== 'drawing') {
+                updateExhibitionTimerHud(0);
+            }
+        }
+
+        function selectExhibitionBrush(themeVal) {
+            const sel = document.getElementById('brushTheme');
+            if (sel) sel.value = themeVal;
+            if (exhibitionMode && exStage === 'welcome') {
+                renderExhibitionStage();
+            }
+        }
+        window.selectExhibitionBrush = selectExhibitionBrush;
+
+        function renderExhibitionStage() {
+            syncExhibitionChrome();
+            if (!exhibitionMode) return;
+            const card = document.getElementById('exhibitionCard');
+            if (!card) return;
+            const activeBrush = (document.getElementById('brushTheme') && document.getElementById('brushTheme').value) || 'classic';
+
+            if (exStage === 'welcome') {
+                const brushes = [
+                    { id: 'classic', label: t('draw.brush.classic'), color: '#111827' },
+                    { id: 'ember', label: t('draw.brush.ember'), color: '#dc2626' },
+                    { id: 'indigo', label: t('draw.brush.indigo'), color: '#3b82f6' },
+                ];
+                const brushHtml = brushes.map(b => `
+                    <button type="button" class="ex-brush-pill ${activeBrush === b.id ? 'is-active' : ''}" onclick="selectExhibitionBrush('${b.id}')">
+                        <span class="ex-swatch" style="background:${b.color}; border: 1px solid rgba(255,255,255,0.35);"></span>
+                        ${escapeHtml(b.label)}
+                    </button>
+                `).join('');
+                const prewarmBtn = webcamRunning
+                    ? ''
+                    : `<button type="button" class="ex-link-subtle" onclick="exPrewarmCamera()">${escapeHtml(t('draw.ex.cam_prewarm'))}</button>`;
+                card.innerHTML = `
+                    <div class="ex-kicker">${escapeHtml(t('draw.ex.kicker'))}</div>
+                    <h1 class="ex-headline">${escapeHtml(t('draw.ex.title'))}</h1>
+                    <div class="ex-subtitle">${escapeHtml(t('draw.ex.subtitle'))}</div>
+                    <p class="ex-desc">${escapeHtml(t('draw.ex.desc'))}</p>
+                    <div class="ex-brush-wrap">
+                        <div class="ex-brush-label">${escapeHtml(t('draw.ex.brush_label'))}</div>
+                        <div class="ex-brush-pills">${brushHtml}</div>
+                    </div>
+                    <div class="ex-actions-row">
+                        <button type="button" class="ex-cta-primary" onclick="exOpenTutorial('gaze')">
+                            ${escapeHtml(t('draw.ex.start_btn'))} &rarr;
+                        </button>
+                    </div>
+                    <div class="ex-sub-links">
+                        <button type="button" class="ex-link-subtle" onclick="exOpenTutorial('pointer')">${escapeHtml(t('draw.ex.start_touch_btn'))}</button>
+                        ${prewarmBtn}
+                    </div>
+                `;
+                return;
+            }
+
+            if (exStage === 'tutorial') {
+                const isGaze = exInputMode === 'gaze';
+                const step1Title = isGaze ? t('draw.ex.step1_title') : t('draw.ex.step1_touch_title');
+                const step1Desc = isGaze ? t('draw.ex.step1_desc') : t('draw.ex.step1_touch_desc');
+                const step3Desc = singleScreenMode ? t('draw.ex.step3_desc_single') : t('draw.ex.step3_desc_dual');
+                const beginLabel = isGaze ? t('draw.ex.begin_calib_btn') : t('draw.ex.begin_draw_btn');
+                card.innerHTML = `
+                    <div class="ex-kicker">${escapeHtml(t('draw.ex.tut_kicker'))}</div>
+                    <h2 class="ex-headline" style="font-size: clamp(1.5rem, 2.8vw, 2.15rem);">${escapeHtml(isGaze ? t('draw.ex.tut_title') : t('draw.ex.tut_title_touch'))}</h2>
+                    <div class="ex-tut-grid">
+                        <div class="ex-step-card">
+                            <div class="ex-step-icon">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>
+                            </div>
+                            <div class="ex-step-title">${escapeHtml(step1Title)}</div>
+                            <div class="ex-step-desc">${escapeHtml(step1Desc)}</div>
+                        </div>
+                        <div class="ex-step-card">
+                            <div class="ex-step-icon">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>
+                            </div>
+                            <div class="ex-step-title">${escapeHtml(t('draw.ex.step2_title'))}</div>
+                            <div class="ex-step-desc">${escapeHtml(t('draw.ex.step2_desc'))}</div>
+                        </div>
+                        <div class="ex-step-card">
+                            <div class="ex-step-icon">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3zM20 14v3h-3M14 20h7"/></svg>
+                            </div>
+                            <div class="ex-step-title">${escapeHtml(t('draw.ex.step3_title'))}</div>
+                            <div class="ex-step-desc">${escapeHtml(step3Desc)}</div>
+                        </div>
+                    </div>
+                    <div class="ex-actions-row">
+                        <button type="button" class="ex-cta-secondary" onclick="resetExhibitionToWelcome()">&larr; ${escapeHtml(t('draw.ex.back_btn'))}</button>
+                        <button type="button" class="ex-cta-primary" onclick="exStartSessionFromTutorial()">${escapeHtml(beginLabel)} &rarr;</button>
+                    </div>
+                `;
+                return;
+            }
+
+            if (exStage === 'loading_cam') {
+                card.innerHTML = `
+                    <div class="ex-spinner"></div>
+                    <h2 class="ex-headline" style="font-size: 1.7rem;">${escapeHtml(t('draw.ex.loading_cam_title'))}</h2>
+                    <p class="ex-desc" style="margin-bottom: 0;">${escapeHtml(t('draw.ex.loading_cam_desc'))}</p>
+                `;
+                return;
+            }
+
+            if (exStage === 'cam_fallback') {
+                card.innerHTML = `
+                    <h2 class="ex-headline" style="font-size: 1.75rem;">${escapeHtml(t('draw.ex.cam_fallback_title'))}</h2>
+                    <p class="ex-desc">${escapeHtml(t('draw.ex.cam_fallback_desc'))}</p>
+                    <div class="ex-actions-row">
+                        <button type="button" class="ex-cta-secondary" onclick="resetExhibitionToWelcome()">&larr; ${escapeHtml(t('draw.ex.back_btn'))}</button>
+                        <button type="button" class="ex-cta-primary" onclick="exStartPointerDrawing()">${escapeHtml(t('draw.ex.begin_draw_btn'))} &rarr;</button>
+                    </div>
+                `;
+                return;
+            }
+
+            if (exStage === 'blank') {
+                card.innerHTML = `
+                    <h2 class="ex-headline" style="font-size: 1.75rem;">${escapeHtml(t('draw.ex.blank_title'))}</h2>
+                    <p class="ex-desc" style="margin-bottom: 18px;">${escapeHtml(t('draw.ex.blank_desc'))}</p>
+                    <div class="ex-actions-row">
+                        <button type="button" class="ex-cta-primary" onclick="resetExhibitionToWelcome()">${escapeHtml(t('draw.ex.start_over_btn'))}</button>
+                    </div>
+                `;
+                return;
+            }
+
+            if (exStage === 'processing') {
+                const previewHtml = exLastPreviewDataUrl
+                    ? `<div class="ex-preview-frame"><img src="${exLastPreviewDataUrl}" alt="Your gaze drawing"></div>`
+                    : '';
+                const desc = singleScreenMode ? t('draw.ex.proc_desc_single') : t('draw.ex.proc_desc_dual');
+                card.innerHTML = `
+                    <div class="ex-handoff-split">
+                        ${previewHtml}
+                        <div class="ex-handoff-body">
+                            <div class="ex-kicker">${escapeHtml(t('draw.ex.proc_kicker'))}</div>
+                            <h2 class="ex-headline" style="font-size: clamp(1.45rem, 2.5vw, 2rem); margin-bottom: 12px;">${escapeHtml(t('draw.ex.proc_title'))}</h2>
+                            <p class="ex-desc" style="margin: 0 0 12px 0;">${escapeHtml(desc)}</p>
+                            <div class="ex-status-pill" id="exProcStatusPill">${escapeHtml(t(exLastProcStatusKey, exLastProcStatusVars))}</div>
+                        </div>
+                    </div>
+                `;
+                return;
+            }
+
+            if (exStage === 'complete') {
+                const previewHtml = exLastPreviewDataUrl
+                    ? `<div class="ex-preview-frame"><img src="${exLastPreviewDataUrl}" alt="Your gaze drawing"></div>`
+                    : '';
+                if (singleScreenMode) {
+                    card.innerHTML = `
+                        <div class="ex-handoff-split">
+                            ${previewHtml}
+                            <div class="ex-handoff-body">
+                                <div class="ex-kicker">${escapeHtml(t('draw.ex.done_kicker'))}</div>
+                                <h2 class="ex-headline" style="font-size: clamp(1.5rem, 2.6vw, 2.1rem); margin-bottom: 12px;">${escapeHtml(t('draw.ex.done_title_single'))}</h2>
+                                <p class="ex-desc" style="margin: 0 0 20px 0;">${escapeHtml(t('draw.ex.done_desc_single'))}</p>
+                                <div class="ex-actions-row" style="justify-content: flex-start;">
+                                    <a href="/" class="ex-cta-primary">${escapeHtml(t('draw.ex.open_gallery_btn'))} &rarr;</a>
+                                    <button type="button" class="ex-cta-secondary" onclick="resetExhibitionToWelcome()">${escapeHtml(t('draw.ex.start_over_btn'))}</button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    card.innerHTML = `
+                        <div class="ex-handoff-split">
+                            ${previewHtml}
+                            <div class="ex-handoff-body">
+                                <div class="ex-kicker">${escapeHtml(t('draw.ex.done_kicker'))}</div>
+                                <h2 class="ex-headline" style="font-size: clamp(1.5rem, 2.6vw, 2.1rem); margin-bottom: 10px;">${escapeHtml(t('draw.ex.done_title_dual'))}</h2>
+                                <p class="ex-desc" style="margin: 0;">${escapeHtml(t('draw.ex.done_desc_dual'))}</p>
+                                <div class="ex-qr-callout">
+                                    <svg width="26" height="26" style="flex:0 0 auto;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3zM20 14v3h-3M14 20h7"/></svg>
+                                    <span>${escapeHtml(t('draw.ex.done_qr_callout'))}</span>
+                                </div>
+                                <div class="ex-actions-row" style="justify-content: flex-start;">
+                                    <button type="button" class="ex-cta-primary" onclick="resetExhibitionToWelcome()">${escapeHtml(t('draw.ex.next_visitor_btn'))} &rarr;</button>
+                                </div>
+                                <div class="ex-auto-note" id="exAutoResetNote">${escapeHtml(t('draw.ex.auto_reset_note', { sec: exAutoResetRemaining }))}</div>
+                            </div>
+                        </div>
+                    `;
+                }
+                return;
+            }
+
+            if (exStage === 'error') {
+                card.innerHTML = `
+                    <h2 class="ex-headline" style="font-size: 1.7rem; color: #fca5a5;">${escapeHtml(t('draw.ex.err_title'))}</h2>
+                    <p class="ex-desc">${escapeHtml(exLastErrorText || t('draw.err.default'))}</p>
+                    <div class="ex-actions-row">
+                        <button type="button" class="ex-cta-primary" onclick="submitDrawing()">${escapeHtml(t('draw.ex.retry_submit_btn'))}</button>
+                        <button type="button" class="ex-cta-secondary" onclick="resetExhibitionToWelcome()">${escapeHtml(t('draw.ex.start_over_btn'))}</button>
+                    </div>
+                `;
+            }
+        }
+
+        function enterExhibitionStage(stage) {
+            clearExhibitionTimers();
+            exStage = stage;
+            if (stage === 'complete' && !singleScreenMode) {
+                exAutoResetRemaining = 12;
+            }
+            renderExhibitionStage();
+
+            if (stage === 'tutorial') {
+                // Walk-away auto-reset if a visitor abandons the tutorial screen
+                exWalkawayTimerId = setTimeout(() => {
+                    if (exhibitionMode && exStage === 'tutorial') {
+                        window.resetExhibitionToWelcome();
+                    }
+                }, 35000);
+            } else if (stage === 'blank') {
+                exWalkawayTimerId = setTimeout(() => {
+                    if (exhibitionMode && exStage === 'blank') {
+                        window.resetExhibitionToWelcome();
+                    }
+                }, 3200);
+            } else if (stage === 'complete' && !singleScreenMode) {
+                exAutoResetIntervalId = setInterval(() => {
+                    exAutoResetRemaining -= 1;
+                    if (exAutoResetRemaining <= 0) {
+                        clearExhibitionTimers();
+                        if (exhibitionMode && exStage === 'complete') {
+                            window.resetExhibitionToWelcome();
+                        }
+                    } else {
+                        const n = document.getElementById('exAutoResetNote');
+                        if (n) n.textContent = t('draw.ex.auto_reset_note', { sec: exAutoResetRemaining });
+                    }
+                }, 1000);
+            }
+        }
+
+        function startExhibitionCountdown() {
+            clearExhibitionTimers();
+            exStage = 'countdown';
+            syncExhibitionChrome();
+            const card = document.getElementById('exhibitionCard');
+            const beats = ['3', '2', '1', t('draw.ex.countdown_go')];
+            let idx = 0;
+
+            function step() {
+                if (!exhibitionMode || exStage !== 'countdown') return;
+                const val = beats[idx];
+                const isGo = idx === beats.length - 1;
+                card.innerHTML = `
+                    <div class="ex-countdown-num" style="${isGo ? 'font-size: clamp(3rem, 8vw, 5rem);' : ''}">${escapeHtml(val)}</div>
+                    <div class="ex-subtitle" style="margin-bottom: 0;">${escapeHtml(isGo ? '' : t('draw.ex.countdown_label'))}</div>
+                `;
+                idx += 1;
+                if (idx < beats.length) {
+                    exCountdownTimerId = setTimeout(step, 600);
+                } else {
+                    exCountdownTimerId = setTimeout(() => {
+                        if (!exhibitionMode || exStage !== 'countdown') return;
+                        exStage = 'drawing';
+                        syncExhibitionChrome();
+                        setState(STATES.DRAWING);
+                        window.startTimedSession();
+                    }, 450);
+                }
+            }
+            step();
+        }
+
+        window.exOpenTutorial = function(inputMode = 'gaze') {
+            exInputMode = inputMode === 'pointer' ? 'pointer' : 'gaze';
+            enterExhibitionStage('tutorial');
+        };
+
+        window.exPrewarmCamera = async function() {
+            await window.startWebcamGaze({ prewarmOnly: true });
+            updateExhibitionCamBadge();
+            if (exhibitionMode && exStage === 'welcome') {
+                renderExhibitionStage();
+            }
+        };
+
+        window.exStartPointerDrawing = function() {
+            exInputMode = 'pointer';
+            resetArtCanvas();
+            hasDrawn = false;
+            startExhibitionCountdown();
+        };
+
+        window.exStartSessionFromTutorial = async function() {
+            if (exInputMode === 'pointer') {
+                window.exStartPointerDrawing();
+                return;
+            }
+            if (webcamRunning) {
+                exStage = 'calibrating';
+                syncExhibitionChrome();
+                setState(STATES.CALIBRATING);
+                return;
+            }
+            enterExhibitionStage('loading_cam');
+            const ok = await window.startWebcamGaze({ autoCalibrate: true });
+            if (!exhibitionMode) return;
+            if (ok) {
+                exStage = 'calibrating';
+                syncExhibitionChrome();
+            } else {
+                enterExhibitionStage('cam_fallback');
+            }
+        };
+
+        window.resetExhibitionToWelcome = function() {
+            clearExhibitionTimers();
+            clearSessionTimer();
+            cancelActiveSubmission();
+            hideDrawError();
+            resetArtCanvas();
+            cursorCtx.clearRect(0, 0, W, H);
+            prevPoint = null;
+            hasDrawn = false;
+            exLastPreviewDataUrl = '';
+            exLastErrorText = '';
+            setState(STATES.IDLE);
+            if (exhibitionMode) {
+                enterExhibitionStage('welcome');
+            } else {
+                setState(webcamRunning ? STATES.SEARCHING : STATES.IDLE);
+            }
+        };
+
+        window.setExhibitionMode = function(enabled) {
+            clearExhibitionTimers();
+            exhibitionMode = !!enabled;
+            if (exhibitionMode) {
+                window.resetExhibitionToWelcome();
+            } else {
+                syncExhibitionChrome();
+                if (webcamRunning && gazeState === STATES.IDLE) {
+                    setState(STATES.SEARCHING);
+                }
+            }
+            refreshDynamicDrawText();
+        };
+
+        window.toggleDisplayMode = function() {
+            singleScreenMode = !singleScreenMode;
+            try {
+                localStorage.setItem('ls_draw_display_mode', singleScreenMode ? 'single' : 'dual');
+            } catch (_) {}
+            updateDisplayModeUI();
+            if (exhibitionMode) {
+                renderExhibitionStage();
+            }
+        };
+
         drawI18n.mountSwitcher(document.getElementById('drawLangSwitch'), 'dark');
+        drawI18n.mountSwitcher(document.getElementById('exLangSwitch'), 'dark');
         drawI18n.applyDOM();
         refreshDynamicDrawText();
+        if (exhibitionMode) {
+            enterExhibitionStage('welcome');
+        } else {
+            syncExhibitionChrome();
+        }
     </script>
 </body>
 </html>
