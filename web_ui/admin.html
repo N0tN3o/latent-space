@@ -160,39 +160,43 @@
 
 <div id="adminAuthOverlay" class="auth-overlay">
     <form class="auth-card" onsubmit="submitAdminLogin(event)">
-        <h4 class="mb-2">Latent Space Admin</h4>
-        <p class="text-muted small mb-3">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h4 class="mb-0" data-i18n="admin.auth.title">Latent Space Admin</h4>
+            <span id="adminAuthLangSwitch"></span>
+        </div>
+        <p class="text-muted small mb-3" data-i18n-html="admin.auth.desc_html">
             Enter the admin passcode (printed at server startup, set via <code>ADMIN_PASSWORD</code>, or stored in <code>config/admin_pin.txt</code>).
         </p>
         <div class="mb-3">
-            <label class="form-label small" for="adminPasswordInput">Admin Passcode</label>
+            <label class="form-label small" for="adminPasswordInput" data-i18n="admin.auth.label">Admin Passcode</label>
             <input type="password" class="form-control" id="adminPasswordInput" autocomplete="current-password" required autofocus>
         </div>
         <div id="adminAuthError" class="alert alert-danger py-2 px-3 small d-none"></div>
-        <button type="submit" class="btn btn-success w-100">Unlock Command Center</button>
+        <button type="submit" class="btn btn-success w-100" data-i18n="admin.auth.submit">Unlock Command Center</button>
     </form>
 </div>
 
 <div class="container py-4" id="adminMainShell" style="display: none;">
     <header class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-3">
         <div>
-            <h3 class="mb-0">Latent Space <span class="text-muted fs-6">Command Center</span></h3>
+            <h3 class="mb-0">Latent Space <span class="text-muted fs-6" data-i18n="admin.header.subtitle">Command Center</span></h3>
         </div>
         <div class="d-flex flex-wrap align-items-center gap-2">
-            <a href="/" class="btn btn-sm btn-outline-light">Gallery</a>
-            <a href="/draw" class="btn btn-sm btn-outline-success">Browser Gaze Draw</a>
-            <a href="/kiosk" class="btn btn-sm btn-outline-info">Web Print Kiosk</a>
-            <span class="badge bg-secondary py-2 px-3" id="lastUpdate">Connecting...</span>
-            <button class="btn btn-sm btn-outline-danger" onclick="logoutAdmin()">Sign Out</button>
+            <span id="adminLangSwitch"></span>
+            <a href="/" class="btn btn-sm btn-outline-light" data-i18n="admin.header.gallery">Gallery</a>
+            <a href="/draw" class="btn btn-sm btn-outline-success" data-i18n="admin.header.draw">Browser Gaze Draw</a>
+            <a href="/kiosk" class="btn btn-sm btn-outline-info" data-i18n="admin.header.kiosk">Web Print Kiosk</a>
+            <span class="badge bg-secondary py-2 px-3" id="lastUpdate" data-i18n="admin.header.connecting">Connecting...</span>
+            <button class="btn btn-sm btn-outline-danger" onclick="logoutAdmin()" data-i18n="admin.header.logout">Sign Out</button>
         </div>
     </header>
 
     <ul class="nav nav-tabs mb-0" id="adminTabs">
-        <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-monitor">Monitor</a></li>
-        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-ai">AI &amp; Vision</a></li>
-        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-attributions">Attributions</a></li>
-        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-files">Prints &amp; Auto-Print</a></li>
-        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-logs">Logs</a></li>
+        <li class="nav-item"><a class="nav-link active" data-bs-toggle="tab" href="#tab-monitor" data-i18n="admin.tab.monitor">Monitor</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-ai" data-i18n="admin.tab.ai">AI &amp; Vision</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-attributions" data-i18n="admin.tab.attributions">Attributions</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-files" data-i18n="admin.tab.files">Prints &amp; Auto-Print</a></li>
+        <li class="nav-item"><a class="nav-link" data-bs-toggle="tab" href="#tab-logs" data-i18n="admin.tab.logs">Logs</a></li>
     </ul>
 
     <div class="card border-top-0 rounded-0 rounded-bottom p-4">
@@ -201,11 +205,11 @@
             <!-- 1. MONITOR TAB -->
             <div class="tab-pane fade show active" id="tab-monitor">
                 <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
-                    <h5 class="mb-0">System &amp; Pipeline Overview</h5>
+                    <h5 class="mb-0" data-i18n="admin.monitor.title">System &amp; Pipeline Overview</h5>
                     <div class="d-flex gap-2">
-                        <button class="btn btn-sm btn-success" onclick="triggerPipelineNow()" id="runPipelineBtn">Run Analysis on Current Drawing</button>
-                        <button class="btn btn-sm btn-outline-warning" onclick="stopOllamaNow()" id="stopOllamaBtn">Stop / Unload Ollama</button>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="updateMonitor()">Refresh</button>
+                        <button class="btn btn-sm btn-success" onclick="triggerPipelineNow()" id="runPipelineBtn" data-i18n="admin.monitor.run_btn">Run Analysis on Current Drawing</button>
+                        <button class="btn btn-sm btn-outline-warning" onclick="stopOllamaNow()" id="stopOllamaBtn" data-i18n="admin.monitor.stop_ollama">Stop / Unload Ollama</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="updateMonitor()" data-i18n="common.refresh">Refresh</button>
                     </div>
                 </div>
 
@@ -214,30 +218,30 @@
                 <div class="row g-3 mb-4" id="kpiRow">
                     <div class="col-6 col-md-3">
                         <div class="metric-box">
-                            <div class="metric-lbl">Pipeline Status</div>
+                            <div class="metric-lbl" data-i18n="admin.monitor.kpi_pipeline">Pipeline Status</div>
                             <div class="metric-val" id="kpiPipeline">-</div>
                             <div class="small text-muted" id="kpiPipelineSub">Idle</div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
                         <div class="metric-box">
-                            <div class="metric-lbl">Active AI Models</div>
+                            <div class="metric-lbl" data-i18n="admin.monitor.kpi_ai">Active AI Models</div>
                             <div class="metric-val fs-6 mt-1" id="kpiAI">-</div>
                             <div class="small text-muted" id="kpiVisionMode">-</div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
                         <div class="metric-box">
-                            <div class="metric-lbl">Prints (Today / Total)</div>
+                            <div class="metric-lbl" data-i18n="admin.monitor.kpi_prints">Prints (Today / Total)</div>
                             <div class="metric-val" id="kpiPrints">0 / 0</div>
                             <div class="small text-muted" id="kpiAutoPrint">Auto-Print: OFF</div>
                         </div>
                     </div>
                     <div class="col-6 col-md-3">
                         <div class="metric-box">
-                            <div class="metric-lbl">Attributions</div>
+                            <div class="metric-lbl" data-i18n="admin.monitor.kpi_attributions">Attributions</div>
                             <div class="metric-val fs-5" id="kpiAttribution">OFF</div>
-                            <div class="small text-muted">Switch in Attributions tab</div>
+                            <div class="small text-muted" data-i18n="admin.monitor.kpi_attr_hint">Switch in Attributions tab</div>
                         </div>
                     </div>
                 </div>
@@ -245,7 +249,7 @@
                 <div class="row g-3" id="monitor-container">
                     <div class="col-12 text-center py-4">
                         <div class="spinner-border text-success"></div>
-                        <p class="mt-2 text-muted">Loading system status...</p>
+                        <p class="mt-2 text-muted" data-i18n="admin.monitor.loading">Loading system status...</p>
                     </div>
                 </div>
             </div>
@@ -254,25 +258,25 @@
             <div class="tab-pane fade" id="tab-ai">
                 <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
                     <div>
-                        <h5 class="mb-0">Vision &amp; Language Model Configuration</h5>
-                        <div class="small text-muted">Configure your Vision perception model, Psychoanalyst LLM, and Poet LLM independently. Unavailable models can be selected to inspect requirements, but cannot be applied until installed or keyed.</div>
+                        <h5 class="mb-0" data-i18n="admin.ai.title">Vision, Language &amp; Translation Configuration</h5>
+                        <div class="small text-muted" data-i18n="admin.ai.subtitle">Configure your Vision perception model, Psychoanalyst LLM, Poet LLM, and EN → HU Translation engine independently.</div>
                     </div>
                     <div class="d-flex gap-2">
-                        <button class="btn btn-sm btn-outline-light" onclick="loadAIConfig()">Reload Models</button>
-                        <button class="btn btn-sm btn-success" id="saveAllAIBtn" onclick="saveAllAIConfig()">Apply &amp; Save All</button>
+                        <button class="btn btn-sm btn-outline-light" onclick="loadAIConfig()" data-i18n="admin.ai.reload">Reload Models</button>
+                        <button class="btn btn-sm btn-success" id="saveAllAIBtn" onclick="saveAllAIConfig()" data-i18n="admin.ai.save_all">Apply &amp; Save All</button>
                     </div>
                 </div>
 
                 <!-- 0. VISION & PERCEPTION MODEL CARD -->
                 <div class="p-3 rounded border border-secondary mb-4" style="background: #1a1e29;">
                     <div class="d-flex flex-wrap justify-content-between align-items-center mb-2 gap-2">
-                        <h5 class="mb-0 text-warning">0. Vision &amp; Perception Model <span class="text-muted fs-6">(Drawing Interpreter)</span></h5>
-                        <span class="badge bg-dark border border-secondary">Stage: visual perception</span>
+                        <h5 class="mb-0 text-warning"><span data-i18n="admin.ai.vision_title">0. Vision &amp; Perception Model</span> <span class="text-muted fs-6" data-i18n="admin.ai.vision_sub">(Drawing Interpreter)</span></h5>
+                        <span class="badge bg-dark border border-secondary" data-i18n="admin.ai.vision_stage">Stage: visual perception</span>
                     </div>
 
                     <div class="row g-2 mb-2 align-items-end">
                         <div class="col-md-7">
-                            <label class="form-label small text-muted mb-1">Vision Perception Mode</label>
+                            <label class="form-label small text-muted mb-1" data-i18n="admin.ai.vision_mode">Vision Perception Mode</label>
                             <select id="aiVisionMode" class="form-select form-select-sm">
                                 <option value="auto">Auto (Best Available Vision + Fractal &amp; Rorschach Geometry)</option>
                                 <option value="ollama_vision">Self-Hosted Ollama Vision (moondream / llava) + Fractal Geometry</option>
@@ -284,11 +288,11 @@
                             </select>
                         </div>
                         <div class="col-md-5">
-                            <label class="form-label small text-muted mb-1">PDF &amp; Gallery Badge Style</label>
+                            <label class="form-label small text-muted mb-1" data-i18n="admin.ai.badge_style">PDF &amp; Gallery Badge Style</label>
                             <select id="visionBadgeStyle" class="form-select form-select-sm">
-                                <option value="vision_only">Vision Archetype Only (e.g. SNAKE)</option>
-                                <option value="combined">Combined: Vision · Geometry (e.g. SNAKE · ELECTRIC DRIFT)</option>
-                                <option value="geometry_only">Geometry Archetype Only (vision still guides LLM)</option>
+                                <option value="vision_only" data-i18n="admin.ai.badge_vision_only">Vision Archetype Only (e.g. SNAKE)</option>
+                                <option value="combined" data-i18n="admin.ai.badge_combined">Combined: Vision · Geometry (e.g. SNAKE · ELECTRIC DRIFT)</option>
+                                <option value="geometry_only" data-i18n="admin.ai.badge_geometry_only">Geometry Archetype Only (vision still guides LLM)</option>
                             </select>
                         </div>
                     </div>
@@ -302,19 +306,19 @@
                     <div id="visionPanelOllama" class="mb-3">
                         <div class="row g-2 mb-2 align-items-end">
                             <div class="col-md-4">
-                                <label class="form-label small mb-1">Ollama Vision Model</label>
+                                <label class="form-label small mb-1" data-i18n="admin.ai.vision_ollama_model">Ollama Vision Model</label>
                                 <input type="text" id="aiOllamaVisionModel" class="form-control form-control-sm" placeholder="moondream">
                             </div>
                             <div class="col-md-2">
-                                <label class="form-label small mb-1">Temp (0-2)</label>
+                                <label class="form-label small mb-1" data-i18n="admin.ai.vision_temp">Temp (0–2)</label>
                                 <input type="number" step="0.05" min="0" max="2" id="visionOllamaTemp" class="form-control form-control-sm" value="0.4">
                             </div>
                             <div class="col-md-3">
-                                <label class="form-label small mb-1">Max Tokens</label>
+                                <label class="form-label small mb-1" data-i18n="admin.ai.vision_max_tokens">Max Tokens</label>
                                 <input type="number" step="8" min="16" max="1024" id="visionOllamaMaxTokens" class="form-control form-control-sm" value="96">
                             </div>
                             <div class="col-md-3">
-                                <label class="form-label small mb-1">Timeout (sec)</label>
+                                <label class="form-label small mb-1" data-i18n="admin.ai.vision_timeout">Timeout (sec)</label>
                                 <input type="number" step="5" min="5" max="180" id="visionOllamaTimeout" class="form-control form-control-sm" value="60">
                             </div>
                         </div>
@@ -322,13 +326,13 @@
                         <div class="d-flex flex-wrap gap-4 mb-2">
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="visionCleanLabel" checked>
-                                <label class="form-check-label small" for="visionCleanLabel" title="Strips conversational prefixes like '1) The lines resemble a snake.' down to 'Snake'">
+                                <label class="form-check-label small" for="visionCleanLabel" data-i18n="admin.ai.vision_clean_label" title="Strips conversational prefixes like '1) The lines resemble a snake.' down to 'Snake'">
                                     Auto-clean &amp; filter archetype badge (strips numbering &amp; filler sentences)
                                 </label>
                             </div>
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="visionIncludeDesc" checked>
-                                <label class="form-check-label small" for="visionIncludeDesc" title="Runs a second short vision pass to give the Psychoanalyst LLM richer visual context">
+                                <label class="form-check-label small" for="visionIncludeDesc" data-i18n="admin.ai.vision_include_desc" title="Runs a second short vision pass to give the Psychoanalyst LLM richer visual context">
                                     Run 2nd pass for detailed visual description
                                 </label>
                             </div>
@@ -336,11 +340,11 @@
 
                         <div class="row g-2">
                             <div class="col-md-6">
-                                <label class="form-label small mb-1">Archetype / Pareidolia Prompt <span class="text-muted">(Pass 1 — short 1–3 word badge)</span></label>
+                                <label class="form-label small mb-1" data-i18n="admin.ai.vision_label_prompt">Archetype / Pareidolia Prompt (Pass 1 — short 1–3 word badge)</label>
                                 <textarea class="form-control form-control-sm" id="visionLabelPrompt" rows="2"></textarea>
                             </div>
                             <div class="col-md-6">
-                                <label class="form-label small mb-1">Visual Description Prompt <span class="text-muted">(Pass 2 — fed to Psychoanalyst LLM)</span></label>
+                                <label class="form-label small mb-1" data-i18n="admin.ai.vision_desc_prompt">Visual Description Prompt (Pass 2 — fed to Psychoanalyst LLM)</label>
                                 <textarea class="form-control form-control-sm" id="visionDescPrompt" rows="2"></textarea>
                             </div>
                         </div>
@@ -350,11 +354,11 @@
                     <div id="visionPanelZeroShot" class="mb-3" style="display: none;">
                         <div class="row g-2">
                             <div class="col-md-6">
-                                <label class="form-label small mb-1">Custom Rorschach Archetype Concepts <span class="text-muted">(optional, comma or newline separated)</span></label>
+                                <label class="form-label small mb-1" data-i18n="admin.ai.vision_zs_arch">Custom Rorschach Archetype Concepts (optional, comma or newline separated)</label>
                                 <textarea class="form-control form-control-sm" id="visionZeroShotArchetypes" rows="2" placeholder="Leave blank for built-in 8 Rorschach archetypes (Watching Eyes, Wings in Flight, Labyrinth...)"></textarea>
                             </div>
                             <div class="col-md-6">
-                                <label class="form-label small mb-1">Custom Emotional Tone Concepts <span class="text-muted">(optional, comma or newline separated)</span></label>
+                                <label class="form-label small mb-1" data-i18n="admin.ai.vision_zs_tones">Custom Emotional Tone Concepts (optional, comma or newline separated)</label>
                                 <textarea class="form-control form-control-sm" id="visionZeroShotTones" rows="2" placeholder="Leave blank for built-in 6 emotional tones (Meditative Flow, Restless Urgency...)"></textarea>
                             </div>
                         </div>
@@ -364,7 +368,7 @@
                     <div id="visionPanelResnet" class="mb-3" style="display: none;">
                         <div class="row g-2">
                             <div class="col-md-4">
-                                <label class="form-label small mb-1">Top-K ImageNet Associations (1–5)</label>
+                                <label class="form-label small mb-1" data-i18n="admin.ai.vision_resnet_topk">Top-K ImageNet Associations (1–5)</label>
                                 <input type="number" min="1" max="5" step="1" id="visionResnetTopK" class="form-control form-control-sm" value="1">
                             </div>
                         </div>
@@ -374,9 +378,9 @@
                     <div id="visionPanelInfo" class="small text-muted mb-3" style="display: none;"></div>
 
                     <div class="d-flex flex-wrap gap-2 align-items-center">
-                        <button class="btn btn-sm btn-success" id="saveVisionBtn" onclick="saveVisionConfig()">Apply Vision Settings</button>
-                        <button class="btn btn-sm btn-outline-info" id="testVisionBtn" onclick="testVisionModel()">Test Vision on Latest Drawing</button>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="resetVisionDefaults()">Reset Prompts to Default</button>
+                        <button class="btn btn-sm btn-success" id="saveVisionBtn" onclick="saveVisionConfig()" data-i18n="admin.ai.apply_vision">Apply Vision Settings</button>
+                        <button class="btn btn-sm btn-outline-info" id="testVisionBtn" onclick="testVisionModel()" data-i18n="admin.ai.test_vision">Test Vision on Latest Drawing</button>
+                        <button class="btn btn-sm btn-outline-secondary" onclick="resetVisionDefaults()" data-i18n="admin.ai.reset_vision">Reset Prompts to Default</button>
                         <span id="vision_test_result" class="ms-1 small"></span>
                     </div>
                 </div>
@@ -387,16 +391,16 @@
                         <div class="col-md-6">
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="ttsEnabledToggle" onchange="saveTTSSettings()">
-                                <label class="form-check-label fw-bold" for="ttsEnabledToggle">
+                                <label class="form-check-label fw-bold" for="ttsEnabledToggle" data-i18n="admin.ai.tts_toggle">
                                     Enable Audio / Spoken Poem Generation (TTS)
                                 </label>
                             </div>
-                            <div class="small text-muted mt-1">
+                            <div class="small text-muted mt-1" data-i18n="admin.ai.tts_desc">
                                 Optional: leave OFF to skip audio synthesis completely. Audio errors are non-critical and never block readings.
                             </div>
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label small text-muted mb-1">TTS Provider</label>
+                            <label class="form-label small text-muted mb-1" data-i18n="admin.ai.tts_provider">TTS Provider</label>
                             <select id="ttsProviderSelect" class="form-select form-select-sm" onchange="saveTTSSettings()">
                                 <option value="elevenlabs">ElevenLabs</option>
                                 <option value="google_cloud">Google Cloud TTS</option>
@@ -408,15 +412,15 @@
                     </div>
                     <div class="row g-2 mt-2 align-items-end">
                         <div class="col-md-5">
-                            <label class="form-label small text-muted mb-1">Primary Voice ID (ElevenLabs Voice 1 or Google Cloud Voice Name)</label>
+                            <label class="form-label small text-muted mb-1" data-i18n="admin.ai.tts_voice1">Primary Voice ID (ElevenLabs Voice 1 or Google Cloud Voice Name)</label>
                             <input type="text" id="ttsVoice1Input" class="form-control form-control-sm" placeholder="45QiOxkuEAY6ckHqLMe8 or en-US-Chirp3-HD-Zephyr">
                         </div>
                         <div class="col-md-5">
-                            <label class="form-label small text-muted mb-1">Secondary Harmony Voice ID (ElevenLabs Voice 2)</label>
+                            <label class="form-label small text-muted mb-1" data-i18n="admin.ai.tts_voice2">Secondary Harmony Voice ID (ElevenLabs Voice 2)</label>
                             <input type="text" id="ttsVoice2Input" class="form-control form-control-sm" placeholder="tJHJUEHzOkMoPmJJ5jo2">
                         </div>
                         <div class="col-md-2">
-                            <button class="btn btn-sm btn-outline-light w-100" onclick="saveTTSSettings()">Save TTS</button>
+                            <button class="btn btn-sm btn-outline-light w-100" onclick="saveTTSSettings()" data-i18n="admin.ai.tts_save">Save TTS</button>
                         </div>
                     </div>
                 </div>
@@ -426,12 +430,12 @@
                     <div class="col-lg-6">
                         <div class="p-3 rounded border border-secondary h-100" style="background: #1a1e29;">
                             <div class="d-flex justify-content-between align-items-center mb-2">
-                                <h5 class="mb-0 text-success">1. Analysis Model <span class="text-muted fs-6">(Psychoanalyst)</span></h5>
+                                <h5 class="mb-0 text-success"><span data-i18n="admin.ai.analysis_title">1. Analysis Model</span> <span class="text-muted fs-6" data-i18n="admin.ai.analysis_sub">(Psychoanalyst)</span></h5>
                                 <span class="badge bg-dark border border-secondary">Role: analysis</span>
                             </div>
 
                             <div class="mb-3">
-                                <span class="small text-muted d-block mb-1">Quick Presets (Analysis):</span>
+                                <span class="small text-muted d-block mb-1" data-i18n="admin.ai.presets_analysis">Quick Presets (Analysis):</span>
                                 <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'llama3.1:8b', 'http://localhost:11434/v1')">Ollama (llama3.1:8b)</span>
                                 <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'llama3.2', 'http://localhost:11434/v1')">Ollama (llama3.2)</span>
                                 <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('analysis', 'ollama', 'llava', 'http://localhost:11434/v1', 'llava')">Ollama Vision (llava)</span>
@@ -442,7 +446,7 @@
 
                             <div class="row g-2 mb-2">
                                 <div class="col-md-5">
-                                    <label class="form-label small">AI Provider</label>
+                                    <label class="form-label small" data-i18n="admin.ai.provider">AI Provider</label>
                                     <select id="analysis_provider" class="form-select form-select-sm">
                                         <option value="ollama">Ollama (Local / On-Prem)</option>
                                         <option value="gemini">Google Gemini API</option>
@@ -452,33 +456,33 @@
                                     </select>
                                 </div>
                                 <div class="col-md-4">
-                                    <label class="form-label small">Model Name / ID</label>
+                                    <label class="form-label small" data-i18n="admin.ai.model_id">Model Name / ID</label>
                                     <input type="text" class="form-control form-control-sm" id="analysis_model" placeholder="e.g. llama3.2">
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label small">Temp (0-2)</label>
+                                    <label class="form-label small" data-i18n="admin.ai.vision_temp">Temp (0–2)</label>
                                     <input type="number" step="0.05" min="0" max="2" class="form-control form-control-sm" id="analysis_temp" value="0.7">
                                 </div>
                             </div>
 
                             <div class="row g-2 mb-2">
                                 <div class="col-md-6">
-                                    <label class="form-label small">Base URL <span class="text-muted">(Ollama / OpenAI)</span></label>
+                                    <label class="form-label small" data-i18n="admin.ai.base_url">Base URL (Ollama / OpenAI)</label>
                                     <input type="text" class="form-control form-control-sm" id="analysis_base_url" placeholder="http://localhost:11434/v1">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label small">API Key <span class="text-muted" id="analysis_api_key_status">(Optional for Ollama)</span></label>
-                                    <input type="password" class="form-control form-control-sm" id="analysis_api_key" placeholder="Leave blank to keep existing">
+                                    <label class="form-label small"><span data-i18n="admin.ai.api_key">API Key</span> <span class="text-muted" id="analysis_api_key_status">(Optional for Ollama)</span></label>
+                                    <input type="password" class="form-control form-control-sm" id="analysis_api_key" data-i18n-placeholder="admin.ai.api_key_placeholder" placeholder="Leave blank to keep existing">
                                     <div class="form-check mt-1">
                                         <input class="form-check-input" type="checkbox" id="analysis_clear_api_key">
-                                        <label class="form-check-label small text-muted" for="analysis_clear_api_key">Clear saved API key</label>
+                                        <label class="form-check-label small text-muted" for="analysis_clear_api_key" data-i18n="admin.ai.clear_api_key">Clear saved API key</label>
                                     </div>
                                 </div>
                             </div>
 
                             <div class="row g-2 mb-2">
-                                <div class="col-md-4">
-                                    <label class="form-label small">Failover Provider</label>
+                                <div class="col-md-3">
+                                    <label class="form-label small" data-i18n="admin.ai.failover_provider">Failover Provider</label>
                                     <select id="analysis_fallback_provider" class="form-select form-select-sm">
                                         <option value="auto">Auto (Cloud &lt;-&gt; Ollama)</option>
                                         <option value="gemini">Google Gemini</option>
@@ -489,36 +493,40 @@
                                         <option value="none">Disabled</option>
                                     </select>
                                 </div>
-                                <div class="col-md-4">
-                                    <label class="form-label small">Failover Model</label>
-                                    <input type="text" class="form-control form-control-sm" id="analysis_fallback_model" placeholder="(Optional override)">
+                                <div class="col-md-3">
+                                    <label class="form-label small" data-i18n="admin.ai.failover_model">Failover Model</label>
+                                    <input type="text" class="form-control form-control-sm" id="analysis_fallback_model" data-i18n-placeholder="admin.ai.failover_placeholder" placeholder="(Optional override)">
                                 </div>
-                                <div class="col-md-4">
-                                    <label class="form-label small">Assistant Name</label>
+                                <div class="col-md-3">
+                                    <label class="form-label small" data-i18n="admin.ai.assistant_name">Assistant Name</label>
                                     <input type="text" class="form-control form-control-sm" id="analysis_name">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small" data-i18n="admin.ai.max_words" title="Hard word cap (±10% tolerance, 0 = off). Condenses or trims on sentence boundaries without cutting mid-sentence.">Max Words (±10%)</label>
+                                    <input type="number" step="5" min="0" max="500" class="form-control form-control-sm" id="analysis_max_words" value="110">
                                 </div>
                             </div>
 
                             <div class="mb-2">
-                                <label class="form-label small">System Prompt / Instructions (Analysis)</label>
+                                <label class="form-label small" data-i18n="admin.ai.sys_prompt_analysis">System Prompt / Instructions (Analysis)</label>
                                 <textarea class="form-control form-control-sm" id="analysis_desc" rows="4"></textarea>
                             </div>
 
                             <details class="mb-3">
-                                <summary class="small text-muted" style="cursor:pointer;">Advanced Persona Fields (Purpose, Expertise, Restrictions...)</summary>
+                                <summary class="small text-muted" style="cursor:pointer;" data-i18n="admin.ai.advanced_persona">Advanced Persona Fields (Purpose, Expertise, Restrictions...)</summary>
                                 <div class="mt-2 row g-2">
-                                    <div class="col-md-6"><label class="form-label small">Purpose</label><input type="text" class="form-control form-control-sm" id="analysis_purpose"></div>
-                                    <div class="col-md-6"><label class="form-label small">Expertise</label><input type="text" class="form-control form-control-sm" id="analysis_expertise"></div>
-                                    <div class="col-md-6"><label class="form-label small">Capabilities</label><input type="text" class="form-control form-control-sm" id="analysis_capabilities"></div>
-                                    <div class="col-md-6"><label class="form-label small">Restrictions</label><input type="text" class="form-control form-control-sm" id="analysis_restrictions"></div>
-                                    <div class="col-12"><label class="form-label small">Additional Instructions</label><input type="text" class="form-control form-control-sm" id="analysis_additional"></div>
+                                    <div class="col-md-6"><label class="form-label small" data-i18n="admin.ai.field_purpose">Purpose</label><input type="text" class="form-control form-control-sm" id="analysis_purpose"></div>
+                                    <div class="col-md-6"><label class="form-label small" data-i18n="admin.ai.field_expertise">Expertise</label><input type="text" class="form-control form-control-sm" id="analysis_expertise"></div>
+                                    <div class="col-md-6"><label class="form-label small" data-i18n="admin.ai.field_capabilities">Capabilities</label><input type="text" class="form-control form-control-sm" id="analysis_capabilities"></div>
+                                    <div class="col-md-6"><label class="form-label small" data-i18n="admin.ai.field_restrictions">Restrictions</label><input type="text" class="form-control form-control-sm" id="analysis_restrictions"></div>
+                                    <div class="col-12"><label class="form-label small" data-i18n="admin.ai.field_additional">Additional Instructions</label><input type="text" class="form-control form-control-sm" id="analysis_additional"></div>
                                 </div>
                             </details>
 
                             <div id="analysisAvailabilityNote" class="small mb-2"></div>
                             <div class="d-flex flex-wrap gap-2 align-items-center">
-                                <button class="btn btn-sm btn-success" id="saveAnalysisBtn" onclick="saveRoleConfig('analysis')">Apply Analysis Model</button>
-                                <button class="btn btn-sm btn-outline-info" onclick="testRoleConnection('analysis')">Test Analysis Model</button>
+                                <button class="btn btn-sm btn-success" id="saveAnalysisBtn" onclick="saveRoleConfig('analysis')" data-i18n="admin.ai.apply_analysis">Apply Analysis Model</button>
+                                <button class="btn btn-sm btn-outline-info" onclick="testRoleConnection('analysis')" data-i18n="admin.ai.test_analysis">Test Analysis Model</button>
                                 <span id="analysis_test_result" class="ms-1 small"></span>
                             </div>
                         </div>
@@ -528,14 +536,14 @@
                     <div class="col-lg-6">
                         <div class="p-3 rounded border border-secondary h-100" style="background: #1a1e29;">
                             <div class="d-flex justify-content-between align-items-center mb-2">
-                                <h5 class="mb-0 text-info">2. Poem Model <span class="text-muted fs-6">(Lyrical Poet)</span></h5>
-                                <button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="copyAnalysisToPoem()" title="Copy Provider, Model Name, Base URL, and API Key from Analysis Model">
+                                <h5 class="mb-0 text-info"><span data-i18n="admin.ai.poem_title">2. Poem Model</span> <span class="text-muted fs-6" data-i18n="admin.ai.poem_sub">(Lyrical Poet)</span></h5>
+                                <button class="btn btn-sm btn-outline-secondary py-0 px-2" onclick="copyAnalysisToPoem()" data-i18n="admin.ai.copy_to_poem" title="Copy Provider, Model Name, Base URL, and API Key from Analysis Model">
                                     Copy Provider &amp; Model from Analysis
                                 </button>
                             </div>
 
                             <div class="mb-3">
-                                <span class="small text-muted d-block mb-1">Quick Presets (Poem):</span>
+                                <span class="small text-muted d-block mb-1" data-i18n="admin.ai.presets_poem">Quick Presets (Poem):</span>
                                 <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('poem', 'ollama', 'llama3.1:8b', 'http://localhost:11434/v1')">Ollama (llama3.1:8b)</span>
                                 <span class="badge bg-secondary me-1 mb-1 preset-chip" onclick="applyRolePreset('poem', 'ollama', 'llama3.2', 'http://localhost:11434/v1')">Ollama (llama3.2)</span>
                                 <span class="badge bg-primary me-1 mb-1 preset-chip" onclick="applyRolePreset('poem', 'gemini', 'gemini-2.0-flash', '')">Gemini 2.0 Flash</span>
@@ -545,7 +553,7 @@
 
                             <div class="row g-2 mb-2">
                                 <div class="col-md-5">
-                                    <label class="form-label small">AI Provider</label>
+                                    <label class="form-label small" data-i18n="admin.ai.provider">AI Provider</label>
                                     <select id="poem_provider" class="form-select form-select-sm">
                                         <option value="ollama">Ollama (Local / On-Prem)</option>
                                         <option value="gemini">Google Gemini API</option>
@@ -555,33 +563,33 @@
                                     </select>
                                 </div>
                                 <div class="col-md-4">
-                                    <label class="form-label small">Model Name / ID</label>
+                                    <label class="form-label small" data-i18n="admin.ai.model_id">Model Name / ID</label>
                                     <input type="text" class="form-control form-control-sm" id="poem_model" placeholder="e.g. llama3.2">
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label small">Temp (0-2)</label>
+                                    <label class="form-label small" data-i18n="admin.ai.vision_temp">Temp (0–2)</label>
                                     <input type="number" step="0.05" min="0" max="2" class="form-control form-control-sm" id="poem_temp" value="0.8">
                                 </div>
                             </div>
 
                             <div class="row g-2 mb-2">
                                 <div class="col-md-6">
-                                    <label class="form-label small">Base URL <span class="text-muted">(Ollama / OpenAI)</span></label>
+                                    <label class="form-label small" data-i18n="admin.ai.base_url">Base URL (Ollama / OpenAI)</label>
                                     <input type="text" class="form-control form-control-sm" id="poem_base_url" placeholder="http://localhost:11434/v1">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label small">API Key <span class="text-muted" id="poem_api_key_status">(Optional for Ollama)</span></label>
-                                    <input type="password" class="form-control form-control-sm" id="poem_api_key" placeholder="Leave blank to keep existing">
+                                    <label class="form-label small"><span data-i18n="admin.ai.api_key">API Key</span> <span class="text-muted" id="poem_api_key_status">(Optional for Ollama)</span></label>
+                                    <input type="password" class="form-control form-control-sm" id="poem_api_key" data-i18n-placeholder="admin.ai.api_key_placeholder" placeholder="Leave blank to keep existing">
                                     <div class="form-check mt-1">
                                         <input class="form-check-input" type="checkbox" id="poem_clear_api_key">
-                                        <label class="form-check-label small text-muted" for="poem_clear_api_key">Clear saved API key</label>
+                                        <label class="form-check-label small text-muted" for="poem_clear_api_key" data-i18n="admin.ai.clear_api_key">Clear saved API key</label>
                                     </div>
                                 </div>
                             </div>
 
                             <div class="row g-2 mb-2">
                                 <div class="col-md-4">
-                                    <label class="form-label small">Failover Provider</label>
+                                    <label class="form-label small" data-i18n="admin.ai.failover_provider">Failover Provider</label>
                                     <select id="poem_fallback_provider" class="form-select form-select-sm">
                                         <option value="auto">Auto (Cloud &lt;-&gt; Ollama)</option>
                                         <option value="gemini">Google Gemini</option>
@@ -593,39 +601,147 @@
                                     </select>
                                 </div>
                                 <div class="col-md-4">
-                                    <label class="form-label small">Failover Model</label>
-                                    <input type="text" class="form-control form-control-sm" id="poem_fallback_model" placeholder="(Optional override)">
+                                    <label class="form-label small" data-i18n="admin.ai.failover_model">Failover Model</label>
+                                    <input type="text" class="form-control form-control-sm" id="poem_fallback_model" data-i18n-placeholder="admin.ai.failover_placeholder" placeholder="(Optional override)">
                                 </div>
                                 <div class="col-md-4">
-                                    <label class="form-label small">Assistant Name</label>
+                                    <label class="form-label small" data-i18n="admin.ai.assistant_name">Assistant Name</label>
                                     <input type="text" class="form-control form-control-sm" id="poem_name">
                                 </div>
                             </div>
 
                             <div class="mb-2">
-                                <label class="form-label small">System Prompt / Instructions (Poem)</label>
+                                <label class="form-label small" data-i18n="admin.ai.sys_prompt_poem">System Prompt / Instructions (Poem / Haiku)</label>
                                 <textarea class="form-control form-control-sm" id="poem_desc" rows="4"></textarea>
                             </div>
 
                             <details class="mb-3">
-                                <summary class="small text-muted" style="cursor:pointer;">Advanced Persona Fields (Purpose, Expertise, Restrictions...)</summary>
+                                <summary class="small text-muted" style="cursor:pointer;" data-i18n="admin.ai.advanced_persona">Advanced Persona Fields (Purpose, Expertise, Restrictions...)</summary>
                                 <div class="mt-2 row g-2">
-                                    <div class="col-md-6"><label class="form-label small">Purpose</label><input type="text" class="form-control form-control-sm" id="poem_purpose"></div>
-                                    <div class="col-md-6"><label class="form-label small">Expertise</label><input type="text" class="form-control form-control-sm" id="poem_expertise"></div>
-                                    <div class="col-md-6"><label class="form-label small">Capabilities</label><input type="text" class="form-control form-control-sm" id="poem_capabilities"></div>
-                                    <div class="col-md-6"><label class="form-label small">Restrictions</label><input type="text" class="form-control form-control-sm" id="poem_restrictions"></div>
-                                    <div class="col-12"><label class="form-label small">Additional Instructions</label><input type="text" class="form-control form-control-sm" id="poem_additional"></div>
+                                    <div class="col-md-6"><label class="form-label small" data-i18n="admin.ai.field_purpose">Purpose</label><input type="text" class="form-control form-control-sm" id="poem_purpose"></div>
+                                    <div class="col-md-6"><label class="form-label small" data-i18n="admin.ai.field_expertise">Expertise</label><input type="text" class="form-control form-control-sm" id="poem_expertise"></div>
+                                    <div class="col-md-6"><label class="form-label small" data-i18n="admin.ai.field_capabilities">Capabilities</label><input type="text" class="form-control form-control-sm" id="poem_capabilities"></div>
+                                    <div class="col-md-6"><label class="form-label small" data-i18n="admin.ai.field_restrictions">Restrictions</label><input type="text" class="form-control form-control-sm" id="poem_restrictions"></div>
+                                    <div class="col-12"><label class="form-label small" data-i18n="admin.ai.field_additional">Additional Instructions</label><input type="text" class="form-control form-control-sm" id="poem_additional"></div>
                                 </div>
                             </details>
 
                             <div id="poemAvailabilityNote" class="small mb-2"></div>
                             <div class="d-flex flex-wrap gap-2 align-items-center">
-                                <button class="btn btn-sm btn-success" id="savePoemBtn" onclick="saveRoleConfig('poem')">Apply Poem Model</button>
-                                <button class="btn btn-sm btn-outline-info" onclick="testRoleConnection('poem')">Test Poem Model</button>
+                                <button class="btn btn-sm btn-success" id="savePoemBtn" onclick="saveRoleConfig('poem')" data-i18n="admin.ai.apply_poem">Apply Poem Model</button>
+                                <button class="btn btn-sm btn-outline-info" onclick="testRoleConnection('poem')" data-i18n="admin.ai.test_poem">Test Poem Model</button>
                                 <span id="poem_test_result" class="ms-1 small"></span>
                             </div>
                         </div>
                     </div>
+                </div>
+
+                <!-- 3. MULTILINGUAL TRANSLATION CARD (EN -> HU) -->
+                <div class="p-3 rounded border border-secondary mt-4" style="background: #1a1e29;">
+                    <div class="d-flex flex-wrap justify-content-between align-items-center mb-2 gap-2">
+                        <h5 class="mb-0 text-primary">
+                            <span data-i18n="admin.tr.title">3. Multilingual Translation (EN → HU)</span>
+                            <span class="text-muted fs-6" data-i18n="admin.tr.sub">(Bilingual Psychoanalysis, Poem &amp; Archetype)</span>
+                        </h5>
+                        <span class="badge bg-dark border border-secondary" data-i18n="admin.tr.badge">Stage: bilingual EN + HU</span>
+                    </div>
+
+                    <div class="row g-3 mb-3 align-items-end">
+                        <div class="col-md-5">
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="translationEnabledToggle" checked onchange="syncTranslationPanels()">
+                                <label class="form-check-label fw-bold" for="translationEnabledToggle" data-i18n="admin.tr.enable">
+                                    Enable Hungarian Bilingual Translation
+                                </label>
+                            </div>
+                            <div class="small text-muted mt-1" data-i18n="admin.tr.enable_hint">
+                                Saves both EN and HU per drawing so Gallery, Gaze Draw, Kiosk &amp; Admin can each switch language independently.
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label small text-muted mb-1" data-i18n="admin.tr.mode_label">Translation Engine</label>
+                            <select id="translationModeSelect" class="form-select form-select-sm" onchange="syncTranslationPanels()">
+                                <option value="local_nmt" data-i18n="admin.tr.mode_local">Local CPU NMT (Helsinki-NLP/opus-mt-tc-big-en-hu — 0 MB VRAM, ~1s overlapped)</option>
+                                <option value="ollama" data-i18n="admin.tr.mode_ollama">Local Ollama Translator (e.g. translategemma:4b / gemma3:4b)</option>
+                                <option value="native_llm" data-i18n="admin.tr.mode_native">Native Multilingual LLM (Primary Analysis &amp; Poem models write Hungarian directly)</option>
+                                <option value="off" data-i18n="admin.tr.mode_off">Disabled (English only)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small text-muted mb-1" data-i18n="admin.tr.print_lang_label">Default Auto-Print PDF Language</label>
+                            <select id="translationDefaultPrintLang" class="form-select form-select-sm">
+                                <option value="en" data-i18n="admin.tr.print_lang_en">English (EN)</option>
+                                <option value="hu" data-i18n="admin.tr.print_lang_hu">Hungarian (HU)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="translationAvailabilityBanner" class="p-2 px-3 rounded border border-secondary mb-3 small" style="background: #141822;">
+                        <span class="text-muted" data-i18n="admin.tr.status_checking">Checking translation model cache, Python packages, and Ollama models...</span>
+                    </div>
+
+                    <!-- Mode Panel: Local CPU NMT -->
+                    <div id="translationPanelLocalNmt" class="mb-3">
+                        <div class="row g-2 align-items-end">
+                            <div class="col-md-6">
+                                <label class="form-label small mb-1" data-i18n="admin.tr.nmt_model">HuggingFace CPU NMT Model ID</label>
+                                <input type="text" id="translationNmtModel" class="form-control form-control-sm" value="Helsinki-NLP/opus-mt-tc-big-en-hu" placeholder="Helsinki-NLP/opus-mt-tc-big-en-hu">
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small mb-1" data-i18n="admin.tr.nmt_threads">CPU Threads Cap (1–16)</label>
+                                <input type="number" id="translationNmtThreads" class="form-control form-control-sm" min="1" max="16" step="1" value="6">
+                            </div>
+                            <div class="col-md-4">
+                                <div class="form-check form-switch mb-1">
+                                    <input class="form-check-input" type="checkbox" id="translationNmtPreload">
+                                    <label class="form-check-label small" for="translationNmtPreload" data-i18n="admin.tr.nmt_preload">
+                                        Preload CPU NMT model on server startup
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Mode Panel: Dedicated Ollama Translator -->
+                    <div id="translationPanelOllama" class="mb-3" style="display: none;">
+                        <div class="mb-2">
+                            <span class="badge bg-secondary me-1 preset-chip" onclick="document.getElementById('translationOllamaModel').value='translategemma:4b'">translategemma:4b</span>
+                            <span class="badge bg-secondary me-1 preset-chip" onclick="document.getElementById('translationOllamaModel').value='gemma3:4b'">gemma3:4b</span>
+                            <span class="badge bg-secondary me-1 preset-chip" onclick="document.getElementById('translationOllamaModel').value='jobautomation/OpenEuroLLM-Hungarian'">OpenEuroLLM-Hungarian</span>
+                            <span class="badge bg-secondary me-1 preset-chip" onclick="document.getElementById('translationOllamaModel').value='qwen3:4b'">qwen3:4b</span>
+                        </div>
+                        <div class="row g-2 align-items-end">
+                            <div class="col-md-4">
+                                <label class="form-label small mb-1" data-i18n="admin.tr.ollama_model">Ollama Translation Model</label>
+                                <input type="text" id="translationOllamaModel" class="form-control form-control-sm" value="translategemma:4b" placeholder="translategemma:4b">
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small mb-1" data-i18n="admin.tr.ollama_temp">Temp (0–2)</label>
+                                <input type="number" id="translationOllamaTemp" class="form-control form-control-sm" min="0" max="2" step="0.05" value="0.2">
+                            </div>
+                            <div class="col-md-2">
+                                <label class="form-label small mb-1" data-i18n="admin.tr.ollama_timeout">Timeout (sec)</label>
+                                <input type="number" id="translationOllamaTimeout" class="form-control form-control-sm" min="5" max="180" step="5" value="45">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label small mb-1" data-i18n="admin.tr.ollama_url">Ollama Base URL (optional override)</label>
+                                <input type="text" id="translationOllamaUrl" class="form-control form-control-sm" placeholder="http://localhost:11434">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Mode Panel: Native Multilingual LLM -->
+                    <div id="translationPanelNative" class="small text-muted mb-3" style="display: none;" data-i18n="admin.tr.native_note">
+                        Native Multilingual mode asks your configured Analysis and Poem LLM providers to author Hungarian psychoanalysis and poetry directly. Works best with gemma3:4b, jobautomation/OpenEuroLLM-Hungarian, qwen3:4b, Gemini, or Claude.
+                    </div>
+
+                    <div class="d-flex flex-wrap gap-2 align-items-center">
+                        <button class="btn btn-sm btn-success" id="saveTranslationBtn" onclick="saveTranslationSettings()" data-i18n="admin.tr.apply">Apply Translation Settings</button>
+                        <button class="btn btn-sm btn-outline-warning" id="preloadTranslationBtn" onclick="preloadTranslationModel()" data-i18n="admin.tr.preload">Download / Preload CPU Model</button>
+                        <button class="btn btn-sm btn-outline-info" id="testTranslationBtn" onclick="testTranslationEngine()" data-i18n="admin.tr.test">Test EN → HU Translation</button>
+                        <span id="translation_test_result" class="ms-1 small"></span>
+                    </div>
+                    <div id="translationPreviewBox" class="mt-2 p-2 px-3 rounded border border-secondary small" style="display: none; background: #121620;"></div>
                 </div>
             </div>
 
@@ -633,12 +749,12 @@
             <div class="tab-pane fade" id="tab-attributions">
                 <div class="d-flex justify-content-between align-items-center mb-3">
                     <div>
-                        <h5 class="mb-1">Attributions &amp; Community Branding</h5>
-                        <p class="text-muted small mb-0">
+                        <h5 class="mb-1" data-i18n="admin.attr.title">Attributions &amp; Community Branding</h5>
+                        <p class="text-muted small mb-0" data-i18n="admin.attr.subtitle">
                             Independently toggle Veszprém Vibe and/or Kasboek logos and attribution links on the Gallery, Print Kiosk, and PDF prints.
                         </p>
                     </div>
-                    <button class="btn btn-success" onclick="saveAttributions()">Save Attribution Settings</button>
+                    <button class="btn btn-success" onclick="saveAttributions()" data-i18n="admin.attr.save">Save Attribution Settings</button>
                 </div>
 
                 <div class="row g-4">
@@ -648,23 +764,23 @@
                             <div class="d-flex justify-content-between align-items-center mb-2">
                                 <div class="form-check form-switch mb-0">
                                     <input class="form-check-input" type="checkbox" id="vvEnabled" onchange="updateAttrPreview()" style="transform: scale(1.3); margin-right: 12px;">
-                                    <label class="form-check-label fw-bold" for="vvEnabled">
+                                    <label class="form-check-label fw-bold" for="vvEnabled" data-i18n="admin.attr.vv_enable">
                                         Enable Veszprém Vibe Attribution
                                     </label>
                                 </div>
-                                <span class="badge bg-info text-dark">Community</span>
+                                <span class="badge bg-info text-dark" data-i18n="admin.attr.vv_community">Community</span>
                             </div>
 
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" id="vvShowLogo" onchange="updateAttrPreview()" checked>
-                                <label class="form-check-label text-muted" for="vvShowLogo">
+                                <label class="form-check-label text-muted" for="vvShowLogo" data-i18n="admin.attr.vv_show_logo">
                                     Display Veszprém Vibe SVG Logo alongside attribution text
                                 </label>
                             </div>
 
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label small text-muted mb-1">Logo Variant Preset</label>
+                                    <label class="form-label small text-muted mb-1" data-i18n="admin.attr.vv_preset">Logo Variant Preset</label>
                                     <select class="form-select form-select-sm" id="vvLogoPreset" onchange="applyVvLogoPreset()">
                                         <option value="/assets/veszprem-vibe/vv-skyline-on-paper.svg">Skyline (Paper + Amber Accent)</option>
                                         <option value="/assets/veszprem-vibe/vv-skyline-solid-navy.svg">Skyline (Solid Navy)</option>
@@ -677,57 +793,57 @@
                                     </select>
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label small text-muted mb-1">Logo Path / URL</label>
+                                    <label class="form-label small text-muted mb-1" data-i18n="admin.attr.logo_path">Logo Path / URL</label>
                                     <input type="text" class="form-control form-control-sm" id="vvLogoPath" value="/assets/veszprem-vibe/vv-skyline-on-paper.svg" oninput="syncVvLogoPreset(); updateAttrPreview()">
                                 </div>
                             </div>
 
                             <div class="row g-2 mb-2">
                                 <div class="col-md-7">
-                                    <label class="form-label small">Intro Text</label>
+                                    <label class="form-label small" data-i18n="admin.attr.intro_text">Intro Text</label>
                                     <input type="text" class="form-control form-control-sm" id="vvIntro" value="Created for the Veszprém Vibe community." oninput="updateAttrPreview()">
                                 </div>
                                 <div class="col-md-5">
-                                    <label class="form-label small">Link Prefix</label>
+                                    <label class="form-label small" data-i18n="admin.attr.link_prefix">Link Prefix</label>
                                     <input type="text" class="form-control form-control-sm" id="vvLearnMore" value="Connect with us:" oninput="updateAttrPreview()">
                                 </div>
                             </div>
 
                             <div class="row g-2 mb-2">
                                 <div class="col-md-5">
-                                    <label class="form-label small">Website Label</label>
+                                    <label class="form-label small" data-i18n="admin.attr.web_label">Website Label</label>
                                     <input type="text" class="form-control form-control-sm" id="vvWebLabel" value="veszpremvibe.hu" oninput="updateAttrPreview()">
                                 </div>
                                 <div class="col-md-7">
-                                    <label class="form-label small">Website URL</label>
+                                    <label class="form-label small" data-i18n="admin.attr.web_url">Website URL</label>
                                     <input type="url" class="form-control form-control-sm" id="vvWebUrl" value="https://veszpremvibe.hu" placeholder="https://veszpremvibe.hu" oninput="updateAttrPreview()">
                                 </div>
                             </div>
 
                             <div class="row g-2 mb-2">
                                 <div class="col-md-5">
-                                    <label class="form-label small">LinkedIn Label</label>
+                                    <label class="form-label small" data-i18n="admin.attr.li_label">LinkedIn Label</label>
                                     <input type="text" class="form-control form-control-sm" id="vvLiLabel" value="LinkedIn" oninput="updateAttrPreview()">
                                 </div>
                                 <div class="col-md-7">
-                                    <label class="form-label small">LinkedIn URL</label>
+                                    <label class="form-label small" data-i18n="admin.attr.li_url">LinkedIn URL</label>
                                     <input type="url" class="form-control form-control-sm" id="vvLiUrl" placeholder="https://www.linkedin.com/company/..." oninput="updateAttrPreview()">
                                 </div>
                             </div>
 
                             <div class="row g-2 mb-2">
                                 <div class="col-md-5">
-                                    <label class="form-label small">Facebook Label</label>
+                                    <label class="form-label small" data-i18n="admin.attr.fb_label">Facebook Label</label>
                                     <input type="text" class="form-control form-control-sm" id="vvFbLabel" value="Facebook" oninput="updateAttrPreview()">
                                 </div>
                                 <div class="col-md-7">
-                                    <label class="form-label small">Facebook URL</label>
+                                    <label class="form-label small" data-i18n="admin.attr.fb_url">Facebook URL</label>
                                     <input type="url" class="form-control form-control-sm" id="vvFbUrl" placeholder="https://www.facebook.com/..." oninput="updateAttrPreview()">
                                 </div>
                             </div>
 
                             <div>
-                                <label class="form-label small">Custom Note (Optional)</label>
+                                <label class="form-label small" data-i18n="admin.attr.custom_note">Custom Note (Optional)</label>
                                 <input type="text" class="form-control form-control-sm" id="vvCustomNote" placeholder="e.g. Veszprém Vibe Build Day" oninput="updateAttrPreview()">
                             </div>
                         </div>
@@ -736,61 +852,61 @@
                         <div class="p-3 rounded border border-secondary mb-3" style="background: #1d222e;">
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" id="attrEnabled" onchange="updateAttrPreview()" style="transform: scale(1.3); margin-right: 12px;">
-                                <label class="form-check-label fw-bold" for="attrEnabled">
+                                <label class="form-check-label fw-bold" for="attrEnabled" data-i18n="admin.attr.kas_enable">
                                     Enable Kasboek Attributions
                                 </label>
                             </div>
                             <div class="form-check form-switch mb-2">
                                 <input class="form-check-input" type="checkbox" id="attrShowLogo" onchange="updateAttrPreview()" checked>
-                                <label class="form-check-label text-muted" for="attrShowLogo">
+                                <label class="form-check-label text-muted" for="attrShowLogo" data-i18n="admin.attr.kas_show_logo">
                                     Display Kasboek Logo alongside attribution text
                                 </label>
                             </div>
                             <div>
-                                <label class="form-label small text-muted mb-1">Logo Path / URL</label>
+                                <label class="form-label small text-muted mb-1" data-i18n="admin.attr.logo_path">Logo Path / URL</label>
                                 <input type="text" class="form-control form-control-sm" id="attrLogoPath" value="/assets/kasboek/kasboek-logo.jpg" oninput="updateAttrPreview()">
                             </div>
                         </div>
 
                         <div class="row g-3 mb-3">
                             <div class="col-md-6">
-                                <label class="form-label">Intro Text</label>
+                                <label class="form-label" data-i18n="admin.attr.intro_text">Intro Text</label>
                                 <input type="text" class="form-control" id="attrIntro" value="Made possible by Kasboek." oninput="updateAttrPreview()">
                             </div>
                             <div class="col-md-6">
-                                <label class="form-label">"Learn More" Prefix</label>
+                                <label class="form-label" data-i18n="admin.attr.learn_more_prefix">"Learn More" Prefix</label>
                                 <input type="text" class="form-control" id="attrLearnMore" value="To learn more, visit" oninput="updateAttrPreview()">
                             </div>
                         </div>
 
                         <div class="row g-3 mb-3">
                             <div class="col-md-5">
-                                <label class="form-label">Website Link Label</label>
+                                <label class="form-label" data-i18n="admin.attr.kas_web_label">Website Link Label</label>
                                 <input type="text" class="form-control" id="attrWebLabel" value="Kasboek Website" oninput="updateAttrPreview()">
                             </div>
                             <div class="col-md-7">
-                                <label class="form-label">Kasboek Website URL</label>
+                                <label class="form-label" data-i18n="admin.attr.kas_web_url">Kasboek Website URL</label>
                                 <input type="url" class="form-control" id="attrWebUrl" value="https://kasboek.nl" oninput="updateAttrPreview()">
                             </div>
                         </div>
 
                         <div class="row g-3 mb-3">
                             <div class="col-md-5">
-                                <label class="form-label">Company LinkedIn Label</label>
+                                <label class="form-label" data-i18n="admin.attr.kas_li_label">Company LinkedIn Label</label>
                                 <input type="text" class="form-control" id="attrLiLabel" value="Kasboek LinkedIn" oninput="updateAttrPreview()">
                             </div>
                             <div class="col-md-7">
-                                <label class="form-label">Kasboek LinkedIn URL</label>
+                                <label class="form-label" data-i18n="admin.attr.kas_li_url">Kasboek LinkedIn URL</label>
                                 <input type="url" class="form-control" id="attrLiUrl" value="https://www.linkedin.com/company/kasboek" oninput="updateAttrPreview()">
                             </div>
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label">Founders / Owners Thank-You Prefix</label>
+                            <label class="form-label" data-i18n="admin.attr.thanks_prefix">Founders / Owners Thank-You Prefix</label>
                             <input type="text" class="form-control" id="attrThanks" value="Thank you for letting us use this:" oninput="updateAttrPreview()">
                         </div>
 
-                        <h6 class="text-muted mt-3 mb-2">CEO / Owner / Co-Founders (1–3 LinkedIn Links)</h6>
+                        <h6 class="text-muted mt-3 mb-2" data-i18n="admin.attr.founders_heading">CEO / Owner / Co-Founders (1–3 LinkedIn Links)</h6>
                         <div class="row g-2 mb-2">
                             <div class="col-md-5"><input type="text" class="form-control" id="founder1Name" placeholder="Founder / CEO 1 Name" oninput="updateAttrPreview()"></div>
                             <div class="col-md-7"><input type="url" class="form-control" id="founder1Url" placeholder="https://www.linkedin.com/in/..." oninput="updateAttrPreview()"></div>
@@ -805,13 +921,13 @@
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label">Custom Footer Note (Optional)</label>
+                            <label class="form-label" data-i18n="admin.attr.custom_footer_note">Custom Footer Note (Optional)</label>
                             <input type="text" class="form-control" id="attrCustomNote" placeholder="e.g. Exhibition Edition 2026" oninput="updateAttrPreview()">
                         </div>
                     </div>
 
                     <div class="col-lg-5">
-                        <label class="form-label text-muted">Live Gallery &amp; Print Footer Preview</label>
+                        <label class="form-label text-muted" data-i18n="admin.attr.preview">Live Gallery &amp; Print Footer Preview</label>
                         <div class="attr-preview-box" id="attrLivePreview"></div>
                     </div>
                 </div>
@@ -824,20 +940,20 @@
                         <div class="col-md-4">
                             <div class="form-check form-switch">
                                 <input class="form-check-input" type="checkbox" id="printAutoToggle" onchange="savePrintSettings()">
-                                <label class="form-check-label fw-bold" for="printAutoToggle">
+                                <label class="form-check-label fw-bold" for="printAutoToggle" data-i18n="admin.files.autoprint">
                                     Auto-Print Every New Drawing
                                 </label>
                             </div>
-                            <div class="small text-muted mt-1">
+                            <div class="small text-muted mt-1" data-i18n="admin.files.autoprint_desc">
                                 Automatically sends new PDFs to the host printer without needing a kiosk screen.
                             </div>
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label small text-muted mb-1">Host Printer Name</label>
+                            <label class="form-label small text-muted mb-1" data-i18n="admin.files.printer_name">Host Printer Name</label>
                             <input type="text" class="form-control form-control-sm" id="printerNameInput" value="default" placeholder="default">
                         </div>
                         <div class="col-md-2">
-                            <label class="form-label small text-muted mb-1">Paper Format</label>
+                            <label class="form-label small text-muted mb-1" data-i18n="admin.files.paper_format">Paper Format</label>
                             <select id="paperFormatSelect" class="form-select form-select-sm">
                                 <option value="A4">A4</option>
                                 <option value="A3">A3</option>
@@ -847,39 +963,40 @@
                             </select>
                         </div>
                         <div class="col-md-3 d-flex align-items-end gap-2">
-                            <button class="btn btn-sm btn-success w-100" onclick="savePrintSettings()">Save Print Config</button>
+                            <button class="btn btn-sm btn-success w-100" onclick="savePrintSettings()" data-i18n="admin.files.save_print">Save Print Config</button>
                         </div>
                     </div>
                     <div class="row g-2 mt-2 align-items-end">
                         <div class="col-md-9">
-                            <label class="form-label small text-muted mb-1">Public / QR Base URL <span class="text-muted">(Optional — overrides auto-detected LAN IP on Gallery &amp; PDF QR codes)</span></label>
-                            <input type="text" class="form-control form-control-sm" id="remoteServerUrlInput" placeholder="https://art.example.org (leave blank for LAN IP)">
+                            <label class="form-label small text-muted mb-1"><span data-i18n="admin.files.qr_url_label">Public / QR Base URL</span> <span class="text-muted" data-i18n="admin.files.qr_url_hint">(Optional — overrides auto-detected LAN IP on Gallery &amp; PDF QR codes)</span></label>
+                            <input type="text" class="form-control form-control-sm" id="remoteServerUrlInput" placeholder="https://art.example.org">
                         </div>
                         <div class="col-md-3">
-                            <button class="btn btn-sm btn-outline-light w-100" onclick="saveServerUrlSetting()">Save Public QR URL</button>
+                            <button class="btn btn-sm btn-outline-light w-100" onclick="saveServerUrlSetting()" data-i18n="admin.files.save_qr_url">Save Public QR URL</button>
                         </div>
                     </div>
                 </div>
 
                 <div class="d-flex flex-wrap justify-content-between mb-3 gap-2">
                     <div class="d-flex gap-2">
-                        <button class="btn btn-primary btn-sm" onclick="loadFiles()">Refresh List</button>
-                        <a href="/kiosk" target="_blank" class="btn btn-outline-info btn-sm">Open Tablet/Web Kiosk (/kiosk)</a>
+                        <button class="btn btn-primary btn-sm" onclick="loadFiles()" data-i18n="admin.files.refresh">Refresh List</button>
+                        <a href="/kiosk" target="_blank" class="btn btn-outline-info btn-sm" data-i18n="admin.files.open_kiosk">Open Tablet/Web Kiosk (/kiosk)</a>
                     </div>
-                    <button class="btn btn-outline-danger btn-sm" onclick="deleteFiles('all')">Prune Old Prints (Older than today)</button>
+                    <button class="btn btn-outline-danger btn-sm" onclick="deleteFiles('all')" data-i18n="admin.files.prune">Prune Old Prints (Older than today)</button>
                 </div>
 
                 <div class="table-responsive">
                     <table class="table table-hover table-dark align-middle">
                         <thead>
                             <tr>
-                                <th>Preview</th>
-                                <th>Filename</th>
-                                <th>Date Created</th>
-                                <th>Archetype</th>
-                                <th>Status</th>
-                                <th>Size</th>
-                                <th class="text-end">Actions</th>
+                                <th data-i18n="admin.files.col_preview">Preview</th>
+                                <th data-i18n="admin.files.col_file">Filename</th>
+                                <th data-i18n="admin.files.col_date">Date Created</th>
+                                <th data-i18n="admin.files.col_archetype">Archetype</th>
+                                <th data-i18n="admin.files.col_langs">Languages</th>
+                                <th data-i18n="admin.files.col_status">Status</th>
+                                <th data-i18n="admin.files.col_size">Size</th>
+                                <th class="text-end" data-i18n="admin.files.col_actions">Actions</th>
                             </tr>
                         </thead>
                         <tbody id="fileTableBody"></tbody>
@@ -890,13 +1007,13 @@
             <!-- 5. LOGS TAB -->
             <div class="tab-pane fade" id="tab-logs">
                 <div class="mb-3 d-flex flex-wrap gap-2">
-                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('installation')">Pipeline Log (installation.log)</button>
-                    <button class="btn btn-sm btn-outline-info" onclick="loadLog('vision')">Vision Perception Log (vision.log)</button>
-                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('responses')">AI Responses Log</button>
-                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('predictions')">Archetype Predictions (CSV)</button>
-                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('credits')">TTS Credits (credits.csv)</button>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('installation')" data-i18n="admin.logs.pipeline">Pipeline Log (installation.log)</button>
+                    <button class="btn btn-sm btn-outline-info" onclick="loadLog('vision')" data-i18n="admin.logs.vision">Vision Perception Log (vision.log)</button>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('responses')" data-i18n="admin.logs.responses">AI Responses Log</button>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('predictions')" data-i18n="admin.logs.predictions">Archetype Predictions (CSV)</button>
+                    <button class="btn btn-sm btn-outline-light" onclick="loadLog('credits')" data-i18n="admin.logs.credits">TTS Credits (credits.csv)</button>
                 </div>
-                <pre id="logViewer">Select a log file above to view detailed system output...</pre>
+                <pre id="logViewer" data-i18n="admin.logs.placeholder">Select a log file above to view detailed system output...</pre>
             </div>
 
         </div>
@@ -904,10 +1021,26 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="/i18n.js"></script>
 <script>
     if (typeof window.bootstrap === 'undefined') {
         document.body.classList.add('offline-fallback');
     }
+
+    const adminI18n = window.LS_I18N.createPageController('admin', {
+        titleKey: 'admin.page_title',
+        onChange: () => {
+            renderTranslationStatusBanner();
+            if (adminAuthenticated) {
+                updateMonitor();
+                updateAttrPreview();
+                if (document.getElementById('tab-files').classList.contains('active')) {
+                    loadFiles();
+                }
+            }
+        },
+    });
+    const t = adminI18n.t;
 
     function escapeHtml(str) {
         return String(str ?? '')
@@ -1012,12 +1145,13 @@
             const pipeState = data.pipeline || {};
             const qLen = pipeState.queue_length || 0;
             const pipeLabel = pipeState.running
-                ? (qLen > 0 ? `Running (+${qLen} queued)` : 'Running')
-                : (qLen > 0 ? `Queued (${qLen})` : (pipeState.last_status === 'error' ? 'Error' : 'Ready'));
+                ? (qLen > 0 ? t('admin.monitor.pipe_running_q', { q: qLen }) : t('admin.monitor.pipe_running'))
+                : (qLen > 0 ? t('admin.monitor.pipe_queued', { q: qLen }) : (pipeState.last_status === 'error' ? t('admin.monitor.pipe_error') : t('admin.monitor.pipe_ready')));
             document.getElementById('kpiPipeline').textContent = pipeLabel;
+            const statusText = `${pipeState.last_status || t('admin.monitor.pipe_idle')}${pipeState.last_error_code ? ' - ' + pipeState.last_error_code : ''}`;
             document.getElementById('kpiPipelineSub').textContent = pipeState.last_run
-                ? `Last run: ${new Date(pipeState.last_run).toLocaleTimeString()} (${pipeState.last_status}${pipeState.last_error_code ? ' - ' + pipeState.last_error_code : ''})`
-                : `Status: ${pipeState.last_status || 'idle'} | Queue: ${qLen}`;
+                ? t('admin.monitor.pipe_last_run', { time: new Date(pipeState.last_run).toLocaleTimeString(), status: statusText })
+                : t('admin.monitor.pipe_status_q', { status: pipeState.last_status || t('admin.monitor.pipe_idle'), q: qLen });
 
             const errAlert = document.getElementById('monitorErrorAlert');
             if (pipeState.last_status === 'error' || pipeState.state === 'ERROR') {
@@ -1031,14 +1165,26 @@
             }
 
             const ai = data.ai_summary || {};
+            const tr = data.translation || {};
+            const trLabel = (!tr.enabled || tr.mode === 'off')
+                ? t('common.off')
+                : (tr.mode === 'local_nmt'
+                    ? `CPU NMT (${(tr.local_nmt_model || '').split('/').pop() || 'opus-mt'})`
+                    : (tr.mode === 'ollama' ? `Ollama (${tr.ollama_model || ''})` : 'Native LLM'));
             document.getElementById('kpiAI').innerHTML =
-                `<div><span class="text-muted small">Analysis:</span> ${escapeHtml(ai.analysis_provider || 'ollama')} (${escapeHtml(ai.analysis_model || '')})</div>` +
-                `<div><span class="text-muted small">Poem:</span> ${escapeHtml(ai.poem_provider || 'ollama')} (${escapeHtml(ai.poem_model || '')})</div>`;
-            document.getElementById('kpiVisionMode').textContent = `Perception: ${ai.vision_mode || 'auto'} (${ai.ollama_vision_model || 'moondream'})`;
+                `<div><span class="text-muted small">${escapeHtml(t('admin.monitor.lbl_analysis'))}</span> ${escapeHtml(ai.analysis_provider || 'ollama')} (${escapeHtml(ai.analysis_model || '')})</div>` +
+                `<div><span class="text-muted small">${escapeHtml(t('admin.monitor.lbl_poem'))}</span> ${escapeHtml(ai.poem_provider || 'ollama')} (${escapeHtml(ai.poem_model || '')})</div>` +
+                `<div><span class="text-muted small">EN→HU:</span> ${escapeHtml(trLabel)}</div>`;
+            document.getElementById('kpiVisionMode').textContent = t('admin.monitor.lbl_perception', {
+                mode: ai.vision_mode || 'auto',
+                model: ai.ollama_vision_model || 'moondream',
+            });
 
             const stats = data.statistics || {};
             document.getElementById('kpiPrints').textContent = `${stats.prints_today || 0} / ${stats.total_prints || 0}`;
-            document.getElementById('kpiAutoPrint').textContent = `Auto-Print: ${(data.printing && data.printing.auto_print) ? 'ON' : 'OFF'}`;
+            document.getElementById('kpiAutoPrint').textContent = (data.printing && data.printing.auto_print)
+                ? t('admin.monitor.autoprint_on')
+                : t('admin.monitor.autoprint_off');
 
             const kasOn = !!(data.attributions && data.attributions.enabled);
             const vvOn = !!(data.attributions && data.attributions.veszprem_vibe_enabled);
@@ -1053,7 +1199,7 @@
                 attrEl.textContent = 'Kasboek';
                 attrEl.style.color = '#10b981';
             } else {
-                attrEl.textContent = 'OFF (Hidden)';
+                attrEl.textContent = t('admin.monitor.attr_hidden');
                 attrEl.style.color = '#9ca3af';
             }
 
@@ -1062,9 +1208,11 @@
                 const sStr = String(state || '');
                 const isUp = sStr.includes('running') || sStr.includes('ready');
                 const badge = isUp ? 'bg-success' : 'bg-secondary';
+                const svcKey = `admin.monitor.svc.${svc}`;
+                const svcLabel = t(svcKey) !== svcKey ? t(svcKey) : svc.replace(/_/g, ' ');
                 servicesHtml += `
                     <div class="d-flex justify-content-between py-1 border-bottom border-secondary">
-                        <span>${escapeHtml(svc.replace(/_/g, ' '))}</span>
+                        <span>${escapeHtml(svcLabel)}</span>
                         <span class="badge ${badge}">${escapeHtml(sStr)}</span>
                     </div>`;
             }
@@ -1073,30 +1221,33 @@
             document.getElementById('monitor-container').innerHTML = `
                 <div class="col-md-6">
                     <div class="card h-100 p-3">
-                        <h6 class="text-muted text-uppercase small mb-3">Active Modules &amp; Endpoints</h6>
+                        <h6 class="text-muted text-uppercase small mb-3">${escapeHtml(t('admin.monitor.modules'))}</h6>
                         ${servicesHtml}
                     </div>
                 </div>
                 <div class="col-md-6">
                     <div class="card h-100 p-3">
-                        <h6 class="text-muted text-uppercase small mb-3">Host Resource Utilization (${escapeHtml(data.device || 'Host')})</h6>
+                        <h6 class="text-muted text-uppercase small mb-3">${escapeHtml(t('admin.monitor.resources', { device: data.device || 'Host' }))}</h6>
                         <div class="d-flex justify-content-between py-1 border-bottom border-secondary">
-                            <span>CPU Usage</span><strong>${sys.cpu_percent ?? 0}%</strong>
+                            <span>${escapeHtml(t('admin.monitor.cpu'))}</span><strong>${sys.cpu_percent ?? 0}%</strong>
                         </div>
                         <div class="d-flex justify-content-between py-1 border-bottom border-secondary">
-                            <span>Memory Usage</span><strong>${sys.memory_percent ?? 0}%</strong>
+                            <span>${escapeHtml(t('admin.monitor.mem'))}</span><strong>${sys.memory_percent ?? 0}%</strong>
                         </div>
                         <div class="d-flex justify-content-between py-1 border-bottom border-secondary">
-                            <span>Storage Used</span><strong>${sys.disk_usage ?? 0}%</strong>
+                            <span>${escapeHtml(t('admin.monitor.disk'))}</span><strong>${sys.disk_usage ?? 0}%</strong>
+                        </div>
+                        <div class="d-flex justify-content-between py-1 border-bottom border-secondary">
+                            <span>${escapeHtml(t('admin.monitor.temp'))}</span><strong>${escapeHtml(sys.temperature || 'N/A')}</strong>
                         </div>
                         <div class="d-flex justify-content-between py-1">
-                            <span>Device Temp</span><strong>${escapeHtml(sys.temperature || 'N/A')}</strong>
+                            <span>${escapeHtml(t('admin.monitor.translation'))}</span><strong>${escapeHtml(trLabel)}</strong>
                         </div>
                     </div>
                 </div>
             `;
 
-            document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+            document.getElementById('lastUpdate').textContent = t('admin.header.updated', { time: new Date().toLocaleTimeString() });
         } catch (e) {
             console.error(e);
         }
@@ -1659,6 +1810,10 @@
                 document.getElementById(`${role}_restrictions`).value = c.restrictions || '';
                 document.getElementById(`${role}_additional`).value = c.additional || '';
                 document.getElementById(`${role}_temp`).value = c.temperature ?? (role === 'poem' ? 0.8 : 0.7);
+                const maxWordsEl = document.getElementById(`${role}_max_words`);
+                if (maxWordsEl) {
+                    maxWordsEl.value = c.max_words ?? 110;
+                }
                 document.getElementById(`${role}_api_key`).value = '';
                 document.getElementById(`${role}_clear_api_key`).checked = false;
                 document.getElementById(`${role}_api_key_status`).textContent = c.has_api_key
@@ -1708,11 +1863,217 @@
         }
     }
 
+    // --- 2b. TRANSLATION ENGINE CONFIG (EN -> HU) ---
+    let translationStatus = null;
+
+    function syncTranslationPanels() {
+        const enabled = document.getElementById('translationEnabledToggle').checked;
+        const mode = document.getElementById('translationModeSelect').value;
+        const activeMode = enabled ? mode : 'off';
+
+        document.getElementById('translationPanelLocalNmt').style.display = activeMode === 'local_nmt' ? 'block' : 'none';
+        document.getElementById('translationPanelOllama').style.display = activeMode === 'ollama' ? 'block' : 'none';
+        document.getElementById('translationPanelNative').style.display = activeMode === 'native_llm' ? 'block' : 'none';
+        document.getElementById('preloadTranslationBtn').style.display = activeMode === 'local_nmt' ? 'inline-block' : 'none';
+        renderTranslationStatusBanner();
+    }
+
+    function renderTranslationStatusBanner() {
+        const banner = document.getElementById('translationAvailabilityBanner');
+        if (!banner || !translationStatus) return;
+        const enabled = document.getElementById('translationEnabledToggle').checked;
+        const mode = enabled ? document.getElementById('translationModeSelect').value : 'off';
+        const nmt = translationStatus.local_nmt || {};
+        const ol = translationStatus.ollama || {};
+        const pkgs = translationStatus.packages || {};
+
+        if (mode === 'off') {
+            banner.innerHTML = `<span class="badge bg-secondary me-2">${escapeHtml(t('admin.tr.banner_off_badge'))}</span><span class="text-muted">${escapeHtml(t('admin.tr.banner_off_text'))}</span>`;
+            return;
+        }
+        if (mode === 'local_nmt') {
+            let badge = '';
+            let detail = '';
+            if (!nmt.packages_ready) {
+                badge = `<span class="badge bg-danger me-2">${escapeHtml(t('admin.tr.banner_pkg_missing'))}</span>`;
+                detail = t('admin.tr.banner_pkg_missing_text');
+            } else if (nmt.loaded_in_memory) {
+                badge = `<span class="badge bg-success me-2">${escapeHtml(t('admin.tr.banner_hot_badge'))}</span>`;
+                detail = t('admin.tr.banner_hot_text', { model: nmt.model });
+            } else if (nmt.cached_locally) {
+                badge = `<span class="badge bg-success me-2">${escapeHtml(t('admin.tr.banner_cached_badge'))}</span>`;
+                detail = t('admin.tr.banner_cached_text', { model: nmt.model });
+            } else {
+                badge = `<span class="badge bg-warning text-dark me-2">${escapeHtml(t('admin.tr.banner_dl_badge'))}</span>`;
+                detail = t('admin.tr.banner_dl_text', { model: nmt.model });
+            }
+            const pkgLine = `torch: ${pkgs.torch ? 'ok' : 'missing'} · transformers: ${pkgs.transformers ? 'ok' : 'missing'} · sentencepiece: ${pkgs.sentencepiece ? 'ok' : 'missing'}`;
+            banner.innerHTML = `<div class="mb-1">${badge}<span>${escapeHtml(detail)}</span></div><div class="text-muted" style="font-size:0.78rem;"><strong>CPU:</strong> ${escapeHtml(pkgLine)} · GPU VRAM: <strong>0 MB</strong></div>`;
+            return;
+        }
+        if (mode === 'ollama') {
+            const targetModel = document.getElementById('translationOllamaModel').value.trim() || ol.model || 'translategemma:4b';
+            const installed = (ol.installed_models || []);
+            const ok = _isOllamaModelInstalled(targetModel, installed);
+            const badge = ok
+                ? `<span class="badge bg-success me-2">${escapeHtml(t('admin.tr.banner_ollama_ok'))}</span>`
+                : `<span class="badge bg-warning text-dark me-2">${escapeHtml(t('admin.tr.banner_ollama_missing'))}</span>`;
+            const detail = ok
+                ? t('admin.tr.banner_ollama_ok_text', { model: targetModel })
+                : `ollama pull ${targetModel}`;
+            banner.innerHTML = `${badge}<span>${escapeHtml(detail)}</span>`;
+            return;
+        }
+        if (mode === 'native_llm') {
+            const nat = translationStatus.native_llm || {};
+            banner.innerHTML = `<span class="badge bg-info text-dark me-2">${escapeHtml(t('admin.tr.banner_native_badge'))}</span><span>${escapeHtml(t('admin.tr.banner_native_text', { provider: nat.provider || 'ollama', model: nat.model || '' }))}</span>`;
+        }
+    }
+
+    async function loadTranslationSettings() {
+        try {
+            const [cfgRes, stRes] = await Promise.all([
+                fetch('/api/settings/translation?t=' + Date.now()),
+                fetch('/api/ai/translation/status?t=' + Date.now())
+            ]);
+            if (cfgRes.ok) {
+                const tr = await cfgRes.json();
+                document.getElementById('translationEnabledToggle').checked = tr.enabled !== false;
+                document.getElementById('translationModeSelect').value = tr.mode || 'local_nmt';
+                document.getElementById('translationDefaultPrintLang').value = tr.default_print_language || 'en';
+                document.getElementById('translationNmtModel').value = tr.local_nmt_model || 'Helsinki-NLP/opus-mt-tc-big-en-hu';
+                document.getElementById('translationNmtThreads').value = tr.local_nmt_threads ?? 6;
+                document.getElementById('translationNmtPreload').checked = !!tr.local_nmt_preload;
+                document.getElementById('translationOllamaModel').value = tr.ollama_model || 'translategemma:4b';
+                document.getElementById('translationOllamaTemp').value = tr.ollama_temperature ?? 0.2;
+                document.getElementById('translationOllamaTimeout').value = tr.ollama_timeout ?? 45;
+                document.getElementById('translationOllamaUrl').value = tr.ollama_base_url || '';
+            }
+            if (stRes.ok) {
+                translationStatus = await stRes.json();
+            }
+            syncTranslationPanels();
+        } catch (e) {
+            console.error('Failed to load translation config:', e);
+        }
+    }
+
+    function buildTranslationPayload() {
+        const thr = parseInt(document.getElementById('translationNmtThreads').value, 10);
+        const temp = parseFloat(document.getElementById('translationOllamaTemp').value);
+        const to = parseInt(document.getElementById('translationOllamaTimeout').value, 10);
+        return {
+            enabled: document.getElementById('translationEnabledToggle').checked,
+            mode: document.getElementById('translationModeSelect').value || 'local_nmt',
+            target_languages: ['hu'],
+            local_nmt_model: document.getElementById('translationNmtModel').value.trim() || 'Helsinki-NLP/opus-mt-tc-big-en-hu',
+            local_nmt_threads: Number.isFinite(thr) ? thr : 6,
+            local_nmt_preload: document.getElementById('translationNmtPreload').checked,
+            ollama_model: document.getElementById('translationOllamaModel').value.trim() || 'translategemma:4b',
+            ollama_base_url: document.getElementById('translationOllamaUrl').value.trim(),
+            ollama_temperature: Number.isFinite(temp) ? temp : 0.2,
+            ollama_timeout: Number.isFinite(to) ? to : 45,
+            default_print_language: document.getElementById('translationDefaultPrintLang').value || 'en',
+        };
+    }
+
+    async function saveTranslationSettings(reloadAfter = true) {
+        const out = document.getElementById('translation_test_result');
+        const payload = buildTranslationPayload();
+        try {
+            const res = await fetch('/api/settings/translation', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.status === 'success') {
+                out.innerHTML = `<span class="text-success">${escapeHtml(t('admin.tr.saved'))}</span>`;
+                if (reloadAfter) {
+                    await loadTranslationSettings();
+                    updateMonitor();
+                }
+                return true;
+            } else {
+                alert('Save Translation failed: ' + (data.error || res.statusText));
+                return false;
+            }
+        } catch (e) {
+            alert('Save Translation error: ' + e);
+            return false;
+        }
+    }
+
+    async function preloadTranslationModel() {
+        const saved = await saveTranslationSettings(false);
+        if (!saved) return;
+        const btn = document.getElementById('preloadTranslationBtn');
+        const out = document.getElementById('translation_test_result');
+        btn.disabled = true;
+        out.innerHTML = `<span class="text-info">${escapeHtml(t('admin.tr.preloading'))}</span>`;
+        try {
+            const payload = buildTranslationPayload();
+            const res = await fetch('/api/ai/translation/preload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    local_nmt_model: payload.local_nmt_model,
+                    local_nmt_threads: payload.local_nmt_threads
+                })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.status === 'success') {
+                out.innerHTML = `<span class="text-success">Cached &amp; loaded '${escapeHtml(data.model)}' on CPU in ${escapeHtml(data.elapsed_sec)}s (0 MB VRAM).</span>`;
+                await loadTranslationSettings();
+            } else {
+                out.innerHTML = `<span class="text-danger">Error: ${escapeHtml(data.error || 'Preload failed')}</span>`;
+            }
+        } catch (e) {
+            out.innerHTML = `<span class="text-danger">Error: ${escapeHtml(e)}</span>`;
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    async function testTranslationEngine() {
+        const saved = await saveTranslationSettings(false);
+        if (!saved) return;
+        const out = document.getElementById('translation_test_result');
+        const preview = document.getElementById('translationPreviewBox');
+        out.innerHTML = `<span class="text-info">${escapeHtml(t('admin.tr.testing'))}</span>`;
+        preview.style.display = 'none';
+        try {
+            const res = await fetch('/api/ai/translation/test', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target_lang: 'hu' })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.status === 'success') {
+                const tr = data.translated || {};
+                out.innerHTML = `<span class="text-success">[${escapeHtml(data.provider)} in ${escapeHtml(data.elapsed_sec)}s] OK</span>`;
+                preview.innerHTML =
+                    `<div class="mb-1"><strong>HU Archetype:</strong> ${escapeHtml(tr.archetype || '')}</div>` +
+                    `<div class="mb-1"><strong>HU Analysis:</strong> ${escapeHtml(tr.psychoanalysis || '')}</div>` +
+                    `<div style="white-space: pre-line; font-style: italic;"><strong>HU Poem:</strong>\n${escapeHtml(tr.poem || '')}</div>`;
+                preview.style.display = 'block';
+                await loadTranslationSettings();
+            } else {
+                out.innerHTML = `<span class="text-danger">Error: ${escapeHtml(data.error || 'Translation test failed')}</span>`;
+            }
+        } catch (e) {
+            out.innerHTML = `<span class="text-danger">Error: ${escapeHtml(e)}</span>`;
+        }
+    }
+
+    document.getElementById('translationOllamaModel').addEventListener('input', renderTranslationStatusBanner);
+
     async function loadAIConfig() {
         await Promise.all([
             loadVisionConfig(),
             loadSingleRoleConfig('analysis'),
             loadSingleRoleConfig('poem'),
+            loadTranslationSettings(),
             loadTTSSettings(),
             loadAIAvailability()
         ]);
@@ -1739,6 +2100,11 @@
             additional: document.getElementById(`${role}_additional`).value,
             temperature: Number.isFinite(parsedTemp) ? parsedTemp : defaultTemp
         };
+        const maxWordsEl = document.getElementById(`${role}_max_words`);
+        if (maxWordsEl) {
+            const parsedMaxWords = parseInt(maxWordsEl.value, 10);
+            config.max_words = Number.isFinite(parsedMaxWords) ? parsedMaxWords : 110;
+        }
         if (clearKey) {
             config.api_key = '';
         } else if (apiKeyVal) {
@@ -1794,13 +2160,15 @@
         const okV = await saveVisionConfig(false);
         const okA = await saveRoleConfig('analysis', false);
         const okP = await saveRoleConfig('poem', false);
+        const okTr = await saveTranslationSettings(false);
         await saveTTSSettings();
         await loadAIConfig();
         updateMonitor();
-        if (okV && okA && okP) {
+        if (okV && okA && okP && okTr) {
             document.getElementById('vision_test_result').innerHTML = '<span class="text-success">Vision saved!</span>';
             document.getElementById('analysis_test_result').innerHTML = '<span class="text-success">Saved!</span>';
             document.getElementById('poem_test_result').innerHTML = '<span class="text-success">Saved!</span>';
+            document.getElementById('translation_test_result').innerHTML = `<span class="text-success">${escapeHtml(t('admin.tr.saved'))}</span>`;
         }
     }
 
@@ -1884,7 +2252,7 @@
         const vv = attr.veszprem_vibe || {};
         const box = document.getElementById('attrLivePreview');
         if (!attr.enabled && !vv.enabled) {
-            box.innerHTML = `<div class="text-secondary py-4"><em>Both Attribution Switches are <strong>OFF</strong>.<br>No logos or attribution text will be shown on the Gallery or Prints.</em></div>`;
+            box.innerHTML = `<div class="text-secondary py-4">${t('admin.attr.preview_off_html')}</div>`;
             return;
         }
 
@@ -1990,7 +2358,7 @@
             });
             const data = await res.json().catch(() => ({}));
             if (res.ok) {
-                alert('Attribution settings saved and live on the Gallery.');
+                alert(t('admin.files.attr_saved'));
                 updateMonitor();
             } else {
                 alert('Error saving attributions: ' + (data.error || res.statusText));
@@ -2060,7 +2428,7 @@
                 await loadPrintSettings();
                 return;
             }
-            alert('Public QR Base URL saved.');
+            alert(t('admin.files.qr_saved'));
             updateMonitor();
         } catch (e) {
             alert('Error saving Public QR URL: ' + e);
@@ -2069,18 +2437,25 @@
 
     async function loadFiles() {
         const tbody = document.getElementById('fileTableBody');
-        tbody.innerHTML = '<tr><td colspan="7" class="text-center py-3"><div class="spinner-border spinner-border-sm"></div> Loading...</td></tr>';
+        tbody.innerHTML = `<tr><td colspan="8" class="text-center py-3"><div class="spinner-border spinner-border-sm"></div> ${escapeHtml(t('common.loading'))}</td></tr>`;
 
         try {
             const res = await fetch('/api/files/prints?t=' + Date.now());
             const files = await res.json();
 
             if (!files.length) {
-                tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4 text-muted">No print files found</td></tr>';
+                tbody.innerHTML = `<tr><td colspan="8" class="text-center py-4 text-muted">${escapeHtml(t('admin.files.empty'))}</td></tr>`;
                 return;
             }
 
-            tbody.innerHTML = files.map(f => `
+            tbody.innerHTML = files.map(f => {
+                const langs = Array.isArray(f.languages) && f.languages.length ? f.languages : ['en'];
+                const langBadges = langs.map(lc => {
+                    const pdfLink = (f.pdf_urls && f.pdf_urls[lc]) ? f.pdf_urls[lc] : f.pdf_url;
+                    return `<a href="${safeUrl(pdfLink)}" target="_blank" class="badge bg-info bg-opacity-25 text-info border border-info text-decoration-none me-1" title="Open ${escapeHtml(lc.toUpperCase())} PDF">${escapeHtml(lc.toUpperCase())}</a>`;
+                }).join('');
+                const loc = adminI18n.pickContent(f);
+                return `
                 <tr data-filename="${escapeHtml(f.name)}">
                     <td>
                         <a href="${safeUrl(f.pdf_url)}" target="_blank">
@@ -2091,22 +2466,23 @@
                     </td>
                     <td><a href="${safeUrl(f.pdf_url)}" target="_blank" class="text-light">${escapeHtml(f.name)}</a></td>
                     <td>${escapeHtml(f.date)}</td>
-                    <td><span class="badge bg-dark border border-secondary">${escapeHtml(f.archetype || '-')}</span></td>
+                    <td><span class="badge bg-dark border border-secondary">${escapeHtml(loc.archetype || f.archetype || '-')}</span></td>
+                    <td>${langBadges}</td>
                     <td>
                         <span class="badge ${f.printed ? 'bg-secondary' : 'bg-success'}">
-                            ${f.printed ? 'Printed' : 'Available'}
+                            ${escapeHtml(f.printed ? t('common.printed') : t('common.available'))}
                         </span>
                     </td>
                     <td>${escapeHtml(f.size)}</td>
                     <td class="text-end">
-                        <a href="${safeUrl(f.pdf_url)}" target="_blank" class="btn btn-sm btn-outline-light me-1" title="Open PDF">View</a>
-                        <button class="btn btn-sm btn-outline-success me-1" data-action="print" title="Print on Host Printer">Print</button>
-                        <button class="btn btn-sm btn-outline-danger" data-action="delete" title="Delete">Delete</button>
+                        <a href="${safeUrl(f.pdf_url)}" target="_blank" class="btn btn-sm btn-outline-light me-1" title="Open PDF">${escapeHtml(t('common.view'))}</a>
+                        <button class="btn btn-sm btn-outline-success me-1" data-action="print" title="Print on Host Printer">${escapeHtml(t('common.print'))}</button>
+                        <button class="btn btn-sm btn-outline-danger" data-action="delete" title="Delete">${escapeHtml(t('common.delete'))}</button>
                     </td>
-                </tr>
-            `).join('');
+                </tr>`;
+            }).join('');
         } catch (e) {
-            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-danger">Error loading files</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center text-danger">Error loading files</td></tr>';
         }
     }
 
@@ -2132,7 +2508,7 @@
             });
             const data = await res.json();
             if (res.ok && data.status === 'success') {
-                alert('Print job sent to host printer.');
+                alert(t('admin.files.print_sent'));
                 loadFiles();
             } else {
                 alert('Host print failed: ' + (data.error || 'Unknown error'));
@@ -2143,7 +2519,7 @@
     }
 
     async function deleteFiles(action, filename) {
-        const msg = action === 'all' ? "Delete ALL print files older than today?" : `Delete ${filename}?`;
+        const msg = action === 'all' ? t('admin.files.confirm_prune') : t('admin.files.confirm_delete', { filename });
         if (!confirm(msg)) return;
         try {
             const res = await fetch('/api/files/delete', {
@@ -2184,6 +2560,9 @@
     }
 
     (async function initAdmin() {
+        adminI18n.mountSwitcher(document.getElementById('adminAuthLangSwitch'), 'dark');
+        adminI18n.mountSwitcher(document.getElementById('adminLangSwitch'), 'dark');
+        adminI18n.applyDOM();
         try {
             const res = await _nativeFetch('/api/auth/status?t=' + Date.now());
             const data = await res.json();

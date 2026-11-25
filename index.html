@@ -194,6 +194,18 @@
             text-align: left;
         }
 
+        .translation-fallback-note {
+            display: none;
+            margin-top: 8px;
+            font-size: 0.72em;
+            color: #888;
+            font-style: italic;
+        }
+
+        @media print {
+            .translation-fallback-note { display: none !important; }
+        }
+
         .update-info {
             text-align: center;
             color: #333;
@@ -407,12 +419,13 @@
 </head>
 <body>
     <nav class="floating-nav">
-        <button onclick="stepHistory(1)" title="Older Artwork (Left Arrow)">Prev</button>
-        <button id="liveModeBtn" class="live-active" onclick="returnToLive()" title="Return to Live Feed">Live</button>
-        <button onclick="stepHistory(-1)" title="Newer Artwork (Right Arrow)">Next</button>
-        <a href="/draw">Gaze Draw</a>
-        <a href="/kiosk">Print Kiosk</a>
-        <button onclick="window.print()">Print</button>
+        <span id="galleryLangSwitch"></span>
+        <button onclick="stepHistory(1)" data-i18n="gallery.nav.prev" data-i18n-title="gallery.nav.prev_title" title="Older Artwork (Left Arrow)">Prev</button>
+        <button id="liveModeBtn" class="live-active" onclick="returnToLive()" data-i18n="gallery.nav.live" data-i18n-title="gallery.nav.live_title" title="Return to Live Feed">Live</button>
+        <button onclick="stepHistory(-1)" data-i18n="gallery.nav.next" data-i18n-title="gallery.nav.next_title" title="Newer Artwork (Right Arrow)">Next</button>
+        <a href="/draw" data-i18n="gallery.nav.draw">Gaze Draw</a>
+        <a href="/kiosk" data-i18n="gallery.nav.kiosk">Print Kiosk</a>
+        <button onclick="window.print()" data-i18n="gallery.nav.print">Print</button>
     </nav>
 
     <div class="container">
@@ -420,46 +433,47 @@
         <div class="scribble-section">
             <div class="scribble-container">
                 <img id="mainScribble" alt="Gaze drawing" style="display: none;">
-                <div id="scribblePlaceholder" class="scribble-placeholder">
+                <div id="scribblePlaceholder" class="scribble-placeholder" data-i18n-html="gallery.placeholder.first_html">
                     Waiting for the first gaze drawing — open <a href="/draw" style="color: #2a2a2a;">Gaze Draw</a> to begin.
                 </div>
             </div>
         </div>
 
         <header style="text-align: center; margin-bottom: 4px;">
-            <h1 style="font-size: 1.5em; font-weight: 400; letter-spacing: 2px; color: #2a2a2a;">
+            <h1 style="font-size: 1.5em; font-weight: 400; letter-spacing: 2px; color: #2a2a2a;" data-i18n="gallery.heading">
                 Latent Space, Through the Eyes of the Algorithm
             </h1>
             <div id="archetypeContainer" style="display: none;">
                 <span class="archetype-badge" id="archetypeBadge"></span>
             </div>
+            <div id="translationFallbackNote" class="translation-fallback-note" data-i18n="gallery.translation_fallback_note"></div>
         </header>
 
         <table class="bottom-grid">
             <tr>
                 <td class="grid-item" style="width: 55%;">
-                    <h2 class="section-title">Analysis</h2>
+                    <h2 class="section-title" data-i18n="gallery.section.analysis">Analysis</h2>
                     <div class="psychoanalysis-text" id="psychoanalysisText"></div>
                 </td>
 
                 <td class="grid-item" style="width: 45%;">
-                    <h2 class="section-title">Poem</h2>
+                    <h2 class="section-title" data-i18n="gallery.section.poem">Poem</h2>
                     <div class="poem-text" id="poemText"></div>
                     <audio id="poemAudio" controls style="width: 100%; margin-top: 18px; display: none;">
                         <source src="" type="audio/mpeg">
-                        Your browser does not support the audio element.
+                        <span data-i18n="gallery.audio_unsupported">Your browser does not support the audio element.</span>
                     </audio>
 
                     <div class="visual-metrics-row">
                         <div id="heatmapSection" style="display: none;">
-                            <h2 class="section-title" style="margin-bottom: 10px;">Attention Span</h2>
+                            <h2 class="section-title" style="margin-bottom: 10px;" data-i18n="gallery.section.attention">Attention Span</h2>
                             <div class="heatmap-container">
                                 <img id="heatmapImage" alt="Heatmap visualization">
                             </div>
                         </div>
                         <div class="qr-card" id="qrCard" style="display: none;">
                             <div id="qrCodeBox"></div>
-                            <div class="qr-caption" id="qrCaption">Scan to save your digital print</div>
+                            <div class="qr-caption" id="qrCaption" data-i18n="gallery.qr.scan">Scan to save your digital print</div>
                         </div>
                     </div>
                 </td>
@@ -486,6 +500,7 @@
         </footer>
     </div>
 
+    <script src="/i18n.js"></script>
     <script>
         const CONFIG = {
             dataFile: '/shared_output/content.json',
@@ -495,17 +510,31 @@
             refreshInterval: 4000,
         };
 
-        const isPrintRender = new URLSearchParams(window.location.search).get('print_render') === '1';
+        const urlParams = new URLSearchParams(window.location.search);
+        const isPrintRender = urlParams.get('print_render') === '1';
+        const renderRunId = (urlParams.get('run_id') || '').trim();
         let lastContentSignature = null;
         let lastAttrSignature = null;
         let lanBaseUrl = window.location.origin;
         let lastPublicInfoTs = 0;
         let liveRunId = null;
+        let lastViewPayload = null;
+        let lastViewIsHistorical = false;
 
         let historyList = [];
         let historyIdx = -1;
         let isSteppingHistory = false;
         let isLoadingContent = false;
+
+        const galleryI18n = window.LS_I18N.createPageController('gallery', {
+            titleKey: 'gallery.page_title',
+            onChange: () => {
+                if (lastViewPayload) {
+                    applyViewData(lastViewPayload, lastViewIsHistorical);
+                }
+            },
+        });
+        const t = galleryI18n.t;
 
         function buildPath(path) {
             if (!path) return '';
@@ -540,7 +569,7 @@
             return isNaN(d.getTime()) ? null : d;
         }
 
-        function renderQRCode(targetPath, isPdfRendering = false) {
+        function renderQRCode(targetPath, isPdfRendering = false, runId = '', printLanguage = 'en') {
             const qrCard = document.getElementById('qrCard');
             const qrBox = document.getElementById('qrCodeBox');
             const qrCaption = document.getElementById('qrCaption');
@@ -550,15 +579,21 @@
                 return;
             }
             if (isPdfRendering) {
-                qrBox.innerHTML = '<div style="width:96px;height:96px;display:flex;align-items:center;justify-content:center;font-size:0.72em;color:#777;">Preparing PDF...</div>';
-                qrCaption.textContent = 'Generating digital print';
+                qrBox.innerHTML = `<div style="width:96px;height:96px;display:flex;align-items:center;justify-content:center;font-size:0.72em;color:#777;">${escapeHtml(t('gallery.qr.preparing'))}</div>`;
+                qrCaption.textContent = t('gallery.qr.generating');
                 qrCard.style.display = 'flex';
                 return;
             }
-            qrCaption.textContent = 'Scan to save your digital print';
-            const fullUrl = targetPath.startsWith('http')
-                ? targetPath
-                : `${lanBaseUrl}${buildPath(targetPath)}`;
+            qrCaption.textContent = t('gallery.qr.scan');
+            const curLang = galleryI18n.getLang();
+            const basePrintLang = (printLanguage || 'en').toLowerCase();
+            let resolvedPath = targetPath;
+            if (runId && curLang !== basePrintLang && /^[A-Za-z0-9_]+$/.test(runId)) {
+                resolvedPath = `/api/pdf/${encodeURIComponent(runId)}/${encodeURIComponent(curLang)}`;
+            }
+            const fullUrl = resolvedPath.startsWith('http')
+                ? resolvedPath
+                : `${lanBaseUrl}${buildPath(resolvedPath)}`;
             qrBox.innerHTML = `<img src="/api/qr.svg?url=${encodeURIComponent(fullUrl)}" alt="Digital print QR code">`;
             qrCard.style.display = 'flex';
         }
@@ -572,8 +607,8 @@
             }
             let parts = [];
             if (archetype) parts.push(archetype);
-            if (typeof fractalDim === 'number') parts.push(`Fractal D=${fractalDim.toFixed(2)}`);
-            if (typeof spatialEntropy === 'number') parts.push(`Entropy=${Math.round(spatialEntropy * 100)}%`);
+            if (typeof fractalDim === 'number') parts.push(t('gallery.badge.fractal', { val: fractalDim.toFixed(2) }));
+            if (typeof spatialEntropy === 'number') parts.push(t('gallery.badge.entropy', { val: Math.round(spatialEntropy * 100) }));
             badge.textContent = parts.join('  ·  ');
             container.style.display = 'block';
         }
@@ -752,6 +787,7 @@
             hmSection.style.display = 'none';
 
             document.getElementById('archetypeContainer').style.display = 'none';
+            document.getElementById('translationFallbackNote').style.display = 'none';
             document.getElementById('psychoanalysisText').textContent = '';
             document.getElementById('poemText').textContent = '';
 
@@ -765,28 +801,30 @@
         }
 
         function applyViewData(data, isHistorical = false) {
+            lastViewPayload = data;
+            lastViewIsHistorical = isHistorical;
             const errorBanner = document.getElementById('errorBanner');
             if (!isHistorical && data.status === 'empty') {
                 errorBanner.style.display = 'none';
                 errorBanner.innerHTML = '';
-                clearArtworkView('Waiting for the first gaze drawing — open Gaze Draw to begin.');
-                document.getElementById('lastUpdate').textContent = 'Waiting for data...';
+                clearArtworkView(t('gallery.placeholder.first'));
+                document.getElementById('lastUpdate').textContent = t('gallery.waiting_data');
                 return;
             }
             if (!isHistorical && data.status === 'error') {
                 const code = escapeHtml(data.errorCode || 'ERR_PIPELINE_FAILED');
                 const msg = escapeHtml(
-                    data.userMessage || 'We could not complete your reading. Please try drawing again.'
+                    data.userMessage || t('gallery.error.default_msg')
                 );
                 errorBanner.innerHTML =
-                    `<div><strong>Reading Failed</strong> — ${msg}</div>` +
+                    `<div><strong>${escapeHtml(t('gallery.error.title'))}</strong> — ${msg}</div>` +
                     `<div class="error-code-pill">${code}</div>`;
                 errorBanner.style.display = 'block';
                 clearArtworkView('');
                 const errDate = parseSafeDate(data.timestamp);
                 document.getElementById('lastUpdate').textContent = errDate
-                    ? errDate.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-                    : 'Reading failed';
+                    ? galleryI18n.formatDateTime(errDate)
+                    : t('gallery.error.date_fallback');
                 return;
             }
 
@@ -802,7 +840,7 @@
             } else {
                 scribbleEl.style.display = 'none';
                 scribbleEl.removeAttribute('src');
-                placeholderEl.textContent = isHistorical ? 'No preview image archived for this print.' : 'Waiting for drawing...';
+                placeholderEl.textContent = isHistorical ? t('gallery.placeholder.no_preview') : t('gallery.placeholder.waiting');
                 placeholderEl.style.display = 'block';
             }
 
@@ -816,10 +854,14 @@
                 hmSection.style.display = 'none';
             }
 
-            renderBadge(data.archetype, data.fractalDimension, data.spatialEntropy);
+            const loc = galleryI18n.pickContent(data);
+            renderBadge(loc.archetype, data.fractalDimension, data.spatialEntropy);
 
-            document.getElementById('psychoanalysisText').textContent = data.psychoanalysis || '';
-            document.getElementById('poemText').textContent = data.poem || '';
+            const fbNote = document.getElementById('translationFallbackNote');
+            fbNote.style.display = (!isPrintRender && loc.isFallback) ? 'block' : 'none';
+
+            document.getElementById('psychoanalysisText').textContent = loc.psychoanalysis || (isHistorical ? t('gallery.archive.fallback_analysis') : '');
+            document.getElementById('poemText').textContent = loc.poem || '';
 
             const poemAudio = document.getElementById('poemAudio');
             const nextAudioSrc = (data.poemAudio && !isHistorical) ? buildPath(data.poemAudio) : '';
@@ -838,19 +880,13 @@
                 poemAudio.style.display = 'none';
             }
 
-            renderQRCode(data.printPDF || '', !!data.pdfRendering);
+            renderQRCode(data.printPDF || '', !!data.pdfRendering, data.runId || '', data.printLanguage || 'en');
 
             if (data.timestamp) {
                 const updateDate = parseSafeDate(data.timestamp);
-                const formatted = updateDate ? updateDate.toLocaleDateString('en-US', {
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                }) : String(data.timestamp);
+                const formatted = updateDate ? galleryI18n.formatDateTime(updateDate) : String(data.timestamp);
                 document.getElementById('lastUpdate').textContent = isHistorical
-                    ? `Archive View (${historyIdx + 1}/${historyList.length}) — ${formatted}`
+                    ? t('gallery.archive.prefix', { idx: historyIdx + 1, total: historyList.length, date: formatted })
                     : formatted;
             }
         }
@@ -884,13 +920,17 @@
                 const item = historyList[historyIdx];
                 const itemTs = item.timestamp ? new Date(item.timestamp * 1000).toISOString() : item.date;
                 applyViewData({
+                    runId: item.run_id || '',
                     scribblePath: item.thumb_url,
                     heatmapPath: item.heatmap_url || '',
                     archetype: item.archetype,
                     fractalDimension: item.fractalDimension,
                     spatialEntropy: item.spatialEntropy,
-                    psychoanalysis: item.psychoanalysis || 'Archived gaze drawing memento.',
+                    psychoanalysis: item.psychoanalysis || '',
                     poem: item.poem || '',
+                    translations: item.translations || {},
+                    languages: item.languages || ['en'],
+                    printLanguage: item.print_language || 'en',
                     printPDF: item.pdf_url,
                     pdfRendering: false,
                     timestamp: itemTs,
@@ -932,7 +972,10 @@
                     } catch (_) {}
                 }
 
-                const response = await fetch(CONFIG.dataFile + '?t=' + Date.now());
+                const dataUrl = (isPrintRender && renderRunId && /^[A-Za-z0-9_]+$/.test(renderRunId))
+                    ? `/shared_output/docs/print_${encodeURIComponent(renderRunId)}.json?t=${Date.now()}`
+                    : `${CONFIG.dataFile}?t=${Date.now()}`;
+                const response = await fetch(dataUrl);
                 if (response.ok) {
                     const data = await response.json();
                     liveRunId = data.runId || null;
@@ -943,11 +986,14 @@
                         h: data.heatmapPath,
                         p: data.psychoanalysis,
                         m: data.poem,
+                        tr: data.translations || null,
                         pa: data.poemAudio,
                         pdf: data.printPDF,
+                        pl: data.printLanguage || 'en',
                         pr: !!data.pdfRendering,
                         t: data.timestamp,
-                        base: lanBaseUrl
+                        base: lanBaseUrl,
+                        lang: galleryI18n.getLang()
                     });
 
                     if (sig !== lastContentSignature) {
@@ -974,8 +1020,12 @@
         });
 
         document.addEventListener('DOMContentLoaded', function() {
+            galleryI18n.mountSwitcher(document.getElementById('galleryLangSwitch'), 'gallery');
+            galleryI18n.applyDOM();
             loadContent();
-            setInterval(loadContent, CONFIG.refreshInterval);
+            if (!isPrintRender) {
+                setInterval(loadContent, CONFIG.refreshInterval);
+            }
         });
     </script>
 </body>

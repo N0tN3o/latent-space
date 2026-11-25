@@ -326,59 +326,78 @@
 <body>
     <header>
         <div class="brand">
-            <h1>Latent Space — Print Kiosk</h1>
-            <span id="queueCount" style="color: var(--text-muted); font-size: 0.9rem;">Loading...</span>
+            <h1 data-i18n="kiosk.heading">Latent Space — Print Kiosk</h1>
+            <span id="queueCount" style="color: var(--text-muted); font-size: 0.9rem;" data-i18n="common.loading">Loading...</span>
         </div>
         <div class="nav-links">
-            <a href="/" class="btn">Gallery</a>
-            <a href="/draw" class="btn">Gaze Draw</a>
-            <button class="btn" id="staffAuthBtn" onclick="handleStaffAuthClick()">Staff Unlock</button>
+            <span id="kioskLangSwitch"></span>
+            <a href="/" class="btn" data-i18n="kiosk.nav.gallery">Gallery</a>
+            <a href="/draw" class="btn" data-i18n="kiosk.nav.draw">Gaze Draw</a>
+            <button class="btn" id="staffAuthBtn" onclick="handleStaffAuthClick()" data-i18n="kiosk.btn.staff_unlock">Staff Unlock</button>
         </div>
     </header>
 
     <div class="toolbar">
         <div class="search-box">
-            <input type="text" id="searchInput" placeholder="Search by time, date, 'today', 'yesterday'..." oninput="renderGrid()">
-            <button class="btn" onclick="setFilter('today')">Today</button>
-            <button class="btn" onclick="setFilter('')">All</button>
-            <button class="btn" onclick="loadPrints()">Refresh</button>
+            <input type="text" id="searchInput" data-i18n-placeholder="kiosk.search_placeholder" placeholder="Search by time, date, 'today', 'yesterday'..." oninput="renderGrid()">
+            <button class="btn" onclick="setFilterToday()" data-i18n="kiosk.btn.today">Today</button>
+            <button class="btn" onclick="setFilter('')" data-i18n="kiosk.btn.all">All</button>
+            <button class="btn" onclick="loadPrints()" data-i18n="kiosk.btn.refresh">Refresh</button>
         </div>
-        <label class="autoprint-pill" title="Automatically send new drawings to the printer as soon as they are created">
+        <label class="autoprint-pill" data-i18n-title="kiosk.autoprint_title" title="Automatically send new drawings to the printer as soon as they are created">
             <input type="checkbox" id="autoPrintToggle" onchange="toggleAutoPrint(this.checked)">
-            <span>Auto-Print New Drawings</span>
+            <span data-i18n="kiosk.autoprint_label">Auto-Print New Drawings</span>
         </label>
     </div>
 
     <div class="grid" id="printGrid">
-        <div class="empty-state">Loading available prints...</div>
+        <div class="empty-state" data-i18n="kiosk.loading_prints">Loading available prints...</div>
     </div>
 
     <footer>
-        <div>Select any artwork to open or print its full A4 memento sheet.</div>
+        <div data-i18n="kiosk.footer_hint">Select any artwork to open or print its full A4 memento sheet.</div>
         <div class="kiosk-attribution" id="kioskAttribution"></div>
     </footer>
 
     <div class="staff-modal-backdrop" id="staffLoginModal">
         <form class="staff-modal" onsubmit="submitStaffLogin(event)">
-            <h3 style="font-size: 1.15rem;">Staff Unlock Required</h3>
-            <p style="font-size: 0.88rem; color: var(--text-muted);">
+            <h3 style="font-size: 1.15rem;" data-i18n="kiosk.modal.title">Staff Unlock Required</h3>
+            <p style="font-size: 0.88rem; color: var(--text-muted);" data-i18n-html="kiosk.modal.desc_html">
                 Enter the Admin passcode (printed at server startup or in <code>config/admin_pin.txt</code>) to enable host printing and auto-print controls.
             </p>
-            <input type="password" id="staffPinInput" placeholder="Admin passcode" autocomplete="current-password" required>
+            <input type="password" id="staffPinInput" data-i18n-placeholder="kiosk.modal.placeholder" placeholder="Admin passcode" autocomplete="current-password" required>
             <div id="staffLoginError" style="color: #f87171; font-size: 0.85rem; display: none;"></div>
             <div style="display: flex; gap: 8px; justify-content: flex-end;">
-                <button type="button" class="btn" onclick="closeStaffModal()">Cancel</button>
-                <button type="submit" class="btn btn-primary">Unlock</button>
+                <button type="button" class="btn" onclick="closeStaffModal()" data-i18n="kiosk.modal.cancel">Cancel</button>
+                <button type="submit" class="btn btn-primary" data-i18n="kiosk.modal.unlock">Unlock</button>
             </div>
         </form>
     </div>
 
+    <script src="/i18n.js"></script>
     <script>
         let allPrints = [];
         let printsMap = new Map();
         let lastRenderSignature = null;
         let isStaffUnlocked = false;
         let pendingStaffAction = null;
+
+        const kioskI18n = window.LS_I18N.createPageController('kiosk', {
+            titleKey: 'kiosk.page_title',
+            onChange: () => {
+                updateStaffAuthButton();
+                lastRenderSignature = null;
+                renderGrid();
+            },
+        });
+        const t = kioskI18n.t;
+
+        function updateStaffAuthButton() {
+            const btn = document.getElementById('staffAuthBtn');
+            if (!btn) return;
+            btn.textContent = isStaffUnlocked ? t('kiosk.btn.staff_unlocked') : t('kiosk.btn.staff_unlock');
+            btn.classList.toggle('btn-primary', isStaffUnlocked);
+        }
 
         function escapeHtml(str) {
             return String(str ?? '')
@@ -401,9 +420,7 @@
                 if (res.ok) {
                     const data = await res.json();
                     isStaffUnlocked = !!data.authenticated;
-                    const btn = document.getElementById('staffAuthBtn');
-                    btn.textContent = isStaffUnlocked ? 'Staff Unlocked (Lock)' : 'Staff Unlock';
-                    btn.classList.toggle('btn-primary', isStaffUnlocked);
+                    updateStaffAuthButton();
                 }
             } catch (_) {}
         }
@@ -445,7 +462,7 @@
                 });
                 const data = await res.json();
                 if (!res.ok) {
-                    errEl.textContent = data.error || 'Authentication failed';
+                    errEl.textContent = data.error || t('kiosk.err.auth_failed');
                     errEl.style.display = 'block';
                     return;
                 }
@@ -456,7 +473,7 @@
                     nextAction();
                 }
             } catch (err) {
-                errEl.textContent = 'Connection error: ' + err;
+                errEl.textContent = t('kiosk.err.connection', { err });
                 errEl.style.display = 'block';
             }
         }
@@ -578,11 +595,11 @@
                 if (!res.ok) {
                     toggle.checked = !enabled;
                     const err = await res.json().catch(() => ({}));
-                    alert('Failed to update auto-print setting: ' + (err.error || res.statusText));
+                    alert(t('kiosk.err.autoprint_update', { err: err.error || res.statusText }));
                 }
             } catch (e) {
                 toggle.checked = !enabled;
-                alert('Failed to update auto-print setting: ' + e);
+                alert(t('kiosk.err.autoprint_update', { err: e }));
             }
         }
 
@@ -591,23 +608,42 @@
             renderGrid();
         }
 
+        function setFilterToday() {
+            setFilter(kioskI18n.getLang() === 'hu' ? 'ma' : 'today');
+        }
+
+        function resolveItemPdfUrl(item) {
+            const lang = kioskI18n.getLang();
+            const basePrintLang = (item.print_language || 'en').toLowerCase();
+            if (lang !== basePrintLang && item.pdf_urls && item.pdf_urls[lang]) {
+                return item.pdf_urls[lang];
+            }
+            return item.pdf_url || '';
+        }
+
         function renderGrid() {
             const grid = document.getElementById('printGrid');
             const query = (document.getElementById('searchInput').value || '').toLowerCase().trim();
+            const curLang = kioskI18n.getLang();
 
             const filtered = allPrints.filter(item => {
                 if (!query) return true;
-                if (query === 'today') return !!item.is_today;
-                if (query === 'yesterday') return !!item.is_yesterday;
-                const hay = `${item.name} ${item.date} ${item.display_date} ${item.display_time} ${item.archetype || ''} ${item.poem || ''}`.toLowerCase();
+                if (query === 'today' || query === 'ma') return !!item.is_today;
+                if (query === 'yesterday' || query === 'tegnap') return !!item.is_yesterday;
+                const trHu = (item.translations && item.translations.hu) || {};
+                const hay = `${item.name} ${item.date} ${item.display_date} ${item.display_time} ${item.archetype || ''} ${item.poem || ''} ${trHu.archetype || ''} ${trHu.poem || ''}`.toLowerCase();
                 return hay.includes(query);
             });
 
-            document.getElementById('queueCount').textContent = `Showing ${filtered.length} of ${allPrints.length} drawings`;
+            document.getElementById('queueCount').textContent = t('kiosk.queue_count', {
+                shown: filtered.length,
+                total: allPrints.length,
+            });
 
             const sig = JSON.stringify({
                 q: query,
-                items: filtered.map(i => [i.name, !!i.printed, i.thumb_url || '', i.timestamp])
+                lang: curLang,
+                items: filtered.map(i => [i.name, !!i.printed, i.thumb_url || '', i.timestamp, (i.languages || []).join(',')])
             });
             if (sig === lastRenderSignature) {
                 return;
@@ -615,38 +651,43 @@
             lastRenderSignature = sig;
 
             if (filtered.length === 0) {
-                grid.innerHTML = `<div class="empty-state">No drawings match your filter.</div>`;
+                grid.innerHTML = `<div class="empty-state">${escapeHtml(t('kiosk.empty_filtered'))}</div>`;
                 return;
             }
 
-            grid.innerHTML = filtered.map(item => `
+            grid.innerHTML = filtered.map(item => {
+                const loc = kioskI18n.pickContent(item);
+                const dt = item.date ? new Date(String(item.date).replace(' ', 'T')) : (item.timestamp ? new Date(item.timestamp * 1000) : null);
+                const fmtTime = (dt && !isNaN(dt.getTime())) ? kioskI18n.formatCardTime(dt) : item.display_time;
+                const fmtDate = (dt && !isNaN(dt.getTime())) ? kioskI18n.formatCardDate(dt) : item.display_date;
+                return `
                 <div class="print-card" data-filename="${escapeHtml(item.name)}">
                     <div class="thumb-wrapper" data-action="open">
                         ${item.thumb_url
                             ? `<img src="${safeUrl(item.thumb_url)}" alt="${escapeHtml(item.name)}" loading="lazy">`
-                            : `<div class="thumb-placeholder">PDF Memento</div>`}
+                            : `<div class="thumb-placeholder">${escapeHtml(t('kiosk.thumb_placeholder'))}</div>`}
                         <span class="status-pill ${item.printed ? 'status-printed' : 'status-available'}">
-                            ${item.printed ? 'Printed' : 'Available'}
+                            ${escapeHtml(item.printed ? t('common.printed') : t('common.available'))}
                         </span>
                     </div>
                     <div class="card-body">
                         <div class="meta-row">
-                            <span class="time-title">${escapeHtml(item.display_time)}</span>
-                            <span class="date-sub">${escapeHtml(item.display_date)}</span>
+                            <span class="time-title">${escapeHtml(fmtTime)}</span>
+                            <span class="date-sub">${escapeHtml(fmtDate)}</span>
                         </div>
-                        ${item.archetype ? `<div style="font-size: 0.78rem; color: #10b981; text-transform: uppercase; letter-spacing: 1px;">${escapeHtml(item.archetype)}</div>` : ''}
-                        ${item.poem ? `<div class="poem-preview">${escapeHtml(item.poem)}</div>` : ''}
+                        ${loc.archetype ? `<div style="font-size: 0.78rem; color: #10b981; text-transform: uppercase; letter-spacing: 1px;">${escapeHtml(loc.archetype)}</div>` : ''}
+                        ${loc.poem ? `<div class="poem-preview">${escapeHtml(loc.poem)}</div>` : ''}
                         <div class="card-actions">
                             <button class="btn btn-primary" data-action="browser-print">
-                                Print Sheet
+                                ${escapeHtml(t('kiosk.btn.print_sheet'))}
                             </button>
-                            <button class="btn" data-action="host-print" title="Print directly on the server's connected printer">
-                                Host Print
+                            <button class="btn" data-action="host-print" title="${escapeHtml(t('kiosk.btn.host_print_title'))}">
+                                ${escapeHtml(t('kiosk.btn.host_print'))}
                             </button>
                         </div>
                     </div>
-                </div>
-            `).join('');
+                </div>`;
+            }).join('');
         }
 
         document.getElementById('printGrid').addEventListener('click', (e) => {
@@ -659,10 +700,11 @@
             if (!item) return;
 
             const action = actionEl.dataset.action;
-            if (action === 'open' && item.pdf_url) {
-                window.open(item.pdf_url, '_blank');
+            const targetPdfUrl = resolveItemPdfUrl(item);
+            if (action === 'open' && targetPdfUrl) {
+                window.open(targetPdfUrl, '_blank');
             } else if (action === 'browser-print') {
-                browserPrint(item.name, item.pdf_url);
+                browserPrint(item.name, targetPdfUrl);
             } else if (action === 'host-print') {
                 hostPrint(item.name);
             }
@@ -680,7 +722,7 @@
                 fetch('/api/files/print', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({filename: filename, mark_only: true})
+                    body: JSON.stringify({filename: filename, mark_only: true, lang: kioskI18n.getLang()})
                 }).then(() => loadPrints()).catch(() => {});
             } else {
                 loadPrints();
@@ -692,7 +734,7 @@
                 const res = await fetch('/api/files/print', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({filename: filename, mark_only: false})
+                    body: JSON.stringify({filename: filename, mark_only: false, lang: kioskI18n.getLang()})
                 });
                 if (res.status === 401) {
                     openStaffModal(() => hostPrint(filename));
@@ -700,13 +742,13 @@
                 }
                 const data = await res.json();
                 if (res.ok && data.status === 'success') {
-                    alert('Sent print job to host printer.');
+                    alert(t('kiosk.alert.host_print_ok'));
                     loadPrints();
                 } else {
-                    alert('Host printer error: ' + (data.error || 'Unknown error. Try "Print Sheet" for browser printing.'));
+                    alert(t('kiosk.alert.host_print_err', { err: data.error || 'Unknown error' }));
                 }
             } catch (e) {
-                alert('Connection error: ' + e);
+                alert(t('kiosk.err.connection', { err: e }));
             }
         }
 
@@ -727,6 +769,8 @@
         });
         resetInactivityTimer();
 
+        kioskI18n.mountSwitcher(document.getElementById('kioskLangSwitch'), 'dark');
+        kioskI18n.applyDOM();
         refreshAuthStatus();
         loadSettings();
         loadPrints();
