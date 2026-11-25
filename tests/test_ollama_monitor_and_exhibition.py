@@ -465,6 +465,100 @@ class TestOllamaMonitorAndExhibitionMode(unittest.TestCase):
             self.assertEqual(ol_env["OLLAMA_KV_CACHE_TYPE"], "q8_0")
             self.assertNotIn("OLLAMA_KEEP_ALIVE", ol_env)
 
+    def test_offline_lan_https_cert_generation_renewal_and_tls_server(self):
+        import ssl
+
+        # 1. Settings validation for https_enabled / https_port
+        updated = config_manager.update_settings_section("server", {"https_enabled": True, "https_port": 8443})
+        self.assertTrue(updated["server"]["https_enabled"])
+        self.assertEqual(updated["server"]["https_port"], 8443)
+        with self.assertRaises(ValueError):
+            config_manager.validate_server_data({"https_port": 70000})
+
+        if not config_manager._find_openssl_binary():
+            self.skipTest("openssl binary not installed in this environment")
+
+        # 2. Generate local CA + SAN server cert in isolated temp dir
+        cert_dir = self.tmp_root / "certs"
+        crt_p, key_p, ca_p = config_manager.ensure_lan_tls_cert(cert_dir=cert_dir, extra_ips=["192.168.55.10"])
+        self.assertIsNotNone(crt_p)
+        self.assertTrue(crt_p.is_file() and key_p.is_file() and ca_p.is_file())
+        first_mtime = crt_p.stat().st_mtime_ns
+
+        # Reuses existing cert when IPs are already covered
+        crt_p2, _, _ = config_manager.ensure_lan_tls_cert(cert_dir=cert_dir, extra_ips=["192.168.55.10"])
+        self.assertEqual(crt_p2.stat().st_mtime_ns, first_mtime)
+
+        # Auto-regenerates leaf cert when a new LAN IP appears while reusing CA
+        ca_bytes_before = ca_p.read_bytes()
+        crt_p3, _, ca_p3 = config_manager.ensure_lan_tls_cert(cert_dir=cert_dir, extra_ips=["192.168.55.99"])
+        self.assertEqual(ca_p3.read_bytes(), ca_bytes_before)
+        meta = json.loads((cert_dir / "cert_meta.json").read_text(encoding="utf-8"))
+        self.assertIn("192.168.55.99", meta["ips"])
+        self.assertIn("127.0.0.1", meta["ips"])
+
+        # 3. Full OpenSSL TLS 1.2+ handshake & IP SAN verification (127.0.0.1 and LAN IP) via MemoryBIO
+        server_ctx = monitoring_server._build_https_ssl_context(crt_p3, key_p)
+        client_ctx = ssl.create_default_context(cafile=str(ca_p3))
+
+        for target_host in ("127.0.0.1", "192.168.55.99", "localhost"):
+            c_in, c_out = ssl.MemoryBIO(), ssl.MemoryBIO()
+            s_in, s_out = ssl.MemoryBIO(), ssl.MemoryBIO()
+            c_obj = client_ctx.wrap_bio(c_in, c_out, server_side=False, server_hostname=target_host)
+            s_obj = server_ctx.wrap_bio(s_in, s_out, server_side=True)
+            for _ in range(16):
+                c_done = s_done = False
+                try:
+                    c_obj.do_handshake()
+                    c_done = True
+                except ssl.SSLWantReadError:
+                    pass
+                data = c_out.read()
+                if data:
+                    s_in.write(data)
+                try:
+                    s_obj.do_handshake()
+                    s_done = True
+                except ssl.SSLWantReadError:
+                    pass
+                data = s_out.read()
+                if data:
+                    c_in.write(data)
+                if c_done and s_done:
+                    break
+            self.assertIn(c_obj.version(), ("TLSv1.2", "TLSv1.3"))
+            peer_cert = c_obj.getpeercert()
+            self.assertTrue(peer_cert)
+
+        # 4. Aborted/invalid TLS handshake in LockedThreadingHTTPSServer closes socket cleanly
+        fake_sock = mock.MagicMock()
+        bad_ctx = mock.MagicMock()
+        bad_ctx.wrap_socket.side_effect = ssl.SSLError("aborted self-signed probe")
+        dummy_https = object.__new__(monitoring_server.LockedThreadingHTTPSServer)
+        dummy_https.ssl_context = bad_ctx
+        monitoring_server.LockedThreadingHTTPSServer.process_request_thread(dummy_https, fake_sock, ("127.0.0.1", 12345))
+        fake_sock.close.assert_called_once()
+
+        # 5. /api/public/info surfaces https_port + https_url, and /api/tls/ca.crt serves ONLY public CA PEM
+        prev_ca = monitoring_server._active_ca_cert_path
+        prev_hp = monitoring_server._active_https_port
+        monitoring_server._active_https_port = 8443
+        monitoring_server._active_ca_cert_path = ca_p3
+        try:
+            st_info, raw_info = self._req("GET", "/api/public/info")
+            self.assertEqual(st_info, 200)
+            info = json.loads(raw_info)
+            self.assertEqual(info["https_port"], 8443)
+            self.assertTrue(info["https_url"].startswith("https://") and info["https_url"].endswith(":8443"))
+
+            st_ca, raw_ca = self._req("GET", "/api/tls/ca.crt")
+            self.assertEqual(st_ca, 200)
+            self.assertIn(b"BEGIN CERTIFICATE", raw_ca)
+            self.assertNotIn(b"PRIVATE KEY", raw_ca)
+        finally:
+            monitoring_server._active_ca_cert_path = prev_ca
+            monitoring_server._active_https_port = prev_hp
+
 
 if __name__ == "__main__":
     unittest.main()

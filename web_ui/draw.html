@@ -940,6 +940,7 @@
         let camStatusState = 'idle'; // 'idle' | 'loading' | 'live' | 'error'
         let lastCamErrorKey = '';
         let camStartPromise = null;
+        let serverHttpsPort = 0;
         let mediapipeAssetsPromise = null;
         let activeLandmarkerDelegate = 'GPU';
         let consecutiveDetectErrors = 0;
@@ -964,6 +965,32 @@
             },
         });
         const t = drawI18n.t;
+
+        function getHttpsUpgradeUrl() {
+            if (window.isSecureContext || !serverHttpsPort || window.location.protocol === 'https:') {
+                return '';
+            }
+            const host = window.location.hostname;
+            if (!host) return '';
+            const safeHost = host.includes(':') ? `[${host}]` : host;
+            return `https://${safeHost}:${serverHttpsPort}${window.location.pathname}${window.location.search}`;
+        }
+
+        async function fetchPublicServerInfo() {
+            try {
+                const res = await fetch('/api/public/info?t=' + Date.now());
+                if (res.ok) {
+                    const info = await res.json();
+                    const hp = Number(info.https_port || 0);
+                    if (hp > 0 && hp <= 65535) {
+                        serverHttpsPort = hp;
+                        if (exhibitionMode && (exStage === 'welcome' || exStage === 'cam_fallback')) {
+                            renderExhibitionStage();
+                        }
+                    }
+                }
+            } catch (_) {}
+        }
 
         function isStaffModalOpen() {
             const modal = document.getElementById('drawStaffModal');
@@ -2568,6 +2595,13 @@
                 const prewarmBtn = (!isStaffAuthenticated || webcamRunning)
                     ? ''
                     : `<button type="button" class="ex-link-subtle" id="exPrewarmBtn" ${camStatusState === 'loading' ? 'disabled' : ''} onclick="exPrewarmCamera()">${escapeHtml(camStatusState === 'loading' ? t('draw.ex.cam_starting') : t('draw.ex.cam_prewarm'))}</button>`;
+                const httpsUrl = getHttpsUpgradeUrl();
+                const httpsBannerHtml = httpsUrl
+                    ? `<div class="ex-cam-inline-error" style="background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.4); color: #d1fae5;">
+                           <div style="margin-bottom: 8px;">${escapeHtml(t('draw.ex.https_hint'))}</div>
+                           <a href="${escapeHtml(httpsUrl)}" class="btn btn-primary" style="display:inline-flex; padding:7px 14px;">${escapeHtml(t('draw.ex.open_https_btn', { port: serverHttpsPort }))} &rarr;</a>
+                       </div>`
+                    : '';
                 const camErrHtml = lastCamErrorKey
                     ? `<div class="ex-cam-inline-error" id="exCamInlineError">${escapeHtml(t(lastCamErrorKey))}</div>`
                     : '';
@@ -2589,6 +2623,7 @@
                         <button type="button" class="ex-link-subtle" onclick="exOpenTutorial('pointer')">${escapeHtml(t('draw.ex.start_touch_btn'))}</button>
                         ${prewarmBtn}
                     </div>
+                    ${httpsBannerHtml}
                     ${camErrHtml}
                 `;
                 return;
@@ -2645,13 +2680,21 @@
 
             if (exStage === 'cam_fallback') {
                 const detailMsg = lastCamErrorKey ? t(lastCamErrorKey) : t('draw.ex.cam_fallback_desc');
+                const httpsUrl = getHttpsUpgradeUrl();
+                const httpsActionBtn = httpsUrl
+                    ? `<a href="${escapeHtml(httpsUrl)}" class="ex-cta-primary">${escapeHtml(t('draw.ex.open_https_btn', { port: serverHttpsPort }))} &rarr;</a>`
+                    : '';
+                const httpsHintNote = httpsUrl
+                    ? `<p style="font-size: 0.84rem; color: #9ca3af; max-width: 560px; margin: -12px auto 22px auto;">${escapeHtml(t('draw.ex.https_hint'))}</p>`
+                    : '';
                 card.innerHTML = `
                     <h2 class="ex-headline" style="font-size: 1.75rem;">${escapeHtml(t('draw.ex.cam_fallback_title'))}</h2>
                     <p class="ex-desc">${escapeHtml(detailMsg)}</p>
+                    ${httpsHintNote}
                     <div class="ex-actions-row">
                         <button type="button" class="ex-cta-secondary" onclick="resetExhibitionToWelcome()">&larr; ${escapeHtml(t('draw.ex.back_btn'))}</button>
-                        <button type="button" class="ex-cta-secondary" onclick="exRetryCamera()">${escapeHtml(t('draw.ex.cam_retry_btn'))}</button>
-                        <button type="button" class="ex-cta-primary" onclick="exStartPointerDrawing()">${escapeHtml(t('draw.ex.begin_draw_btn'))} &rarr;</button>
+                        ${httpsActionBtn || `<button type="button" class="ex-cta-secondary" onclick="exRetryCamera()">${escapeHtml(t('draw.ex.cam_retry_btn'))}</button>`}
+                        <button type="button" class="${httpsActionBtn ? 'ex-cta-secondary' : 'ex-cta-primary'}" onclick="exStartPointerDrawing()">${escapeHtml(t('draw.ex.begin_draw_btn'))} &rarr;</button>
                     </div>
                 `;
                 return;
@@ -2919,6 +2962,7 @@
         drawI18n.applyDOM();
         refreshDynamicDrawText();
         enterExhibitionStage('welcome');
+        fetchPublicServerInfo();
         refreshDrawAuthStatus().then((authed) => {
             if (wantsStaffOnBoot) {
                 if (authed) {
