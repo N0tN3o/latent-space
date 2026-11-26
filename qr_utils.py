@@ -3,6 +3,7 @@ Self-contained pure-Python QR Code encoder (ISO/IEC 18004, Byte mode, EC level M
 Used for offline PDF QR codes and the local /api/qr.svg fallback when CDN JS is unavailable.
 """
 
+from functools import lru_cache
 from html import escape
 
 # (version, total_codewords, ec_per_block, [(num_blocks, data_per_block), ...], align_centers, remainder_bits)
@@ -338,8 +339,9 @@ def generate_qr_matrix(text: str, quiet: int = 4) -> list:
     return best_grid
 
 
+@lru_cache(maxsize=256)
 def qr_svg(text: str, cell_size: int = 3, quiet: int = 4) -> str:
-    """Render text as a compact standalone SVG QR code."""
+    """Render text as a compact standalone SVG QR code (LRU-cached by text and dimensions)."""
     grid = generate_qr_matrix(text, quiet=quiet)
     dim = len(grid) * cell_size
     rects = []

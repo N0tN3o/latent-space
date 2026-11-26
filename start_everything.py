@@ -13,6 +13,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -23,6 +24,7 @@ sys.path.insert(0, str(PROJECT_DIR))
 import config_manager
 from config_manager import (
     ensure_directories,
+    fast_local_ollama_url,
     get_configured_ollama_host,
     get_https_enabled,
     get_https_port,
@@ -32,10 +34,22 @@ from config_manager import (
 )
 
 
+def _ensure_safe_stdio():
+    """Ensure stdout/stderr never raise UnicodeEncodeError on Windows cp1252 pipes/redirection."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="replace")
+            except Exception:
+                pass
+
+
+_ensure_safe_stdio()
+
+
 def _is_ollama_running(host_url: str = None) -> bool:
-    target = (host_url or get_configured_ollama_host()).rstrip("/")
-    if target.lower().startswith("http://localhost:"):
-        target = "http://127.0.0.1:" + target[len("http://localhost:"):]
+    target = fast_local_ollama_url((host_url or get_configured_ollama_host()).rstrip("/"))
     if not target.startswith(("http://", "https://")):
         return False
     try:
@@ -52,9 +66,10 @@ def stop_ollama_serving(kill_external: bool = False, owned_proc: subprocess.Pope
     Only terminates an Ollama server process if we spawned it (`owned_proc`)
     or if explicitly requested by an operator (`kill_external=True`).
     """
+    _ensure_safe_stdio()
     settings = load_settings()
     ai_cfg = settings.get("ai", {})
-    host = get_configured_ollama_host(settings)
+    host = fast_local_ollama_url(get_configured_ollama_host(settings))
 
     # 1. Unload any active models via Ollama HTTP API (keep_alive: 0)
     models_to_unload = set()
@@ -180,6 +195,7 @@ def _default_ollama_serve_env() -> dict:
 
 class LatentSpaceStarter:
     def __init__(self, mode: str = "server", port: int = 8000, https_port: int = 8443):
+        _ensure_safe_stdio()
         ensure_directories()
         self.mode = mode
         self.port = port
@@ -190,8 +206,9 @@ class LatentSpaceStarter:
         self.running = True
         self._stopped = False
 
-        signal.signal(signal.SIGINT, self.signal_handler)
-        signal.signal(signal.SIGTERM, self.signal_handler)
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGINT, self.signal_handler)
+            signal.signal(signal.SIGTERM, self.signal_handler)
 
     def signal_handler(self, signum, frame):
         print("\n\nShutting down Latent Space... Please wait...")
@@ -308,6 +325,7 @@ class LatentSpaceStarter:
                 break
 
     def run(self):
+        _ensure_safe_stdio()
         ip = self.get_ip_address()
         print("=" * 64)
         print("LATENT SPACE INSTALLATION")
@@ -340,12 +358,11 @@ class LatentSpaceStarter:
                     print(f"      https://{ip}:{self.https_port}/draw   (Gaze Painter — Camera Enabled)")
                     print(f"      https://{ip}:{self.https_port}/kiosk  (Print Kiosk — HTTPS)")
                     print(f"      https://{ip}:{self.https_port}/admin  (Admin Panel — HTTPS)")
-                    print(f"      http://{ip}:{self.port}/kiosk   (Print Kiosk — HTTP)")
                     print(f"      http://{ip}:{self.port}/        (Gallery / QR Downloads — HTTP)")
                 else:
                     print(f"      http://{ip}:{self.port}/kiosk  (Print Kiosk)")
                     print(f"      http://{ip}:{self.port}/draw   (Gaze Painter)")
-                    print(f"      http://{ip}:{self.port}/admin  (Admin Panel)")
+                    print(f"      http://{ip}:{self.port}/admin  (Admin Panel — Local HTTP)")
             print("=" * 64)
 
         print("\nPress Ctrl+C to stop all services.\n")

@@ -8,7 +8,9 @@ AI provider settings, printing preferences, and Kasboek attribution settings.
 from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime
+import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -17,6 +19,7 @@ import re
 import secrets
 import shutil
 import socket
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -57,11 +60,51 @@ _content_lock = threading.Lock()
 _env_cache_lock = threading.Lock()
 _env_file_cache = {}  # path_str -> (mtime_ns, size, parsed_dict)
 _memory_settings = None
+_memory_settings_sig = None  # (mtime_ns, size) of SETTINGS_FILE
+_quota_lock = threading.Lock()
+_daily_quota_counts = {"date": "", "cloud_llm": 0, "tts": 0}
+_rebind_logger_callbacks = []
+
+
+def register_logger_rebind_callback(fn):
+    """Register a callback to rebind file loggers whenever reload_paths_from_env() runs."""
+    if callable(fn) and fn not in _rebind_logger_callbacks:
+        _rebind_logger_callbacks.append(fn)
+
+
+def check_and_increment_daily_quota(category: str, limit: int) -> bool:
+    """
+    Thread-safe daily call cap guard for paid cloud LLM ('cloud_llm') and TTS ('tts') calls.
+    limit <= 0 means unlimited. Returns True if allowed (and increments counter), False if cap reached.
+    """
+    try:
+        lim = int(limit or 0)
+    except (TypeError, ValueError):
+        lim = 0
+    today = datetime.now().strftime("%Y-%m-%d")
+    with _quota_lock:
+        if _daily_quota_counts.get("date") != today:
+            _daily_quota_counts["date"] = today
+            _daily_quota_counts["cloud_llm"] = 0
+            _daily_quota_counts["tts"] = 0
+        cur = int(_daily_quota_counts.get(category, 0))
+        if lim > 0 and cur >= lim:
+            return False
+        _daily_quota_counts[category] = cur + 1
+        return True
+
+
+def get_daily_quota_usage() -> dict:
+    today = datetime.now().strftime("%Y-%m-%d")
+    with _quota_lock:
+        if _daily_quota_counts.get("date") != today:
+            return {"date": today, "cloud_llm": 0, "tts": 0}
+        return dict(_daily_quota_counts)
 
 
 def reload_paths_from_env():
     """Refresh runtime directories from LATENT_SPACE_* env vars (primarily for isolated tests)."""
-    global SHARED_DIR, DOCS_DIR, LOGS_DIR, CONFIG_DIR, SETTINGS_FILE, ADMIN_PIN_FILE, _memory_settings
+    global SHARED_DIR, DOCS_DIR, LOGS_DIR, CONFIG_DIR, SETTINGS_FILE, ADMIN_PIN_FILE, _memory_settings, _memory_settings_sig
     with _lock:
         SHARED_DIR = Path(os.environ.get("LATENT_SPACE_SHARED_DIR", PROJECT_DIR / "shared_output")).resolve()
         DOCS_DIR = SHARED_DIR / "docs"
@@ -70,8 +113,14 @@ def reload_paths_from_env():
         SETTINGS_FILE = CONFIG_DIR / "settings.json"
         ADMIN_PIN_FILE = CONFIG_DIR / "admin_pin.txt"
         _memory_settings = None
+        _memory_settings_sig = None
     with _env_cache_lock:
         _env_file_cache.clear()
+    for cb in list(_rebind_logger_callbacks):
+        try:
+            cb()
+        except Exception:
+            pass
 
 
 DEFAULT_ANALYSIS_PROMPT = (
@@ -140,10 +189,67 @@ ALLOWED_VV_ATTRIBUTION_KEYS = {
 }
 _OLLAMA_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,119}$")
 
+THINKING_MODEL_HINTS = (
+    "gemma4", "qwen3", "deepseek-r1", "qwq", "gpt-oss", "magistral",
+    "cogito", "openthinker", "phi4-reasoning", "exaone-deep", "marco-o1",
+)
+VISION_MODEL_HINTS = (
+    "vision", "llava", "moondream", "bakllava", "minicpm-v",
+    "qwen2-vl", "qwen2.5-vl", "qwen2.5vl", "qwen3-vl", "qwen3vl", "qwen3.5",
+    "pixtral", "internvl", "granite3.2-vision", "mistral-small3.1", "mistral-small3.2",
+    "gemma3:latest", "gemma3:4b", "gemma3:12b", "gemma3:27b", "gemma3", "gemma4",
+    "llama4", "llama-4",
+)
+OPENAI_COMPAT_VISION_HINTS = VISION_MODEL_HINTS + (
+    "gpt-4o", "gpt-4-turbo", "gpt-4-vision", "gpt-4.1", "gpt-4.5", "gpt-5", "chatgpt-4o",
+    "llama-3.2-11b-vision", "llama-3.2-90b-vision", "llama-4-",
+    "claude-3", "claude-4", "gemini",
+)
+
+DEFAULT_FALLBACK_MODELS = {
+    "ollama": "llama3.2",
+    "gemini": "gemini-2.0-flash",
+    "anthropic": "claude-3-5-haiku-latest",
+    "openai": "gpt-4o-mini",
+    "groq": "llama-3.3-70b-versatile",
+    "openrouter": "meta-llama/llama-3.2-11b-vision-instruct:free",
+    "buas": "llama3.3:latest",
+}
+
+
+def is_thinking_model_name(model_name: str) -> bool:
+    """Return True if model_name matches a known thinking/reasoning LLM family."""
+    low = (model_name or "").strip().lower()
+    if not low:
+        return False
+    return any(h in low for h in THINKING_MODEL_HINTS)
+
+
+def is_vision_model_name(model_name: str, include_cloud: bool = True) -> bool:
+    """Return True if model_name matches a known multimodal vision LLM (excluding text-only gemma3:1b)."""
+    low = (model_name or "").strip().lower()
+    if not low or low.startswith("gemma3:1b"):
+        return False
+    hints = OPENAI_COMPAT_VISION_HINTS if include_cloud else VISION_MODEL_HINTS
+    return any(h in low for h in hints)
+
+
+def fast_local_ollama_url(host: str) -> str:
+    """Replace 'http://localhost' with 'http://127.0.0.1' to avoid Windows 2s IPv6 ::1 refusal stalls."""
+    h = (host or "").strip().rstrip("/")
+    if h.lower().startswith("http://localhost:"):
+        return "http://127.0.0.1:" + h[len("http://localhost:"):]
+    if h.lower() == "http://localhost":
+        return "http://127.0.0.1"
+    return h
+
+
 DEFAULT_SETTINGS = {
     "ai": {
         "vision_mode": "auto",  # "auto", "vision", "ollama_vision", "siglip", "clip", "stroke_metrics", "resnet50"
         "ollama_vision_model": "moondream",
+        "daily_cloud_call_limit": 0,  # 0 = unlimited; >0 caps daily paid cloud LLM requests
+        "fallback_models": deepcopy(DEFAULT_FALLBACK_MODELS),
         "vision": {
             "ollama_label_prompt": DEFAULT_VISION_LABEL_PROMPT,
             "ollama_description_prompt": DEFAULT_VISION_DESCRIPTION_PROMPT,
@@ -164,7 +270,7 @@ DEFAULT_SETTINGS = {
             "model": "llama3.2",
             "base_url": "http://localhost:11434/v1",
             "api_key": "",
-            "fallback_provider": "auto",  # "auto", "none", "ollama", "gemini", "anthropic", "openai_compatible", "buas"
+            "fallback_provider": "none",  # "none", "auto", "ollama", "gemini", "anthropic", "openai_compatible", "buas"
             "fallback_model": "",
             "name": "Latent Space Psychoanalyst",
             "description": DEFAULT_ANALYSIS_PROMPT,
@@ -184,7 +290,7 @@ DEFAULT_SETTINGS = {
             "model": "llama3.2",
             "base_url": "http://localhost:11434/v1",
             "api_key": "",
-            "fallback_provider": "auto",  # "auto", "none", "ollama", "gemini", "anthropic", "openai_compatible", "buas"
+            "fallback_provider": "none",  # "none", "auto", "ollama", "gemini", "anthropic", "openai_compatible", "buas"
             "fallback_model": "",
             "name": "Latent Space Poet",
             "description": DEFAULT_POEM_PROMPT,
@@ -217,11 +323,13 @@ DEFAULT_SETTINGS = {
         "provider": "elevenlabs",  # "elevenlabs", "google_cloud", "none"
         "voice_id_1": "45QiOxkuEAY6ckHqLMe8",
         "voice_id_2": "tJHJUEHzOkMoPmJJ5jo2",
+        "daily_call_limit": 0,  # 0 = unlimited; >0 caps daily TTS synthesis calls
     },
     "printing": {
         "auto_print": False,
         "printer_name": "default",
         "paper_format": "A4",
+        "retention_days": 0,  # 0 = keep forever; >0 auto-prunes prints older than N days
     },
     "attributions": {
         "enabled": False,
@@ -263,6 +371,7 @@ DEFAULT_SETTINGS = {
         "https_enabled": True,
         "https_port": 8443,
         "remote_server_url": "",
+        "require_upload_token": False,
     },
 }
 
@@ -504,8 +613,8 @@ def _read_existing_settings_raw() -> dict:
 
 
 def load_settings() -> dict:
-    """Load settings from config/settings.json merged with defaults."""
-    global _memory_settings
+    """Load settings from config/settings.json merged with defaults (cached by file mtime & size)."""
+    global _memory_settings, _memory_settings_sig
     ensure_directories()
     with _lock:
         if _memory_settings is not None and not SETTINGS_FILE.exists():
@@ -516,8 +625,13 @@ def load_settings() -> dict:
                     save_settings_unlocked(DEFAULT_SETTINGS)
                     return deepcopy(DEFAULT_SETTINGS)
         try:
+            st = SETTINGS_FILE.stat()
+            sig = (st.st_mtime_ns, st.st_size)
+            if _memory_settings is not None and _memory_settings_sig == sig:
+                return deepcopy(_memory_settings)
             merged = _read_existing_settings_raw()
             _memory_settings = deepcopy(merged)
+            _memory_settings_sig = sig
             return merged
         except Exception as e:
             print(f"[config_manager] Warning: failed to parse {SETTINGS_FILE}: {e}. Using cached/defaults without overwriting.")
@@ -638,6 +752,17 @@ def validate_printing_data(data: dict) -> dict:
         if fmt not in ALLOWED_PAPER_FORMATS:
             raise ValueError(f"paper_format must be one of {sorted(ALLOWED_PAPER_FORMATS)}")
         cleaned["paper_format"] = fmt
+    if "retention_days" in cleaned:
+        raw_ret = cleaned["retention_days"]
+        if isinstance(raw_ret, bool):
+            raise ValueError("printing.retention_days must be an integer")
+        try:
+            ret_days = int(raw_ret)
+        except (TypeError, ValueError) as e:
+            raise ValueError("printing.retention_days must be an integer") from e
+        if ret_days < 0 or ret_days > 3650:
+            raise ValueError("printing.retention_days must be between 0 and 3650")
+        cleaned["retention_days"] = ret_days
     return cleaned
 
 
@@ -658,6 +783,30 @@ def validate_ai_data(data: dict) -> dict:
         if not _OLLAMA_MODEL_NAME_RE.match(ovm):
             raise ValueError("ollama_vision_model contains disallowed characters or exceeds 120 chars")
         cleaned["ollama_vision_model"] = ovm
+    if "daily_cloud_call_limit" in cleaned:
+        raw_dcl = cleaned["daily_cloud_call_limit"]
+        if isinstance(raw_dcl, bool):
+            raise ValueError("ai.daily_cloud_call_limit must be an integer")
+        try:
+            dcl = int(raw_dcl)
+        except (TypeError, ValueError) as e:
+            raise ValueError("ai.daily_cloud_call_limit must be an integer") from e
+        if dcl < 0 or dcl > 100000:
+            raise ValueError("ai.daily_cloud_call_limit must be between 0 and 100000")
+        cleaned["daily_cloud_call_limit"] = dcl
+    if "fallback_models" in cleaned:
+        fbm = cleaned["fallback_models"]
+        if not isinstance(fbm, dict):
+            raise ValueError("ai.fallback_models must be an object")
+        unknown_fbm = set(fbm.keys()) - set(DEFAULT_FALLBACK_MODELS.keys())
+        if unknown_fbm:
+            raise ValueError(f"Unknown ai.fallback_models keys: {sorted(unknown_fbm)}")
+        fbm_clean = {}
+        for k, v in fbm.items():
+            if not isinstance(v, str) or not v.strip() or len(v.strip()) > 160:
+                raise ValueError(f"ai.fallback_models.{k} must be a non-empty model string")
+            fbm_clean[k] = v.strip()
+        cleaned["fallback_models"] = fbm_clean
 
     if "vision" in cleaned:
         vc = cleaned["vision"]
@@ -940,6 +1089,17 @@ def validate_tts_data(data: dict) -> dict:
             if not isinstance(cleaned[vfield], str):
                 raise ValueError(f"tts.{vfield} must be a string")
             cleaned[vfield] = cleaned[vfield].strip()[:120]
+    if "daily_call_limit" in cleaned:
+        raw_lim = cleaned["daily_call_limit"]
+        if isinstance(raw_lim, bool):
+            raise ValueError("tts.daily_call_limit must be an integer")
+        try:
+            lim = int(raw_lim)
+        except (TypeError, ValueError) as e:
+            raise ValueError("tts.daily_call_limit must be an integer") from e
+        if lim < 0 or lim > 100000:
+            raise ValueError("tts.daily_call_limit must be between 0 and 100000")
+        cleaned["daily_call_limit"] = lim
     return cleaned
 
 
@@ -985,6 +1145,8 @@ def validate_server_data(data: dict) -> dict:
                 "so printed QR codes still fit"
             )
         cleaned["remote_server_url"] = remote
+    if "require_upload_token" in cleaned:
+        cleaned["require_upload_token"] = bool(cleaned["require_upload_token"])
     return cleaned
 
 
@@ -1118,9 +1280,26 @@ def _chmod_private(path: Path):
         pass
 
 
+CERT_SCHEMA_VERSION = 2
+
+
+def get_ca_cert_fingerprint(ca_path: Path = None) -> str:
+    """Return colon-separated SHA-256 fingerprint of the local Root CA certificate (or '' if absent)."""
+    target = Path(ca_path) if ca_path else (CONFIG_DIR / "certs" / "ca.crt")
+    if not target.is_file():
+        return ""
+    try:
+        pem_text = target.read_text(encoding="utf-8", errors="ignore")
+        der_bytes = ssl.PEM_cert_to_DER_cert(pem_text)
+        digest = hashlib.sha256(der_bytes).hexdigest().upper()
+        return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
+    except Exception:
+        return ""
+
+
 def ensure_lan_tls_cert(cert_dir: Path = None, extra_ips: list = None) -> tuple:
     """
-    Ensure a valid local CA (`ca.crt`) and SAN-equipped server certificate (`server.crt`, `server.key`)
+    Ensure a name-constrained local CA (`ca.crt`) and SAN-equipped server certificate (`server.crt`, `server.key`)
     exist for offline LAN HTTPS (phone/tablet camera access on iOS Safari & Android Chrome).
     Automatically regenerates the leaf cert if the host LAN IP changes or approaches expiry.
     Returns (cert_path, key_path, ca_cert_path) or (None, None, None) if TLS tooling is unavailable.
@@ -1151,16 +1330,23 @@ def ensure_lan_tls_cert(cert_dir: Path = None, extra_ips: list = None) -> tuple:
         if "." not in raw_host:
             dns_names.append(f"{raw_host}.local")
 
-    # Fast reuse check if certs exist, cover all current LAN IPs, and are under 300 days old
-    if ca_crt.exists() and srv_crt.exists() and srv_key.exists() and meta_file.exists():
+    schema_ok = False
+    if meta_file.exists():
         try:
             meta = json.loads(meta_file.read_text(encoding="utf-8"))
-            age_sec = time.time() - float(meta.get("generated_at", 0))
-            covered_ips = set(meta.get("ips") or [])
-            if age_sec < 300 * 86400 and set(sorted_ips).issubset(covered_ips):
-                return srv_crt, srv_key, ca_crt
+            schema_ok = int(meta.get("schema_version") or 0) == CERT_SCHEMA_VERSION
+            if (
+                schema_ok
+                and ca_crt.exists()
+                and srv_crt.exists()
+                and srv_key.exists()
+            ):
+                age_sec = time.time() - float(meta.get("generated_at", 0))
+                covered_ips = set(meta.get("ips") or [])
+                if age_sec < 300 * 86400 and set(sorted_ips).issubset(covered_ips):
+                    return srv_crt, srv_key, ca_crt
         except Exception:
-            pass
+            schema_ok = False
 
     openssl_bin = _find_openssl_binary()
     if not openssl_bin:
@@ -1174,8 +1360,30 @@ def ensure_lan_tls_cert(cert_dir: Path = None, extra_ips: list = None) -> tuple:
     with tempfile.TemporaryDirectory(prefix="ls_tls_") as tmp_s:
         tmp = Path(tmp_s)
         try:
-            # 1. Create a persistent 10-year local Root CA once (can optionally be trusted on exhibition tablets)
-            if not (ca_key.exists() and ca_crt.exists()):
+            # 1. Create a persistent 10-year local Root CA constrained strictly to private LAN IPs & local DNS
+            if not (schema_ok and ca_key.exists() and ca_crt.exists()):
+                nc_parts = [
+                    "permitted;DNS:localhost",
+                    "permitted;DNS:.localhost",
+                    "permitted;DNS:.local",
+                ]
+                for d in dns_names:
+                    entry = f"permitted;DNS:{d}"
+                    if entry not in nc_parts:
+                        nc_parts.append(entry)
+                nc_parts.extend([
+                    "permitted;IP:127.0.0.0/255.0.0.0",
+                    "permitted;IP:10.0.0.0/255.0.0.0",
+                    "permitted;IP:172.16.0.0/255.240.0.0",
+                    "permitted;IP:192.168.0.0/255.255.0.0",
+                    "permitted;IP:169.254.0.0/255.255.0.0",
+                ])
+                for ip in sorted_ips:
+                    host_mask = f"permitted;IP:{ip}/255.255.255.255"
+                    if host_mask not in nc_parts:
+                        nc_parts.append(host_mask)
+                nc_line = ", ".join(nc_parts)
+
                 ca_cnf = tmp / "ca.cnf"
                 ca_cnf.write_text(
                     "[req]\n"
@@ -1189,7 +1397,8 @@ def ensure_lan_tls_cert(cert_dir: Path = None, extra_ips: list = None) -> tuple:
                     "subjectKeyIdentifier = hash\n"
                     "authorityKeyIdentifier = keyid:always,issuer\n"
                     "basicConstraints = critical, CA:TRUE, pathlen:0\n"
-                    "keyUsage = critical, keyCertSign, cRLSign\n",
+                    "keyUsage = critical, keyCertSign, cRLSign\n"
+                    f"nameConstraints = critical, {nc_line}\n",
                     encoding="utf-8",
                 )
                 tmp_ca_key = tmp / "ca.key"
@@ -1271,8 +1480,10 @@ def ensure_lan_tls_cert(cert_dir: Path = None, extra_ips: list = None) -> tuple:
                 meta_file,
                 json.dumps(
                     {
+                        "schema_version": CERT_SCHEMA_VERSION,
                         "ips": sorted_ips,
                         "dns": dns_names,
+                        "ca_sha256": get_ca_cert_fingerprint(ca_crt),
                         "generated_at": time.time(),
                     },
                     indent=2,
@@ -1393,7 +1604,7 @@ def _validate_settings_sections(data: dict) -> dict:
 
 
 def save_settings_unlocked(settings: dict) -> dict:
-    global _memory_settings
+    global _memory_settings, _memory_settings_sig
     ensure_directories()
     if SETTINGS_FILE.exists():
         # Always merge onto the on-disk state (another process may have written it) and
@@ -1415,7 +1626,13 @@ def save_settings_unlocked(settings: dict) -> dict:
             os.chmod(SETTINGS_FILE, 0o600)
         except Exception:
             pass
+        try:
+            st = SETTINGS_FILE.stat()
+            _memory_settings_sig = (st.st_mtime_ns, st.st_size)
+        except Exception:
+            _memory_settings_sig = None
     except Exception as e:
+        _memory_settings_sig = None
         print(f"[config_manager] Note: kept settings in memory ({e})")
     return merged
 
@@ -1496,8 +1713,8 @@ def mark_file_printed(filename: str, extra_meta: dict = None):
         if print_log.exists():
             try:
                 history = json.loads(print_log.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.getLogger("image_analysis_pipeline").warning(f"[config_manager] Corrupt print_history.json reset on mark: {exc}")
         if filename not in history.get("printed", []):
             history.setdefault("printed", []).append(filename)
         entry = {
@@ -1521,7 +1738,8 @@ def remove_from_print_history(filenames):
             return
         try:
             history = json.loads(print_log.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            logging.getLogger("image_analysis_pipeline").warning(f"[config_manager] Could not parse print_history.json on remove: {exc}")
             return
         history["printed"] = [f for f in history.get("printed", []) if f not in remove_set]
         history["prints"] = [p for p in history.get("prints", []) if p.get("filename") not in remove_set]
@@ -1577,7 +1795,16 @@ def _print_windows_via_dotnet(pdf_path: Path, target_printer: str, is_custom_pri
             "if ($env:LS_PRINTER_NAME) { $doc.PrinterSettings.PrinterName = $env:LS_PRINTER_NAME }; "
             "$doc.add_PrintPage({ param($s, $e) "
             "$img = [System.Drawing.Image]::FromFile($files[$script:idx].FullName); "
-            "try { $e.Graphics.DrawImage($img, $e.MarginBounds) } finally { $img.Dispose() }; "
+            "try { "
+            "$b = $e.PageBounds; "
+            "$iw = [Math]::Max(1, $img.Width); $ih = [Math]::Max(1, $img.Height); "
+            "$scale = [Math]::Min([double]$b.Width / $iw, [double]$b.Height / $ih); "
+            "$dw = [int][Math]::Round($iw * $scale); $dh = [int][Math]::Round($ih * $scale); "
+            "$dx = $b.X + [int][Math]::Round(($b.Width - $dw) / 2.0); "
+            "$dy = $b.Y + [int][Math]::Round(($b.Height - $dh) / 2.0); "
+            "$rect = New-Object System.Drawing.Rectangle($dx, $dy, $dw, $dh); "
+            "$e.Graphics.DrawImage($img, $rect) "
+            "} finally { $img.Dispose() }; "
             "$script:idx++; $e.HasMorePages = ($script:idx -lt $files.Count) "
             "}); "
             "$doc.Print()"
@@ -1609,6 +1836,7 @@ def send_pdf_to_printer(pdf_path: str, printer_name: str = "default", extra_meta
     is_custom_printer = bool(target_printer and target_printer.lower() != "default")
 
     sys_name = platform.system()
+    dispatch_mode = "spooler"
     try:
         if sys_name == "Windows":
             sumatra = shutil.which("SumatraPDF.exe") or shutil.which("SumatraPDF")
@@ -1619,13 +1847,17 @@ def send_pdf_to_printer(pdf_path: str, printer_name: str = "default", extra_meta
                 try:
                     subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=30)
                     printed = True
+                    dispatch_mode = "spooler"
                 except Exception:
                     printed = False
 
             if not printed:
                 printed = _print_windows_via_dotnet(path, target_printer, is_custom_printer)
+                if printed:
+                    dispatch_mode = "spooler"
 
             if not printed:
+                dispatch_mode = "viewer_launched"
                 win_env = os.environ.copy()
                 win_env["LS_PRINT_FILE"] = str(path)
                 if is_custom_printer:
@@ -1658,8 +1890,16 @@ def send_pdf_to_printer(pdf_path: str, printer_name: str = "default", extra_meta
                 cmd.extend(["-d", target_printer])
             cmd.append(str(path))
             subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=30)
+            dispatch_mode = "spooler"
 
-        mark_file_printed(path.name, extra_meta=extra_meta)
-        return {"status": "success", "filename": path.name, "printer": target_printer or "default"}
+        meta = dict(extra_meta) if isinstance(extra_meta, dict) else {}
+        meta["dispatch"] = dispatch_mode
+        mark_file_printed(path.name, extra_meta=meta)
+        return {
+            "status": "success",
+            "filename": path.name,
+            "printer": target_printer or "default",
+            "dispatch": dispatch_mode,
+        }
     except Exception as e:
         return {"status": "error", "error": str(e)}
