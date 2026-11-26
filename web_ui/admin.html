@@ -590,6 +590,29 @@
         .flow-btn:hover .flow-name { text-decoration: underline; }
         .flow-node.is-off .flow-dot { border-style: dashed; border-color: var(--line-hover); color: var(--muted); }
         .flow-node.is-off .flow-name, .flow-node.is-off .flow-model { color: var(--muted); }
+        .flow-node.is-done .flow-dot { background: var(--good); border-color: var(--good); color: #ffffff; }
+        .flow-node.is-done:not(:last-child)::after { background: var(--good); height: 2px; }
+        .flow-node.is-running .flow-dot {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #ffffff;
+            box-shadow: 0 0 0 4px var(--accent-track);
+            animation: flow-pulse 1.3s infinite ease-in-out;
+        }
+        .flow-node.is-error .flow-dot { background: var(--crit); border-color: var(--crit); color: #ffffff; }
+        .flow-stage-state {
+            font-size: 11.5px;
+            color: var(--muted);
+            font-variant-numeric: tabular-nums;
+            min-height: 16px;
+        }
+        .flow-node.is-running .flow-stage-state { color: var(--accent-text); font-weight: 600; }
+        .flow-node.is-done .flow-stage-state { color: var(--good); font-weight: 500; }
+        .flow-node.is-error .flow-stage-state { color: var(--crit-text); font-weight: 600; }
+        @keyframes flow-pulse {
+            0%, 100% { box-shadow: 0 0 0 3px var(--accent-track); }
+            50% { box-shadow: 0 0 0 6px var(--accent-track); }
+        }
 
         /* ---------- Meters & tables ---------- */
         .meters { display: flex; flex-direction: column; gap: 12px; }
@@ -708,6 +731,13 @@
         }
         .step.is-off .step-num { border-style: dashed; }
         .step.is-active .step-num { background: var(--ink); border-color: var(--ink); color: var(--page); }
+        .step.is-done .step-num { background: var(--good); border-color: var(--good); color: #ffffff; }
+        .step.is-running .step-num {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #ffffff;
+            box-shadow: 0 0 0 3px var(--accent-track);
+        }
         .step.has-issue .step-num::after {
             content: '';
             position: absolute;
@@ -858,6 +888,72 @@
         }
         .textarea { resize: vertical; line-height: 1.55; }
         .input.mono { font-family: var(--mono); font-size: 13px; }
+
+        /* ---------- Custom model combobox (replaces buggy native <datalist>) ---------- */
+        .combo { position: relative; display: flex; align-items: center; width: 100%; }
+        .combo .combo-input { padding-right: 32px; }
+        .combo-toggle {
+            position: absolute;
+            right: 2px;
+            top: 2px;
+            bottom: 2px;
+            width: 28px;
+            border: none;
+            background: transparent;
+            color: var(--muted);
+            cursor: pointer;
+            display: grid;
+            place-items: center;
+            border-radius: 6px;
+        }
+        .combo-toggle:hover { color: var(--ink); background: var(--hover); }
+        .combo-toggle svg { width: 12px; height: 12px; transition: transform 0.14s; }
+        .combo.is-open .combo-toggle svg { transform: rotate(180deg); }
+        .combo-menu {
+            display: none;
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            right: 0;
+            min-width: 230px;
+            max-height: 248px;
+            overflow-y: auto;
+            background: var(--surface);
+            border: 1px solid var(--line-strong);
+            border-radius: var(--radius-sm);
+            box-shadow: var(--shadow-pop);
+            padding: 4px;
+            z-index: 95;
+        }
+        .combo.is-open .combo-menu { display: block; }
+        .combo-opt {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            width: 100%;
+            padding: 7px 10px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--ink);
+            font-family: var(--mono);
+            font-size: 12.5px;
+            text-align: left;
+            cursor: pointer;
+        }
+        .combo-opt:hover { background: var(--hover); }
+        .combo-opt.is-selected { background: var(--sunken); font-weight: 600; }
+        .combo-opt.is-sans { font-family: var(--font); font-size: 13px; }
+        .select-combo > .select { cursor: pointer; user-select: none; }
+        .combo-opt-tag {
+            font-family: var(--font);
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--muted);
+            white-space: nowrap;
+        }
+        .combo-opt-tag.is-installed { color: var(--good); }
 
         .check-row {
             display: inline-flex;
@@ -1254,7 +1350,10 @@
 
             <div class="card">
                 <div class="card-head">
-                    <h2 class="card-title" data-i18n="admin.monitor.flow_title">Models in use</h2>
+                    <div class="card-title-row">
+                        <h2 class="card-title" data-i18n="admin.monitor.flow_title">Models in use</h2>
+                        <span class="status" id="monitorFlowStatus"></span>
+                    </div>
                     <button type="button" class="btn btn-quiet btn-sm" onclick="selectAdminTab('#tab-ai')" data-i18n="admin.monitor.flow_configure">Configure</button>
                 </div>
                 <ol class="flow" id="monitorFlow"></ol>
@@ -1307,8 +1406,6 @@
 
             <div id="aiDiagStrip" class="health d-none"></div>
 
-            <datalist id="ollamaModelList"></datalist>
-
             <nav class="stepper" id="aiPipelineStepper">
                 <button type="button" class="step is-active" data-ai-stage="vision" onclick="selectAIStage('vision')">
                     <span class="step-num">1</span>
@@ -1320,7 +1417,7 @@
                 </button>
                 <button type="button" class="step" data-ai-stage="poem" onclick="selectAIStage('poem')">
                     <span class="step-num">3</span>
-                    <span class="step-text"><span class="step-name" data-i18n="admin.ai.step_poem">Haiku poet</span><span class="step-meta" id="stepSubPoem">ollama</span></span>
+                    <span class="step-text"><span class="step-name" data-i18n="admin.ai.step_poem">Poet</span><span class="step-meta" id="stepSubPoem">ollama</span></span>
                 </button>
                 <button type="button" class="step" data-ai-stage="translation" onclick="selectAIStage('translation')">
                     <span class="step-num">4</span>
@@ -1381,7 +1478,11 @@
                     <div class="form-grid cols-4">
                         <div class="field">
                             <label class="field-label" for="aiOllamaVisionModel" data-i18n="admin.ai.vision_ollama_model">Model</label>
-                            <input type="text" id="aiOllamaVisionModel" class="input mono" list="ollamaModelList" placeholder="moondream">
+                            <div class="combo" data-combo="vision">
+                                <input type="text" id="aiOllamaVisionModel" class="input mono combo-input" placeholder="moondream" autocomplete="off">
+                                <button type="button" class="combo-toggle" tabindex="-1" aria-label="Models" onclick="toggleModelCombo(this, event)"><svg viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                                <div class="combo-menu" role="listbox"></div>
+                            </div>
                         </div>
                         <div class="field">
                             <label class="field-label" for="visionOllamaThinking" data-i18n="admin.ai.vision_thinking">Thinking</label>
@@ -1506,7 +1607,11 @@
                     </div>
                     <div class="field">
                         <label class="field-label" for="analysis_model" data-i18n="admin.ai.model_id">Model</label>
-                        <input type="text" class="input mono" id="analysis_model" placeholder="gemma4:e4b">
+                        <div class="combo" data-combo="analysis">
+                            <input type="text" class="input mono combo-input" id="analysis_model" placeholder="gemma4:e4b" autocomplete="off">
+                            <button type="button" class="combo-toggle" tabindex="-1" aria-label="Models" onclick="toggleModelCombo(this, event)"><svg viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                            <div class="combo-menu" role="listbox"></div>
+                        </div>
                     </div>
                     <div class="field">
                         <label class="field-label" for="analysis_thinking_mode" data-i18n="admin.ai.thinking_mode">Thinking</label>
@@ -1536,7 +1641,11 @@
                     <div class="form-grid cols-3">
                         <div class="field">
                             <label class="field-label" for="analysis_base_url" data-i18n="admin.ai.base_url">Base URL</label>
-                            <input type="text" class="input mono" id="analysis_base_url" placeholder="http://localhost:11434/v1">
+                            <div class="combo" data-combo="analysis_url">
+                                <input type="text" class="input mono combo-input" id="analysis_base_url" placeholder="http://localhost:11434/v1" autocomplete="off">
+                                <button type="button" class="combo-toggle" tabindex="-1" aria-label="Base URLs" onclick="toggleModelCombo(this, event)"><svg viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                                <div class="combo-menu" role="listbox"></div>
+                            </div>
                         </div>
                         <div class="field">
                             <label class="field-label" for="analysis_api_key"><span data-i18n="admin.ai.api_key">API key</span> <span class="text-muted" id="analysis_api_key_status"></span></label>
@@ -1574,37 +1683,42 @@
                         </div>
                         <div class="field">
                             <label class="field-label" for="analysis_fallback_model" data-i18n="admin.ai.failover_model">Fallback model</label>
-                            <input type="text" class="input mono" id="analysis_fallback_model" data-i18n-placeholder="admin.ai.failover_placeholder" placeholder="Optional">
+                            <div class="combo" data-combo="analysis_fallback">
+                                <input type="text" class="input mono combo-input" id="analysis_fallback_model" data-i18n-placeholder="admin.ai.failover_placeholder" placeholder="Optional" autocomplete="off">
+                                <button type="button" class="combo-toggle" tabindex="-1" aria-label="Fallback models" onclick="toggleModelCombo(this, event)"><svg viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                                <div class="combo-menu" role="listbox"></div>
+                            </div>
                         </div>
                     </div>
                 </details>
 
-                <details class="more">
+                <details class="more" open>
                     <summary data-i18n="admin.ai.advanced_persona">Persona fields</summary>
                     <div class="form-grid cols-2">
-                        <div class="field"><label class="field-label" for="analysis_purpose" data-i18n="admin.ai.field_purpose">Purpose</label><input type="text" class="input" id="analysis_purpose"></div>
-                        <div class="field"><label class="field-label" for="analysis_expertise" data-i18n="admin.ai.field_expertise">Expertise</label><input type="text" class="input" id="analysis_expertise"></div>
-                        <div class="field"><label class="field-label" for="analysis_capabilities" data-i18n="admin.ai.field_capabilities">Capabilities</label><input type="text" class="input" id="analysis_capabilities"></div>
-                        <div class="field"><label class="field-label" for="analysis_restrictions" data-i18n="admin.ai.field_restrictions">Restrictions</label><input type="text" class="input" id="analysis_restrictions"></div>
-                        <div class="field span-all"><label class="field-label" for="analysis_additional" data-i18n="admin.ai.field_additional">Additional instructions</label><input type="text" class="input" id="analysis_additional"></div>
+                        <div class="field"><label class="field-label" for="analysis_purpose" data-i18n="admin.ai.field_purpose">Purpose</label><textarea class="textarea" id="analysis_purpose" rows="2"></textarea></div>
+                        <div class="field"><label class="field-label" for="analysis_expertise" data-i18n="admin.ai.field_expertise">Expertise</label><textarea class="textarea" id="analysis_expertise" rows="2"></textarea></div>
+                        <div class="field"><label class="field-label" for="analysis_capabilities" data-i18n="admin.ai.field_capabilities">Capabilities</label><textarea class="textarea" id="analysis_capabilities" rows="2"></textarea></div>
+                        <div class="field"><label class="field-label" for="analysis_restrictions" data-i18n="admin.ai.field_restrictions">Restrictions</label><textarea class="textarea" id="analysis_restrictions" rows="2"></textarea></div>
+                        <div class="field span-all"><label class="field-label" for="analysis_additional" data-i18n="admin.ai.field_additional">Additional instructions</label><textarea class="textarea" id="analysis_additional" rows="2"></textarea></div>
                     </div>
                 </details>
 
                 <footer class="stage-foot">
                     <span class="result" id="analysis_test_result"></span>
                     <div class="btn-row">
+                        <button type="button" class="btn btn-quiet" onclick="resetRolePromptDefaults('analysis')" data-i18n="admin.ai.reset_role_prompts">Reset prompts &amp; persona</button>
                         <button type="button" class="btn" onclick="testRoleConnection('analysis')" data-i18n="admin.ai.test_analysis">Test</button>
                         <button type="button" class="btn btn-primary" id="saveAnalysisBtn" onclick="saveRoleConfig('analysis')" data-i18n="admin.ai.apply_analysis">Apply</button>
                     </div>
                 </footer>
             </section>
 
-            <!-- STAGE 3: HAIKU POET -->
+            <!-- STAGE 3: POET -->
             <section class="ai-stage-pane card" id="ai-stage-poem">
                 <header class="stage-head">
                     <div>
-                        <h2 class="stage-title" data-i18n="admin.ai.poem_title">Haiku poet</h2>
-                        <p class="stage-desc" data-i18n="admin.ai.poem_sub">Distils the reading into a short poem.</p>
+                        <h2 class="stage-title" data-i18n="admin.ai.poem_title">Poet</h2>
+                        <p class="stage-desc" data-i18n="admin.ai.poem_sub">Distils the reading and drawing gesture into verse.</p>
                     </div>
                     <div class="stage-head-right">
                         <button type="button" class="btn btn-sm" onclick="copyAnalysisToPoem()" data-i18n="admin.ai.copy_to_poem">Copy from Psychoanalyst</button>
@@ -1636,7 +1750,20 @@
                     </div>
                     <div class="field">
                         <label class="field-label" for="poem_model" data-i18n="admin.ai.model_id">Model</label>
-                        <input type="text" class="input mono" id="poem_model" placeholder="gemma4:e4b">
+                        <div class="combo" data-combo="poem">
+                            <input type="text" class="input mono combo-input" id="poem_model" placeholder="gemma4:e4b" autocomplete="off">
+                            <button type="button" class="combo-toggle" tabindex="-1" aria-label="Models" onclick="toggleModelCombo(this, event)"><svg viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                            <div class="combo-menu" role="listbox"></div>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label class="field-label" for="poem_style" data-i18n="admin.ai.poem_style">Poem style</label>
+                        <select id="poem_style" class="select">
+                            <option value="lyrical_4_6" data-i18n="admin.ai.poem_style_lyrical_4_6" selected>4–6 line lyrical free verse (Default)</option>
+                            <option value="two_stanza" data-i18n="admin.ai.poem_style_two_stanza">2-stanza poem (6–8 lines)</option>
+                            <option value="quatrain" data-i18n="admin.ai.poem_style_quatrain">4-line stanza (Quatrain)</option>
+                            <option value="haiku" data-i18n="admin.ai.poem_style_haiku">3-line minimalist haiku (5-7-5)</option>
+                        </select>
                     </div>
                     <div class="field">
                         <label class="field-label" for="poem_thinking_mode" data-i18n="admin.ai.thinking_mode">Thinking</label>
@@ -1648,17 +1775,13 @@
                             <option value="high">High</option>
                         </select>
                     </div>
-                    <div class="field">
-                        <label class="field-label" for="poem_temp" data-i18n="admin.ai.vision_temp">Temperature</label>
-                        <input type="number" step="0.05" min="0" max="2" class="input" id="poem_temp" value="0.8">
-                    </div>
                 </div>
 
                 <div id="poemAvailabilityNote" class="note"></div>
 
                 <div class="field">
                     <label class="field-label" for="poem_desc" data-i18n="admin.ai.sys_prompt_poem">Instructions</label>
-                    <textarea class="textarea" id="poem_desc" rows="6"></textarea>
+                    <textarea class="textarea" id="poem_desc" rows="4"></textarea>
                 </div>
 
                 <details class="more">
@@ -1666,7 +1789,11 @@
                     <div class="form-grid cols-3">
                         <div class="field">
                             <label class="field-label" for="poem_base_url" data-i18n="admin.ai.base_url">Base URL</label>
-                            <input type="text" class="input mono" id="poem_base_url" placeholder="http://localhost:11434/v1">
+                            <div class="combo" data-combo="poem_url">
+                                <input type="text" class="input mono combo-input" id="poem_base_url" placeholder="http://localhost:11434/v1" autocomplete="off">
+                                <button type="button" class="combo-toggle" tabindex="-1" aria-label="Base URLs" onclick="toggleModelCombo(this, event)"><svg viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                                <div class="combo-menu" role="listbox"></div>
+                            </div>
                         </div>
                         <div class="field">
                             <label class="field-label" for="poem_api_key"><span data-i18n="admin.ai.api_key">API key</span> <span class="text-muted" id="poem_api_key_status"></span></label>
@@ -1681,7 +1808,11 @@
                             <input type="text" class="input" id="poem_name">
                         </div>
                     </div>
-                    <div class="form-grid cols-3">
+                    <div class="form-grid cols-4">
+                        <div class="field">
+                            <label class="field-label" for="poem_temp" data-i18n="admin.ai.vision_temp">Temperature</label>
+                            <input type="number" step="0.05" min="0" max="2" class="input" id="poem_temp" value="0.7">
+                        </div>
                         <div class="field">
                             <label class="field-label" for="poem_max_tokens" data-i18n="admin.ai.max_tokens">Max tokens (0 = auto)</label>
                             <input type="number" step="64" min="0" max="4096" class="input" id="poem_max_tokens" value="0">
@@ -1700,25 +1831,30 @@
                         </div>
                         <div class="field">
                             <label class="field-label" for="poem_fallback_model" data-i18n="admin.ai.failover_model">Fallback model</label>
-                            <input type="text" class="input mono" id="poem_fallback_model" data-i18n-placeholder="admin.ai.failover_placeholder" placeholder="Optional">
+                            <div class="combo" data-combo="poem_fallback">
+                                <input type="text" class="input mono combo-input" id="poem_fallback_model" data-i18n-placeholder="admin.ai.failover_placeholder" placeholder="Optional" autocomplete="off">
+                                <button type="button" class="combo-toggle" tabindex="-1" aria-label="Fallback models" onclick="toggleModelCombo(this, event)"><svg viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                                <div class="combo-menu" role="listbox"></div>
+                            </div>
                         </div>
                     </div>
                 </details>
 
-                <details class="more">
+                <details class="more" open>
                     <summary data-i18n="admin.ai.advanced_persona">Persona fields</summary>
                     <div class="form-grid cols-2">
-                        <div class="field"><label class="field-label" for="poem_purpose" data-i18n="admin.ai.field_purpose">Purpose</label><input type="text" class="input" id="poem_purpose"></div>
-                        <div class="field"><label class="field-label" for="poem_expertise" data-i18n="admin.ai.field_expertise">Expertise</label><input type="text" class="input" id="poem_expertise"></div>
-                        <div class="field"><label class="field-label" for="poem_capabilities" data-i18n="admin.ai.field_capabilities">Capabilities</label><input type="text" class="input" id="poem_capabilities"></div>
-                        <div class="field"><label class="field-label" for="poem_restrictions" data-i18n="admin.ai.field_restrictions">Restrictions</label><input type="text" class="input" id="poem_restrictions"></div>
-                        <div class="field span-all"><label class="field-label" for="poem_additional" data-i18n="admin.ai.field_additional">Additional instructions</label><input type="text" class="input" id="poem_additional"></div>
+                        <div class="field"><label class="field-label" for="poem_purpose" data-i18n="admin.ai.field_purpose">Purpose</label><textarea class="textarea" id="poem_purpose" rows="2"></textarea></div>
+                        <div class="field"><label class="field-label" for="poem_expertise" data-i18n="admin.ai.field_expertise">Expertise</label><textarea class="textarea" id="poem_expertise" rows="2"></textarea></div>
+                        <div class="field"><label class="field-label" for="poem_capabilities" data-i18n="admin.ai.field_capabilities">Capabilities</label><textarea class="textarea" id="poem_capabilities" rows="2"></textarea></div>
+                        <div class="field"><label class="field-label" for="poem_restrictions" data-i18n="admin.ai.field_restrictions">Restrictions</label><textarea class="textarea" id="poem_restrictions" rows="2"></textarea></div>
+                        <div class="field span-all"><label class="field-label" for="poem_additional" data-i18n="admin.ai.field_additional">Additional instructions</label><textarea class="textarea" id="poem_additional" rows="2"></textarea></div>
                     </div>
                 </details>
 
                 <footer class="stage-foot">
                     <span class="result" id="poem_test_result"></span>
                     <div class="btn-row">
+                        <button type="button" class="btn btn-quiet" onclick="resetRolePromptDefaults('poem')" data-i18n="admin.ai.reset_role_prompts">Reset prompts &amp; persona</button>
                         <button type="button" class="btn" onclick="testRoleConnection('poem')" data-i18n="admin.ai.test_poem">Test</button>
                         <button type="button" class="btn btn-primary" id="savePoemBtn" onclick="saveRoleConfig('poem')" data-i18n="admin.ai.apply_poem">Apply</button>
                     </div>
@@ -1765,7 +1901,11 @@
                     <div class="form-grid cols-3" style="align-items:end;">
                         <div class="field">
                             <label class="field-label" for="translationNmtModel" data-i18n="admin.tr.nmt_model">Model (Hugging Face)</label>
-                            <input type="text" id="translationNmtModel" class="input mono" value="Helsinki-NLP/opus-mt-tc-big-en-hu">
+                            <div class="combo" data-combo="nmt">
+                                <input type="text" id="translationNmtModel" class="input mono combo-input" value="Helsinki-NLP/opus-mt-tc-big-en-hu" autocomplete="off">
+                                <button type="button" class="combo-toggle" tabindex="-1" aria-label="NMT models" onclick="toggleModelCombo(this, event)"><svg viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                                <div class="combo-menu" role="listbox"></div>
+                            </div>
                         </div>
                         <div class="field">
                             <label class="field-label" for="translationNmtThreads" data-i18n="admin.tr.nmt_threads">CPU threads</label>
@@ -1791,7 +1931,11 @@
                     <div class="form-grid cols-4">
                         <div class="field">
                             <label class="field-label" for="translationOllamaModel" data-i18n="admin.tr.ollama_model">Model</label>
-                            <input type="text" id="translationOllamaModel" class="input mono" list="ollamaModelList" value="translategemma:4b">
+                            <div class="combo" data-combo="translation">
+                                <input type="text" id="translationOllamaModel" class="input mono combo-input" value="translategemma:4b" autocomplete="off">
+                                <button type="button" class="combo-toggle" tabindex="-1" aria-label="Models" onclick="toggleModelCombo(this, event)"><svg viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                                <div class="combo-menu" role="listbox"></div>
+                            </div>
                         </div>
                         <div class="field">
                             <label class="field-label" for="translationOllamaTemp" data-i18n="admin.tr.ollama_temp">Temperature</label>
@@ -1803,7 +1947,11 @@
                         </div>
                         <div class="field">
                             <label class="field-label" for="translationOllamaUrl" data-i18n="admin.tr.ollama_url">Ollama URL (optional)</label>
-                            <input type="text" id="translationOllamaUrl" class="input mono" placeholder="http://localhost:11434">
+                            <div class="combo" data-combo="translation_url">
+                                <input type="text" id="translationOllamaUrl" class="input mono combo-input" placeholder="http://localhost:11434" autocomplete="off">
+                                <button type="button" class="combo-toggle" tabindex="-1" aria-label="Ollama URLs" onclick="toggleModelCombo(this, event)"><svg viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                                <div class="combo-menu" role="listbox"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1846,11 +1994,19 @@
                     </div>
                     <div class="field">
                         <label class="field-label" for="ttsVoice1Input" data-i18n="admin.ai.tts_voice1">Voice ID</label>
-                        <input type="text" id="ttsVoice1Input" class="input mono" placeholder="45QiOxkuEAY6ckHqLMe8 / en-US-Chirp3-HD-Zephyr">
+                        <div class="combo" data-combo="tts_voice1">
+                            <input type="text" id="ttsVoice1Input" class="input mono combo-input" placeholder="45QiOxkuEAY6ckHqLMe8 / en-US-Chirp3-HD-Zephyr" autocomplete="off">
+                            <button type="button" class="combo-toggle" tabindex="-1" aria-label="Voices" onclick="toggleModelCombo(this, event)"><svg viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                            <div class="combo-menu" role="listbox"></div>
+                        </div>
                     </div>
                     <div class="field">
                         <label class="field-label" for="ttsVoice2Input" data-i18n="admin.ai.tts_voice2">Harmony voice ID (ElevenLabs)</label>
-                        <input type="text" id="ttsVoice2Input" class="input mono" placeholder="tJHJUEHzOkMoPmJJ5jo2">
+                        <div class="combo" data-combo="tts_voice2">
+                            <input type="text" id="ttsVoice2Input" class="input mono combo-input" placeholder="tJHJUEHzOkMoPmJJ5jo2" autocomplete="off">
+                            <button type="button" class="combo-toggle" tabindex="-1" aria-label="Harmony voices" onclick="toggleModelCombo(this, event)"><svg viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                            <div class="combo-menu" role="listbox"></div>
+                        </div>
                     </div>
                 </div>
                 <footer class="stage-foot">
@@ -1883,7 +2039,11 @@
                 </label>
                 <div class="field">
                     <label class="field-label" for="printerNameInput" data-i18n="admin.files.printer_name">Printer</label>
-                    <input type="text" class="input" id="printerNameInput" value="default" placeholder="default">
+                    <div class="combo" data-combo="printer">
+                        <input type="text" class="input combo-input" id="printerNameInput" value="default" placeholder="default" autocomplete="off">
+                        <button type="button" class="combo-toggle" tabindex="-1" aria-label="Printers" onclick="toggleModelCombo(this, event)"><svg viewBox="0 0 12 12"><path d="M3 4.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                        <div class="combo-menu" role="listbox"></div>
+                    </div>
                 </div>
                 <div class="field narrow">
                     <label class="field-label" for="paperFormatSelect" data-i18n="admin.files.paper_format">Paper</label>
@@ -2682,22 +2842,92 @@
         const ai = data.ai_summary || {};
         const tr = data.translation || {};
         const tts = data.tts || {};
+        const pipe = data.pipeline || {};
+        const tm = data.last_timings || {};
+        const isRunning = !!pipe.running;
+        const curStage = isRunning ? (pipe.current_stage || 'vision') : '';
+        const stageMap = (isRunning && pipe.stages && typeof pipe.stages === 'object') ? pipe.stages : {};
         const trOn = !!tr.enabled && tr.mode !== 'off';
         const nodes = [
-            { stage: 'vision', name: t('admin.ai.step_vision'), meta: visionMeta(ai.vision_mode || 'auto', ai.ollama_vision_model), off: false },
-            { stage: 'analysis', name: t('admin.ai.step_analysis'), meta: roleMeta(ai.analysis_provider, ai.analysis_model), off: false },
-            { stage: 'poem', name: t('admin.ai.step_poem'), meta: roleMeta(ai.poem_provider, ai.poem_model), off: false },
-            { stage: 'translation', name: t('admin.ai.step_translation'), meta: translationMeta(trOn, tr.mode, tr.local_nmt_model, tr.ollama_model), off: !trOn },
-            { stage: 'tts', name: t('admin.ai.step_tts'), meta: tts.enabled ? (tts.provider || 'elevenlabs') : t('admin.monitor.flow_off'), off: !tts.enabled },
+            { stage: 'vision', name: t('admin.ai.step_vision'), meta: visionMeta(ai.vision_mode || 'auto', ai.ollama_vision_model), off: false, lastSec: tm.vision_sec },
+            { stage: 'analysis', name: t('admin.ai.step_analysis'), meta: roleMeta(ai.analysis_provider, ai.analysis_model), off: false, lastSec: tm.analysis_sec },
+            { stage: 'poem', name: t('admin.ai.step_poem'), meta: roleMeta(ai.poem_provider, ai.poem_model), off: false, lastSec: tm.poem_sec },
+            { stage: 'translation', name: t('admin.ai.step_translation'), meta: translationMeta(trOn, tr.mode, tr.local_nmt_model, tr.ollama_model), off: !trOn, lastSec: trOn ? tm.translation_sec : null },
+            { stage: 'tts', name: t('admin.ai.step_tts'), meta: tts.enabled ? (tts.provider || 'elevenlabs') : t('admin.monitor.flow_off'), off: !tts.enabled, lastSec: null },
         ];
-        setHtml($('monitorFlow'), nodes.map((n, i) => `
-            <li class="flow-node${n.off ? ' is-off' : ''}">
+
+        const flowStatusEl = $('monitorFlowStatus');
+        if (flowStatusEl) {
+            if (isRunning) {
+                const runElapsed = fmtSec(pipe.run_elapsed_sec ?? 0);
+                if (curStage === 'pdf') {
+                    setHtml(flowStatusEl, `<span class="dot busy"></span><span>${escapeHtml(t('admin.monitor.flow_rendering_pdf', { elapsed: runElapsed }))}</span>`);
+                } else {
+                    const activeIdx = Math.max(0, nodes.findIndex(n => n.stage === curStage));
+                    const activeNode = nodes[activeIdx] || nodes[0];
+                    setHtml(flowStatusEl, `<span class="dot busy"></span><span>${escapeHtml(t('admin.monitor.flow_running_stage', { step: `${activeIdx + 1}/${nodes.length}`, name: activeNode.name, elapsed: runElapsed }))}</span>`);
+                }
+            } else {
+                setHtml(flowStatusEl, '');
+            }
+        }
+
+        const stageOrder = nodes.map(n => n.stage);
+        const curOrderIdx = curStage === 'pdf' ? nodes.length : stageOrder.indexOf(curStage);
+
+        setHtml($('monitorFlow'), nodes.map((n, i) => {
+            const stEntry = stageMap[n.stage] || {};
+            let st = stEntry.status || '';
+            if (isRunning && !st) {
+                if (n.off) st = 'skipped';
+                else if (curOrderIdx > i) st = 'done';
+                else if (curOrderIdx === i) st = 'running';
+                else st = 'pending';
+            }
+            const isStepRunning = isRunning && st === 'running';
+            const isStepDone = isRunning && st === 'done';
+            const isStepErr = st === 'error';
+            const cls = [
+                'flow-node',
+                n.off ? 'is-off' : '',
+                isStepRunning ? 'is-running' : '',
+                isStepDone ? 'is-done' : '',
+                isStepErr ? 'is-error' : '',
+            ].filter(Boolean).join(' ');
+
+            let dotContent = String(i + 1);
+            if (isStepDone) dotContent = '✓';
+            else if (isStepErr) dotContent = '!';
+
+            let stateText = '';
+            if (isStepRunning) {
+                const liveSec = stEntry.live_elapsed_sec ?? pipe.stage_elapsed_sec ?? 0;
+                stateText = t('admin.monitor.flow_step_running', { time: fmtSec(liveSec) });
+            } else if (isStepDone) {
+                const doneSec = typeof stEntry.elapsed_sec === 'number' ? fmtSec(stEntry.elapsed_sec) : '';
+                stateText = doneSec ? t('admin.monitor.flow_step_done', { time: doneSec }) : '✓';
+            } else if (isRunning && !n.off && st === 'pending') {
+                stateText = t('admin.monitor.flow_step_waiting');
+            } else if (!isRunning && !n.off && typeof n.lastSec === 'number' && n.lastSec > 0) {
+                stateText = fmtSec(n.lastSec);
+            }
+
+            const stepperBtn = document.querySelector(`#aiPipelineStepper .step[data-ai-stage="${n.stage}"]`);
+            if (stepperBtn) {
+                stepperBtn.classList.toggle('is-running', isStepRunning);
+                stepperBtn.classList.toggle('is-done', isStepDone);
+            }
+
+            return `
+            <li class="${cls}">
                 <button type="button" class="flow-btn" onclick="openAIStage('${n.stage}')" title="${escapeHtml(n.name + ': ' + n.meta)}">
-                    <span class="flow-dot">${i + 1}</span>
+                    <span class="flow-dot">${escapeHtml(dotContent)}</span>
                     <span class="flow-name">${escapeHtml(n.name)}</span>
                     <span class="flow-model">${escapeHtml(n.meta)}</span>
+                    ${stateText ? `<span class="flow-stage-state">${escapeHtml(stateText)}</span>` : ''}
                 </button>
-            </li>`).join(''));
+            </li>`;
+        }).join(''));
     }
 
     function renderOllamaPanel(olRt) {
@@ -2834,6 +3064,11 @@
             }
             setLiveState(true);
             $('lastUpdate').textContent = t('admin.header.updated', { time: new Date().toLocaleTimeString() });
+            if (data && data.pipeline && data.pipeline.running && adminAuthenticated) {
+                setTimeout(() => {
+                    if (adminAuthenticated) updateMonitor();
+                }, 1100);
+            }
         } finally {
             monitorInFlight = false;
         }
@@ -3118,17 +3353,284 @@
             : `<span class="dot warn"></span>${escapeHtml(t('admin.ai.status_unavailable'))}`);
     }
 
-    // Offer installed Ollama models as suggestions; only for Ollama-backed inputs.
-    function syncModelSuggestions() {
-        const models = (aiAvailability && aiAvailability.ollama && aiAvailability.ollama.models) || [];
-        setHtml($('ollamaModelList'), models.map(m => `<option value="${escapeHtml(m)}"></option>`).join(''));
-        ['analysis', 'poem'].forEach(role => {
-            const input = $(`${role}_model`);
-            if (!input) return;
-            if ($(`${role}_provider`).value === 'ollama') input.setAttribute('list', 'ollamaModelList');
-            else input.removeAttribute('list');
+    // Custom model combobox dropdowns (replaces buggy native browser <datalist> and <select> popups).
+    const RECOMMENDED_COMBO_MODELS = {
+        vision: ['moondream:latest', 'gemma4:e4b', 'gemma3:4b', 'llava:latest', 'qwen2.5vl:7b', 'minicpm-v:latest'],
+        ollama_chat: ['gemma4:e4b', 'gemma3:4b', 'llama3.1:8b', 'llama3.2:latest', 'qwen3:8b', 'qwen3:4b'],
+        gemini: ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.5-pro'],
+        anthropic: ['claude-3-5-haiku-latest', 'claude-3-7-sonnet-latest', 'claude-sonnet-4-20250514'],
+        openai_compatible: ['llama-3.3-70b-versatile', 'gpt-4o-mini', 'gpt-4.1-mini', 'meta-llama/llama-3.2-11b-vision-instruct:free'],
+        translation: ['translategemma:4b', 'gemma4:e4b', 'gemma3:4b', 'jobautomation/OpenEuroLLM-Hungarian', 'qwen3:4b'],
+        nmt: [
+            { name: 'Helsinki-NLP/opus-mt-tc-big-en-hu', badge: 'Default · EN→HU' },
+            { name: 'Helsinki-NLP/opus-mt-en-hu', badge: 'Compact · EN→HU' }
+        ],
+        base_urls: {
+            ollama: [
+                { name: 'http://localhost:11434/v1', badge: 'Local Ollama' },
+                { name: 'http://127.0.0.1:11434/v1', badge: 'Local IPv4' }
+            ],
+            openai_compatible: [
+                { name: 'https://api.groq.com/openai/v1', badge: 'Groq Cloud' },
+                { name: 'https://openrouter.ai/api/v1', badge: 'OpenRouter' },
+                { name: 'https://api.openai.com/v1', badge: 'OpenAI' },
+                { name: 'http://localhost:11434/v1', badge: 'Local Ollama' },
+                { name: 'http://localhost:1234/v1', badge: 'LM Studio' }
+            ]
+        },
+        translation_urls: [
+            { name: 'http://localhost:11434', badge: 'Local Ollama' },
+            { name: 'http://127.0.0.1:11434', badge: 'Local IPv4' }
+        ],
+        tts_voice1: [
+            { name: '45QiOxkuEAY6ckHqLMe8', badge: 'ElevenLabs · Default' },
+            { name: 'tJHJUEHzOkMoPmJJ5jo2', badge: 'ElevenLabs · Harmony' },
+            { name: 'en-US-Chirp3-HD-Zephyr', badge: 'Google Cloud · Zephyr HD' },
+            { name: 'en-US-Journey-F', badge: 'Google Cloud · Journey F' }
+        ],
+        tts_voice2: [
+            { name: 'tJHJUEHzOkMoPmJJ5jo2', badge: 'ElevenLabs · Harmony' },
+            { name: '45QiOxkuEAY6ckHqLMe8', badge: 'ElevenLabs · Primary' }
+        ],
+        printer: [
+            { name: 'default', badge: 'System default printer' }
+        ]
+    };
+
+    function getComboCandidates(kind) {
+        const installed = (aiAvailability && aiAvailability.ollama && Array.isArray(aiAvailability.ollama.models))
+            ? aiAvailability.ollama.models
+            : [];
+        const seen = new Set();
+        const items = [];
+        const add = (name, badge = '', isInstalled = false) => {
+            const clean = String(name || '').trim();
+            if (!clean) return;
+            const key = clean.toLowerCase();
+            if (seen.has(key)) return;
+            seen.add(key);
+            items.push({ name: clean, badge, isInstalled });
+        };
+
+        if (kind === 'vision') {
+            installed.forEach(m => {
+                if (_isVisionCapableModelName('ollama', m)) add(m, 'Installed · Vision', true);
+            });
+            RECOMMENDED_COMBO_MODELS.vision.forEach(m => {
+                const inst = _isOllamaModelInstalled(m, installed);
+                add(m, inst ? 'Installed · Vision' : 'Vision preset', inst);
+            });
+            installed.forEach(m => add(m, 'Installed', true));
+            return items;
+        }
+
+        if (kind === 'translation') {
+            installed.forEach(m => add(m, 'Installed', true));
+            RECOMMENDED_COMBO_MODELS.translation.forEach(m => {
+                const inst = _isOllamaModelInstalled(m, installed);
+                add(m, inst ? 'Installed' : 'Preset', inst);
+            });
+            return items;
+        }
+
+        if (kind === 'nmt' || kind === 'tts_voice1' || kind === 'tts_voice2' || kind === 'printer') {
+            (RECOMMENDED_COMBO_MODELS[kind] || []).forEach(entry => add(entry.name, entry.badge, false));
+            return items;
+        }
+
+        if (kind === 'translation_url') {
+            RECOMMENDED_COMBO_MODELS.translation_urls.forEach(entry => add(entry.name, entry.badge, false));
+            return items;
+        }
+
+        if (kind === 'analysis_url' || kind === 'poem_url') {
+            const role = kind.replace('_url', '');
+            const prov = document.getElementById(`${role}_provider`)?.value || 'ollama';
+            const list = RECOMMENDED_COMBO_MODELS.base_urls[prov] || RECOMMENDED_COMBO_MODELS.base_urls.openai_compatible;
+            list.forEach(entry => add(entry.name, entry.badge, false));
+            return items;
+        }
+
+        if (kind === 'analysis_fallback' || kind === 'poem_fallback') {
+            const role = kind.replace('_fallback', '');
+            const fbProv = document.getElementById(`${role}_fallback_provider`)?.value || 'auto';
+            if (fbProv === 'ollama' || fbProv === 'auto') {
+                installed.forEach(m => add(m, 'Installed · Ollama', true));
+                RECOMMENDED_COMBO_MODELS.ollama_chat.forEach(m => {
+                    const inst = _isOllamaModelInstalled(m, installed);
+                    add(m, inst ? 'Installed · Ollama' : 'Ollama preset', inst);
+                });
+            }
+            if (fbProv === 'gemini' || fbProv === 'auto') {
+                RECOMMENDED_COMBO_MODELS.gemini.forEach(m => add(m, 'Gemini'));
+            }
+            if (fbProv === 'openai_compatible' || fbProv === 'auto') {
+                RECOMMENDED_COMBO_MODELS.openai_compatible.forEach(m => add(m, 'OpenAI-compatible'));
+            }
+            if (fbProv === 'anthropic' || fbProv === 'auto') {
+                RECOMMENDED_COMBO_MODELS.anthropic.forEach(m => add(m, 'Anthropic'));
+            }
+            return items;
+        }
+
+        const provEl = document.getElementById(`${kind}_provider`);
+        const prov = (provEl && provEl.value) ? provEl.value : 'ollama';
+        if (prov === 'ollama') {
+            installed.forEach(m => add(m, 'Installed', true));
+            RECOMMENDED_COMBO_MODELS.ollama_chat.forEach(m => {
+                const inst = _isOllamaModelInstalled(m, installed);
+                add(m, inst ? 'Installed' : 'Preset', inst);
+            });
+        } else if (RECOMMENDED_COMBO_MODELS[prov]) {
+            RECOMMENDED_COMBO_MODELS[prov].forEach(m => add(m, prov));
+        }
+        return items;
+    }
+
+    function renderComboMenu(comboEl) {
+        if (!comboEl) return;
+        const selectEl = comboEl.querySelector('select.select');
+        const menu = comboEl.querySelector('.combo-menu');
+        if (!menu) return;
+        if (selectEl) {
+            setHtml(menu, Array.from(selectEl.options).map(opt => {
+                const sel = opt.value === selectEl.value;
+                return `<button type="button" class="combo-opt is-sans${sel ? ' is-selected' : ''}" role="option" aria-selected="${sel}" data-select-val="${escapeHtml(opt.value)}" onmousedown="selectCustomSelectOption(this, event)">
+                    <span>${sel ? '✓ ' : ''}${escapeHtml(opt.textContent)}</span>
+                </button>`;
+            }).join(''));
+            return;
+        }
+        const kind = comboEl.dataset.combo || '';
+        const input = comboEl.querySelector('.combo-input');
+        if (!input) return;
+        const curVal = (input.value || '').trim().toLowerCase();
+        const candidates = getComboCandidates(kind);
+        setHtml(menu, candidates.map(item => {
+            const sel = item.name.toLowerCase() === curVal || (!curVal.includes(':') && item.name.toLowerCase() === `${curVal}:latest`);
+            const tagCls = item.isInstalled ? 'combo-opt-tag is-installed' : 'combo-opt-tag';
+            return `<button type="button" class="combo-opt${sel ? ' is-selected' : ''}" role="option" aria-selected="${sel}" data-model-val="${escapeHtml(item.name)}" onmousedown="selectModelComboOption(this, event)">
+                <span>${sel ? '✓ ' : ''}${escapeHtml(item.name)}</span>
+                ${item.badge ? `<span class="${tagCls}">${escapeHtml(item.badge)}</span>` : ''}
+            </button>`;
+        }).join(''));
+    }
+
+    function closeAllModelCombos(exceptCombo = null) {
+        document.querySelectorAll('.combo.is-open').forEach(el => {
+            if (el !== exceptCombo) el.classList.remove('is-open');
         });
     }
+
+    function toggleModelCombo(btnEl, ev) {
+        if (ev) ev.stopPropagation();
+        const combo = btnEl.closest('.combo');
+        if (!combo) return;
+        const willOpen = !combo.classList.contains('is-open');
+        closeAllModelCombos(combo);
+        if (willOpen) {
+            renderComboMenu(combo);
+            combo.classList.add('is-open');
+        } else {
+            combo.classList.remove('is-open');
+        }
+    }
+
+    function selectModelComboOption(optBtn, ev) {
+        if (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+        }
+        const combo = optBtn.closest('.combo');
+        if (!combo) return;
+        const input = combo.querySelector('.combo-input');
+        const val = optBtn.getAttribute('data-model-val') || '';
+        if (input && val) {
+            input.value = val;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        combo.classList.remove('is-open');
+    }
+
+    function selectCustomSelectOption(optBtn, ev) {
+        if (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+        }
+        const combo = optBtn.closest('.combo');
+        if (!combo) return;
+        const selectEl = combo.querySelector('select.select');
+        const val = optBtn.getAttribute('data-select-val');
+        if (selectEl && val !== null) {
+            const changed = selectEl.value !== val;
+            selectEl.value = val;
+            if (changed) {
+                selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        }
+        combo.classList.remove('is-open');
+    }
+
+    function initCustomSelects() {
+        document.querySelectorAll('select.select').forEach(selectEl => {
+            if (selectEl.closest('.select-combo')) return;
+            const wrapper = document.createElement('div');
+            wrapper.className = 'combo select-combo';
+            selectEl.parentNode.insertBefore(wrapper, selectEl);
+            wrapper.appendChild(selectEl);
+            const menu = document.createElement('div');
+            menu.className = 'combo-menu';
+            menu.setAttribute('role', 'listbox');
+            wrapper.appendChild(menu);
+
+            selectEl.addEventListener('mousedown', (e) => {
+                if (e.button !== 0) return;
+                e.preventDefault();
+                e.stopPropagation();
+                selectEl.focus();
+                const willOpen = !wrapper.classList.contains('is-open');
+                closeAllModelCombos(wrapper);
+                if (willOpen) {
+                    renderComboMenu(wrapper);
+                    wrapper.classList.add('is-open');
+                } else {
+                    wrapper.classList.remove('is-open');
+                }
+            });
+            selectEl.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    closeAllModelCombos(wrapper);
+                    renderComboMenu(wrapper);
+                    wrapper.classList.add('is-open');
+                } else if (e.key === 'Escape') {
+                    wrapper.classList.remove('is-open');
+                }
+            });
+        });
+    }
+
+    function syncModelSuggestions() {
+        document.querySelectorAll('.combo').forEach(combo => renderComboMenu(combo));
+    }
+
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.combo')) closeAllModelCombos();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeAllModelCombos();
+    });
+    document.querySelectorAll('.combo .combo-input').forEach(inp => {
+        inp.addEventListener('focus', () => {
+            const combo = inp.closest('.combo');
+            if (combo) {
+                closeAllModelCombos(combo);
+                renderComboMenu(combo);
+                combo.classList.add('is-open');
+            }
+        });
+    });
 
     function updateAIAvailabilityUI() {
         updatePipelineStepMeta();
@@ -3182,8 +3684,102 @@
         $('saveAllAIBtn').disabled = !(analysisEval.available && poemEval.available && visionEval.available);
     }
 
-    const DEFAULT_VISION_LABEL_PROMPT = 'Look at this abstract inkblot line drawing like a Rorschach test. What single creature, object, or natural symbol does it resemble most? Reply with only 1 to 3 words.';
-    const DEFAULT_VISION_DESC_PROMPT = 'Describe the visual shape, flow, tension, and mood of these abstract lines in two short sentences.';
+    const DEFAULT_VISION_LABEL_PROMPT = 'This picture is a single hand-drawn line on white paper. Which everyday object, animal, plant, or landscape does its overall shape look most like? Answer with one or two plain English words only.';
+    const DEFAULT_VISION_DESC_PROMPT = 'In two short sentences, describe where the line goes in this drawing: its main direction, where it bunches up or loops, and which parts of the paper stay empty.';
+
+    const POEM_STYLE_PRESETS = {
+        lyrical_4_6: {
+            description: "You are a lyrical free-verse poet for the art installation 'Latent Space: Through the Eyes of the Algorithm'. You receive notes on the physical shape of a visitor's eye-drawn line drawing and a short psychological reading of it. Write ONE 4-to-6 line unrhymed lyrical poem in a single stanza (25 to 45 words total) in the present tense, with each line on its own line.",
+            purpose: "Transform the physical gesture of the visitor's gaze and the emotional undercurrent of their reading into a 4-to-6 line free-verse poem that feels personal, vivid, and memorable on their printed keepsake.",
+            expertise: "Contemporary 4-to-6 line lyrical free verse, concrete natural and everyday imagery, spatial movement, and subtle emotional turns.",
+            capabilities: "Build the poem on one or two concrete images from nature or everyday life whose movement mirrors the drawing (for example a river bend, tidewater, frost on glass, bird tracks, a kite string, branches, thread, or a lamp at dusk — choose freshly for each drawing). Develop the image across 4 to 6 distinct lines and give the final line a quiet turn.",
+            restrictions: "Never write a single prose paragraph—always break the poem into 4 to 6 separate lines. Do NOT use abstract or technical words such as line(s), stroke, gaze, mind, soul, psyche, void, chaos, balance, edge, darkness, energy, fractal, canvas, or algorithm. Do NOT rhyme, tell a story, add a title, include syllable counts, or wrap the poem in quotes or commentary.",
+            additional: "Write in the present tense and return ONLY the 4 to 6 poem lines."
+        },
+        two_stanza: {
+            description: "You are a lyrical poet for the art installation 'Latent Space: Through the Eyes of the Algorithm'. You receive notes on the physical shape of a visitor's eye-drawn line drawing and a short psychological reading of it. Write a TWO-STANZA unrhymed lyrical poem of 6 to 8 lines total (two stanzas of 3 to 4 lines separated by a single blank line, 40 to 65 words total) in the present tense.",
+            purpose: "Give a two-part poetic reading of the visitor's drawing: stanza 1 captures the physical motion and spatial tension of their gaze through concrete imagery; stanza 2 deepens that image into an intimate emotional resonance.",
+            expertise: "Two-stanza lyrical poetry (6 to 8 lines), sustained sensory metaphor, spatial rhythm, and reflective emotional turns.",
+            capabilities: "Develop a cohesive natural or everyday metaphor across two distinct stanzas separated by an empty line—moving from outward movement in the first stanza to inward stillness or recognition in the second.",
+            restrictions: "Must contain exactly two stanzas separated by a blank line (3 to 4 lines per stanza, 6 to 8 lines total). Never write a prose paragraph. Do NOT use abstract or technical words such as line(s), stroke, gaze, mind, soul, psyche, void, chaos, balance, edge, darkness, energy, fractal, canvas, or algorithm. Do NOT rhyme, add a title, or wrap in quotes.",
+            additional: "Write in the present tense and return ONLY the two stanzas separated by a blank line."
+        },
+        quatrain: {
+            description: "You are a concise lyrical poet for the art installation 'Latent Space: Through the Eyes of the Algorithm'. You receive notes on the physical shape of a visitor's eye-drawn line drawing and a short psychological reading of it. Write ONE 4-line lyrical quatrain (exactly 4 unrhymed lines in a single stanza, 24 to 36 words total) in the present tense.",
+            purpose: "Distill the movement of the visitor's drawing and the core tension of their reading into a balanced, cadenced 4-line stanza for their printed keepsake.",
+            expertise: "Classical and contemporary 4-line unrhymed quatrains, crisp sensory imagery, measured cadence, and resonant closing lines.",
+            capabilities: "Pair the physical gesture of the drawing in lines 1–2 with a quiet emotional turn in lines 3–4 using concrete imagery from nature or everyday life.",
+            restrictions: "Must be strictly 4 separate lines in a single stanza (never a prose paragraph). Do NOT use abstract or technical words such as line(s), stroke, gaze, mind, soul, psyche, void, chaos, balance, edge, darkness, energy, fractal, canvas, or algorithm. Do NOT rhyme, add a title, or wrap in quotes.",
+            additional: "Write in the present tense and return ONLY the 4 lines."
+        },
+        haiku: {
+            description: "You are a traditional haiku master for the art installation 'Latent Space: Through the Eyes of the Algorithm'. You receive notes on the physical shape of a visitor's eye-drawn line drawing and a short psychological reading of it. Write ONE strict haiku: exactly 3 short unrhymed lines following a 5-7-5 syllable structure (10 to 14 words total) in the present tense.",
+            purpose: "Capture a single fleeting sensory moment from nature whose motion mirrors the visitor's drawing in a classic 5-7-5 three-line haiku.",
+            expertise: "Traditional 5-7-5 haiku composition, kireji (cutting turn) between images, natural observation, and extreme economy of words.",
+            capabilities: "Line 1 (5 syllables): set a concrete natural image matching the drawing's shape. Line 2 (7 syllables): show its movement or tension. Line 3 (5 syllables): offer a quiet, sudden shift or stillness.",
+            restrictions: "Strictly 3 short lines (5 syllables, 7 syllables, 5 syllables; never exceed 15 words total). Do NOT use abstract or technical words such as line(s), stroke, gaze, mind, soul, psyche, void, chaos, balance, edge, darkness, energy, fractal, canvas, or algorithm. Do NOT rhyme, add syllable numbers, add a title, or wrap in quotes.",
+            additional: "Write in the present tense and return ONLY the 3 haiku lines."
+        }
+    };
+
+    const DEFAULT_ROLE_PROMPTS = {
+        analysis: {
+            description: "You are a perceptive, warm psychoanalyst and art critic for the interactive installation 'Latent Space: Through the Eyes of the Algorithm'. Visitors draw purely with their eye movements (gaze tracking). You receive private observation notes about one visitor's gaze drawing (and sometimes the image itself). Write a second-person interpretation of 70 to 110 words (strict maximum: 110 words) in two short paragraphs.",
+            purpose: "Translate where the visitor's eyes travelled, lingered, circled back, or left the page empty into a personal, grounded psychological reading of how they approach the unknown, what they hold on to, and what they postpone.",
+            expertise: "Depth psychology, visual perception, eye-movement dynamics, and intimate literary art criticism written in plain, warm second-person English.",
+            capabilities: "Start from what their eyes actually did and name places on the page plainly (e.g. 'the upper left', 'the open lower edge'). Turn those movements into one or two specific, believable psychological insights and develop at most one concrete metaphor from ordinary life or nature across two short paragraphs.",
+            restrictions: "Never quote or name technical terms or numbers from the notes (fractal, entropy, archetype, density, symmetry, metrics, D=). Never sound like a generic horoscope, and avoid AI cliches such as 'nervous energy', 'restless mind', 'the void', 'tapestry', 'symphony', 'dance', 'electric', 'maelstrom', 'labyrinth of the mind', or 'your Latent Space drawing'.",
+            additional: "Write plain, warm, literary English with varied sentence length and end with a complete, quietly resonant closing sentence."
+        },
+        poem: {
+            ...POEM_STYLE_PRESETS.lyrical_4_6,
+            poem_style: "lyrical_4_6"
+        }
+    };
+
+    function _isBuiltInPoemFieldValue(fieldKey, val) {
+        const clean = String(val || '').trim();
+        if (!clean) return true;
+        return Object.values(POEM_STYLE_PRESETS).some(p => String(p[fieldKey] || '').trim() === clean);
+    }
+
+    function syncPoemStylePrompts(style, force = true) {
+        const preset = POEM_STYLE_PRESETS[style] || POEM_STYLE_PRESETS.lyrical_4_6;
+        const map = [
+            ['poem_desc', 'description'],
+            ['poem_purpose', 'purpose'],
+            ['poem_expertise', 'expertise'],
+            ['poem_capabilities', 'capabilities'],
+            ['poem_restrictions', 'restrictions'],
+            ['poem_additional', 'additional']
+        ];
+        map.forEach(([elId, key]) => {
+            const el = document.getElementById(elId);
+            if (!el) return;
+            if (force || _isBuiltInPoemFieldValue(key, el.value)) {
+                el.value = preset[key];
+            }
+        });
+    }
+
+    function resetRolePromptDefaults(role) {
+        if (role === 'poem') {
+            const styleEl = document.getElementById('poem_style');
+            const curStyle = (styleEl && styleEl.value) ? styleEl.value : 'lyrical_4_6';
+            syncPoemStylePrompts(curStyle, true);
+            document.getElementById('poem_test_result').innerHTML = '<span class="text-sky">Prompts &amp; persona restored for selected poem style. Click Apply to save.</span>';
+            return;
+        }
+        const defs = DEFAULT_ROLE_PROMPTS[role];
+        if (!defs) return;
+        document.getElementById(`${role}_desc`).value = defs.description;
+        document.getElementById(`${role}_purpose`).value = defs.purpose;
+        document.getElementById(`${role}_expertise`).value = defs.expertise;
+        document.getElementById(`${role}_capabilities`).value = defs.capabilities;
+        document.getElementById(`${role}_restrictions`).value = defs.restrictions;
+        document.getElementById(`${role}_additional`).value = defs.additional;
+        document.getElementById(`${role}_test_result`).innerHTML = '<span class="text-sky">Default prompts &amp; persona restored. Click Apply to save.</span>';
+    }
 
     function syncVisionSettingsPanels() {
         const mode = $('aiVisionMode').value;
@@ -3350,6 +3946,11 @@
 
     document.getElementById('aiVisionMode').addEventListener('change', updateAIAvailabilityUI);
     document.getElementById('aiOllamaVisionModel').addEventListener('input', updateAIAvailabilityUI);
+    document.getElementById('poem_style').addEventListener('change', (e) => {
+        syncPoemStylePrompts(e.target.value, true);
+        const out = document.getElementById('poem_test_result');
+        if (out) out.innerHTML = '<span class="text-sky">Updated poem instructions &amp; persona for this style. Click Apply to save.</span>';
+    });
 
     ['analysis', 'poem'].forEach(role => {
         document.getElementById(`${role}_api_key`).addEventListener('input', (e) => {
@@ -3358,6 +3959,7 @@
         });
         document.getElementById(`${role}_clear_api_key`).addEventListener('change', updateAIAvailabilityUI);
         document.getElementById(`${role}_provider`).addEventListener('change', () => { syncEndpointKeyGuard(role); updateAIAvailabilityUI(); });
+        document.getElementById(`${role}_fallback_provider`).addEventListener('change', syncModelSuggestions);
         document.getElementById(`${role}_base_url`).addEventListener('input', () => { syncEndpointKeyGuard(role); updateAIAvailabilityUI(); });
         document.getElementById(`${role}_model`).addEventListener('input', updateAIAvailabilityUI);
     });
@@ -3407,7 +4009,12 @@
                 document.getElementById(`${role}_capabilities`).value = c.capabilities || '';
                 document.getElementById(`${role}_restrictions`).value = c.restrictions || '';
                 document.getElementById(`${role}_additional`).value = c.additional || '';
-                document.getElementById(`${role}_temp`).value = c.temperature ?? (role === 'poem' ? 0.8 : 0.7);
+                document.getElementById(`${role}_temp`).value = c.temperature ?? 0.7;
+                const poemStyleEl = document.getElementById(`${role}_style`);
+                if (poemStyleEl) {
+                    poemStyleEl.value = c.poem_style || 'lyrical_4_6';
+                    syncPoemStylePrompts(poemStyleEl.value, false);
+                }
                 const maxWordsEl = document.getElementById(`${role}_max_words`);
                 if (maxWordsEl) maxWordsEl.value = c.max_words ?? 110;
                 const thinkingEl = document.getElementById(`${role}_thinking_mode`);
@@ -3705,6 +4312,10 @@
         if (maxTokensEl) {
             const parsedMaxTokens = parseInt(maxTokensEl.value, 10);
             config.max_tokens = Number.isFinite(parsedMaxTokens) ? parsedMaxTokens : 0;
+        }
+        const poemStyleEl = document.getElementById(`${role}_style`);
+        if (poemStyleEl) {
+            config.poem_style = poemStyleEl.value || 'lyrical_4_6';
         }
         if (clearKey) config.api_key = '';
         else if (apiKeyVal) config.api_key = apiKeyVal;
@@ -4133,6 +4744,7 @@
     }
 
     (async function initAdmin() {
+        initCustomSelects();
         adminI18n.mountSwitcher(document.getElementById('adminAuthLangSwitch'), 'dark');
         adminI18n.mountSwitcher(document.getElementById('adminLangSwitch'), 'dark');
         adminI18n.applyDOM();

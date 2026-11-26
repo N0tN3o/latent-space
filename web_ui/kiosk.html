@@ -278,18 +278,6 @@
             font-size: 0.85rem;
         }
 
-        .kiosk-attribution {
-            display: none;
-            margin-top: 8px;
-            color: #d1d5db;
-        }
-
-        .kiosk-attribution a {
-            color: #60a5fa;
-            text-decoration: underline;
-            margin: 0 4px;
-        }
-
         .staff-modal-backdrop {
             position: fixed;
             inset: 0;
@@ -356,7 +344,6 @@
 
     <footer>
         <div data-i18n="kiosk.footer_hint">Select any artwork to open or print its full A4 memento sheet.</div>
-        <div class="kiosk-attribution" id="kioskAttribution"></div>
     </footer>
 
     <div class="staff-modal-backdrop" id="staffLoginModal">
@@ -492,88 +479,14 @@
 
         async function loadSettings() {
             try {
-                const [printRes, attrRes] = await Promise.all([
-                    fetch('/api/settings/printing?t=' + Date.now()),
-                    fetch('/api/settings/attributions?t=' + Date.now())
-                ]);
+                const printRes = await fetch('/api/settings/printing?t=' + Date.now());
                 if (printRes.ok) {
                     const p = await printRes.json();
                     document.getElementById('autoPrintToggle').checked = !!p.auto_print;
                 }
-                if (attrRes.ok) {
-                    const attr = await attrRes.json();
-                    renderKioskAttribution(attr);
-                }
             } catch (e) {
                 console.error(e);
             }
-        }
-
-        function renderKioskAttribution(attr) {
-            const el = document.getElementById('kioskAttribution');
-            const kasboekOn = !!(attr && attr.enabled);
-            const vv = (attr && attr.veszprem_vibe && typeof attr.veszprem_vibe === 'object') ? attr.veszprem_vibe : {};
-            const vvOn = !!vv.enabled;
-            if (!kasboekOn && !vvOn) {
-                el.style.display = 'none';
-                el.innerHTML = '';
-                return;
-            }
-            el.style.display = 'block';
-            let lines = [];
-
-            if (vvOn) {
-                let vvParts = [];
-                vvParts.push(`<strong>${escapeHtml(vv.intro_text || 'Created for the Veszprém Vibe community.')}</strong>`);
-                if (vv.website_url) {
-                    vvParts.push(`<a href="${safeUrl(vv.website_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(vv.website_label || 'veszpremvibe.hu')}</a>`);
-                }
-                if (vv.linkedin_url) {
-                    vvParts.push(`<a href="${safeUrl(vv.linkedin_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(vv.linkedin_label || 'LinkedIn')}</a>`);
-                }
-                if (vv.facebook_url) {
-                    vvParts.push(`<a href="${safeUrl(vv.facebook_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(vv.facebook_label || 'Facebook')}</a>`);
-                }
-                if (vv.custom_note && vv.custom_note.trim()) {
-                    vvParts.push(`<em>${escapeHtml(vv.custom_note.trim())}</em>`);
-                }
-                let vvLogoHtml = '';
-                if (vv.show_logo !== false) {
-                    let darkLogo = String(vv.logo_path || '/assets/veszprem-vibe/vv-skyline-on-paper.svg').trim();
-                    if (/vv-skyline-(on-paper|solid-navy)/i.test(darkLogo)) {
-                        darkLogo = '/assets/veszprem-vibe/vv-skyline-on-navy.svg';
-                    }
-                    const safeDarkLogo = safeUrl(darkLogo);
-                    if (safeDarkLogo !== '#') {
-                        vvLogoHtml = `<img src="${safeDarkLogo}" alt="Veszprém Vibe" style="height: 24px; width: auto; vertical-align: middle; margin-right: 8px; opacity: 0.92;">`;
-                    }
-                }
-                lines.push(`<div style="display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:4px;">${vvLogoHtml}<span>${vvParts.join(' &middot; ')}</span></div>`);
-            }
-
-            if (kasboekOn) {
-                let parts = [];
-                parts.push(`<strong>${escapeHtml(attr.intro_text || 'Made possible by Kasboek.')}</strong>`);
-                if (attr.website_url) {
-                    parts.push(`<a href="${safeUrl(attr.website_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(attr.website_label || 'Website')}</a>`);
-                }
-                if (attr.company_linkedin_url) {
-                    parts.push(`<a href="${safeUrl(attr.company_linkedin_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(attr.company_linkedin_label || 'LinkedIn')}</a>`);
-                }
-                if (Array.isArray(attr.founders)) {
-                    const fLinks = attr.founders
-                        .filter(f => f && f.name)
-                        .map(f => f.url
-                            ? `<a href="${safeUrl(f.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(f.name)}</a>`
-                            : escapeHtml(f.name));
-                    if (fLinks.length) {
-                        parts.push(`<span>${escapeHtml(attr.thanks_text || 'Thank you:')} ${fLinks.join(' · ')}</span>`);
-                    }
-                }
-                lines.push(`<div style="margin-top: ${vvOn ? '6px' : '0'};">${parts.join(' &middot; ')}</div>`);
-            }
-
-            el.innerHTML = lines.join('');
         }
 
         async function toggleAutoPrint(enabled) {

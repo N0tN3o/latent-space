@@ -106,6 +106,7 @@ try:
         cleanup_orphaned_temp_files,
         ensure_localized_print_pdf,
         generate_run_id,
+        register_stage_progress_callback,
         run_analysis_pipeline,
         snapshot_drawing_input,
         watch_loop,
@@ -129,6 +130,8 @@ _worker_thread = None
 _run_statuses = {}  # run_id -> {"run_id", "state", "status", "error_code", "error", "updated_at"}
 MAX_RUN_HISTORY = 100
 MAX_PIPELINE_QUEUE_SIZE = 20
+_PIPELINE_STAGE_NAMES = ("vision", "analysis", "poem", "translation", "tts")
+
 _pipeline_state = {
     "state": "IDLE",  # "IDLE" | "QUEUED" | "RUNNING" | "ERROR"
     "running": False,
@@ -138,7 +141,60 @@ _pipeline_state = {
     "last_status": "idle",
     "last_error_code": None,
     "last_error": None,
+    "current_stage": None,
+    "run_started_at": None,
+    "stage_started_at": None,
+    "stages": {},
 }
+
+
+def _on_pipeline_stage_progress(run_id: str, stage: str, status: str, elapsed_sec: float = None):
+    now = time.monotonic()
+    with _pipeline_lock:
+        if _pipeline_state.get("active_run_id") and run_id and _pipeline_state["active_run_id"] != run_id:
+            return
+        stages = dict(_pipeline_state.get("stages") or {})
+        prev = dict(stages.get(stage) or {})
+        entry = {"status": status}
+        if elapsed_sec is not None:
+            entry["elapsed_sec"] = round(float(elapsed_sec), 2)
+        elif "elapsed_sec" in prev:
+            entry["elapsed_sec"] = prev["elapsed_sec"]
+        if status == "running":
+            entry["started_at"] = now
+            _pipeline_state["current_stage"] = stage
+            _pipeline_state["stage_started_at"] = now
+        elif status in ("done", "skipped") and entry.get("elapsed_sec") is None and prev.get("started_at"):
+            entry["elapsed_sec"] = round(max(0.0, now - float(prev["started_at"])), 2)
+        stages[stage] = entry
+        _pipeline_state["stages"] = stages
+
+
+if AI_AVAILABLE:
+    try:
+        register_stage_progress_callback(_on_pipeline_stage_progress)
+    except Exception:
+        pass
+
+
+def _snapshot_pipeline_state_unlocked() -> dict:
+    snap = dict(_pipeline_state)
+    snap["queue_length"] = _pipeline_queue.qsize()
+    now = time.monotonic()
+    run_t0 = snap.pop("run_started_at", None)
+    stage_t0 = snap.pop("stage_started_at", None)
+    snap["run_elapsed_sec"] = round(max(0.0, now - float(run_t0)), 1) if (snap.get("running") and run_t0) else None
+    snap["stage_elapsed_sec"] = round(max(0.0, now - float(stage_t0)), 1) if (snap.get("running") and stage_t0) else None
+    raw_stages = snap.get("stages") or {}
+    clean_stages = {}
+    for st_name, st_info in raw_stages.items():
+        if isinstance(st_info, dict):
+            c_info = {"status": st_info.get("status", "pending"), "elapsed_sec": st_info.get("elapsed_sec")}
+            if c_info["status"] == "running" and st_info.get("started_at"):
+                c_info["live_elapsed_sec"] = round(max(0.0, now - float(st_info["started_at"])), 1)
+            clean_stages[st_name] = c_info
+    snap["stages"] = clean_stages
+    return snap
 
 
 def _record_run_status_unlocked(rid: str, state: str, status: str, error_code: str = None, error: str = None):
@@ -204,7 +260,7 @@ _queued_run_ids = []     # ordered list of queued run_ids
 ALLOWED_AI_CONFIG_KEYS = {
     "name", "description", "purpose", "expertise", "capabilities",
     "restrictions", "additional", "llm", "model", "temperature", "max_words",
-    "thinking_mode", "max_tokens",
+    "thinking_mode", "max_tokens", "poem_style",
     "provider", "base_url", "api_key", "fallback_provider",
     "fallback_model", "vision_mode", "ollama_vision_model",
 }
@@ -429,6 +485,7 @@ def _pipeline_worker_loop():
                 continue
 
             with _pipeline_lock:
+                now_mono = time.monotonic()
                 _pipeline_state["state"] = "RUNNING"
                 _pipeline_state["running"] = True
                 _pipeline_state["active_run_id"] = rid
@@ -436,6 +493,17 @@ def _pipeline_worker_loop():
                 _pipeline_state["last_status"] = "running"
                 _pipeline_state["last_error_code"] = None
                 _pipeline_state["last_error"] = None
+                _pipeline_state["current_stage"] = "vision"
+                _pipeline_state["run_started_at"] = now_mono
+                _pipeline_state["stage_started_at"] = now_mono
+                _pipeline_state["stages"] = {
+                    st: (
+                        {"status": "running", "elapsed_sec": None, "started_at": now_mono}
+                        if st == "vision"
+                        else {"status": "pending", "elapsed_sec": None}
+                    )
+                    for st in _PIPELINE_STAGE_NAMES
+                }
                 _record_run_status_unlocked(rid, state="RUNNING", status="running")
 
             eff_cancel = cancel_event if cancel_event is not None else threading.Event()
@@ -517,6 +585,19 @@ def _pipeline_worker_loop():
                 _active_client_ips.pop(rid, None)
                 if rid in _queued_run_ids:
                     _queued_run_ids.remove(rid)
+                cur_st = _pipeline_state.get("current_stage")
+                stages = dict(_pipeline_state.get("stages") or {})
+                if _pipeline_state.get("last_status") in ("error", "failed"):
+                    if cur_st and cur_st in stages:
+                        stages[cur_st] = {"status": "error", "elapsed_sec": stages[cur_st].get("elapsed_sec")}
+                else:
+                    for st_name, st_val in list(stages.items()):
+                        if isinstance(st_val, dict) and st_val.get("status") == "running":
+                            stages[st_name] = {"status": "done", "elapsed_sec": st_val.get("elapsed_sec")}
+                _pipeline_state["stages"] = stages
+                _pipeline_state["current_stage"] = None
+                _pipeline_state["run_started_at"] = None
+                _pipeline_state["stage_started_at"] = None
                 _pipeline_state["running"] = False
                 _pipeline_state["active_run_id"] = None
                 qlen = _pipeline_queue.qsize()
@@ -1522,8 +1603,7 @@ def api_get_status() -> dict:
         model_sizes=model_sizes,
     )
     with _pipeline_lock:
-        pipe_snapshot = dict(_pipeline_state)
-        pipe_snapshot["queue_length"] = _pipeline_queue.qsize()
+        pipe_snapshot = _snapshot_pipeline_state_unlocked()
 
     tr_cfg = settings.get("translation", {})
     tr_summary = {
@@ -1555,6 +1635,7 @@ def api_get_status() -> dict:
             "analysis_model": settings.get("ai", {}).get("analysis", {}).get("model", ""),
             "poem_provider": settings.get("ai", {}).get("poem", {}).get("provider", "ollama"),
             "poem_model": settings.get("ai", {}).get("poem", {}).get("model", ""),
+            "poem_style": settings.get("ai", {}).get("poem", {}).get("poem_style", config_manager.DEFAULT_POEM_STYLE),
         },
         "translation": tr_summary,
         "tts": settings.get("tts", {}),
@@ -2315,8 +2396,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             req_run_id = (query.get("run_id") or [""])[0]
             is_admin = self._is_admin_authenticated(touch=False)
             with _pipeline_lock:
-                snap = dict(_pipeline_state)
-                snap["queue_length"] = _pipeline_queue.qsize()
+                snap = _snapshot_pipeline_state_unlocked()
                 if req_run_id:
                     run_entry = _run_statuses.get(req_run_id)
                     if run_entry:

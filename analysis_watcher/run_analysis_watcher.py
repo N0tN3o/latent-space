@@ -1001,6 +1001,24 @@ def _dispatch_auto_print_job(pdf_path_str: str, printer_name: str, rid: str):
         main_logger.error(f"[{rid}] Auto-print unexpected error: {e}")
 
 
+_STAGE_PROGRESS_CALLBACK = None
+
+
+def register_stage_progress_callback(cb):
+    """Register a callback fn(run_id, stage, status, elapsed_sec=None) for live pipeline UI progress."""
+    global _STAGE_PROGRESS_CALLBACK
+    _STAGE_PROGRESS_CALLBACK = cb
+
+
+def _notify_stage_progress(run_id: str, stage: str, status: str, elapsed_sec: float = None, stage_callback=None):
+    for cb in (stage_callback, _STAGE_PROGRESS_CALLBACK):
+        if callable(cb):
+            try:
+                cb(run_id, stage, status, elapsed_sec)
+            except Exception:
+                pass
+
+
 def run_analysis_pipeline(
     run_id: str = None,
     snapshot_path: str = None,
@@ -1008,6 +1026,7 @@ def run_analysis_pipeline(
     dwell_grid=None,
     cancel_event: threading.Event = None,
     deadline: float = None,
+    stage_callback=None,
 ) -> bool:
     """
     Run the complete Latent Space pipeline on an isolated per-drawing snapshot:
@@ -1082,6 +1101,7 @@ def run_analysis_pipeline(
             main_logger.warning(f"[{rid}] Poem init note (will still attempt failover on chat): {e}")
 
         # 3. Abstract Art & Visual Perception Analysis
+        _notify_stage_progress(rid, "vision", "running", stage_callback=stage_callback)
         main_logger.info(f"[{rid}] Starting visual perception analysis (mode={vision_mode})")
         try:
             perception = analyze_drawing(
@@ -1123,10 +1143,18 @@ def run_analysis_pipeline(
             "vision_output": perception.get("vision_output", ""),
             "prompt_context": prompt_context,
         })
+        _notify_stage_progress(
+            rid,
+            "vision",
+            "done",
+            elapsed_sec=round(float(perception.get("elapsed_sec") or 0.0), 2),
+            stage_callback=stage_callback,
+        )
 
         _check_cancelled()
 
         # 4. Psychoanalytical Interpretation
+        _notify_stage_progress(rid, "analysis", "running", stage_callback=stage_callback)
         analysis_t0 = time.monotonic()
         main_logger.info(f"[{rid}] Starting psychoanalysis via {analysis_model._provider} ({analysis_model._llm})")
         analysis_kwargs = {
@@ -1164,6 +1192,7 @@ def run_analysis_pipeline(
                     f"(max {wl_info['max_words']} ±10%, hard cap {wl_info['hard_max_words']})"
                 )
         analysis_elapsed = round(time.monotonic() - analysis_t0, 2)
+        _notify_stage_progress(rid, "analysis", "done", elapsed_sec=analysis_elapsed, stage_callback=stage_callback)
         main_logger.info(f"[{rid}] Psychoanalysis complete via {analysis_model._last_used_provider} ({analysis_model._last_used_model})")
         response_logger.info(
             json.dumps({
@@ -1196,9 +1225,14 @@ def run_analysis_pipeline(
 
         try:
             # 5. Poem Generation (runs on GPU while CPU NMT translates analysis in parallel)
+            _notify_stage_progress(rid, "poem", "running", stage_callback=stage_callback)
             poem_t0 = time.monotonic()
             main_logger.info(f"[{rid}] Starting poem generation via {poem_model._provider} ({poem_model._llm})")
-            poem_kwargs = {"message": analysis_text, "allow_failover": True, "deadline": eff_deadline}
+            poem_kwargs = {
+                "message": _build_poem_message(analysis_text, perception),
+                "allow_failover": True,
+                "deadline": eff_deadline,
+            }
             if cancel_event is not None:
                 poem_kwargs["cancel_event"] = cancel_event
             try:
@@ -1206,8 +1240,11 @@ def run_analysis_pipeline(
             except TypeError:
                 poem_kwargs.pop("deadline", None)
                 raw_poem = poem_model.chat(**poem_kwargs)
-            poem_text = _clean_translated_output(raw_poem, is_poem=True)
+            poem_text = _clean_translated_output(
+                raw_poem, is_poem=True, poem_style=getattr(poem_model, "_poem_style", None)
+            )
             poem_elapsed = round(time.monotonic() - poem_t0, 2)
+            _notify_stage_progress(rid, "poem", "done", elapsed_sec=poem_elapsed, stage_callback=stage_callback)
             main_logger.info(f"[{rid}] Poem complete via {poem_model._last_used_provider} ({poem_model._last_used_model})")
             response_logger.info(
                 json.dumps({
@@ -1234,6 +1271,7 @@ def run_analysis_pipeline(
             translation_elapsed = 0.0
 
             if target_langs:
+                _notify_stage_progress(rid, "translation", "running", stage_callback=stage_callback)
                 tr_errors = []
                 if tcfg["mode"] == "local_nmt":
                     for tlang in target_langs:
@@ -1305,6 +1343,11 @@ def run_analysis_pipeline(
 
                 if tr_errors:
                     translation_error = "; ".join(tr_errors)
+                _notify_stage_progress(
+                    rid, "translation", "done", elapsed_sec=translation_elapsed, stage_callback=stage_callback
+                )
+            else:
+                _notify_stage_progress(rid, "translation", "skipped", stage_callback=stage_callback)
         finally:
             if tr_executor is not None:
                 tr_executor.shutdown(wait=False, cancel_futures=True)
@@ -1312,11 +1355,22 @@ def run_analysis_pipeline(
         _check_cancelled()
 
         # 6. Optional Text-to-Speech (use localized poem when default_print_language translation is available)
+        tts_enabled = bool((settings.get("tts") or {}).get("enabled", False))
+        if tts_enabled:
+            _notify_stage_progress(rid, "tts", "running", stage_callback=stage_callback)
+        else:
+            _notify_stage_progress(rid, "tts", "skipped", stage_callback=stage_callback)
+        tts_t0 = time.monotonic()
         req_print_lang = get_translation_config(settings)["default_print_language"]
         tts_poem_text = (translations.get(req_print_lang) or {}).get("poem") or poem_text
         poem_audio = _run_optional_tts(tts_poem_text, settings, run_id=rid)
+        if tts_enabled:
+            _notify_stage_progress(
+                rid, "tts", "done", elapsed_sec=round(time.monotonic() - tts_t0, 2), stage_callback=stage_callback
+            )
 
         # 7. Attention Heatmap
+        _notify_stage_progress(rid, "pdf", "running", stage_callback=stage_callback)
         main_logger.info(f"[{rid}] Generating attention heatmap")
         draw_heatmap(
             scribble_filename=str(input_img),
@@ -1481,6 +1535,30 @@ def run_analysis_pipeline(
                     p.unlink()
             except Exception:
                 pass
+
+
+def _build_poem_message(analysis_text: str, perception: dict) -> str:
+    """Anchor the haiku in the drawing's visible movement as well as the psychological reading."""
+    perception = perception if isinstance(perception, dict) else {}
+    geom = perception.get("geometry") if isinstance(perception.get("geometry"), dict) else {}
+    lines = []
+    gesture = str(geom.get("gesture_desc") or "").strip()
+    if gesture:
+        lines.append(f"Shape of the drawing: {gesture}.")
+    primary = str(geom.get("primary_zone") or "").replace("-", " ").strip()
+    least = str(geom.get("least_zone") or "").replace("-", " ").strip()
+    if primary and least:
+        lines.append(f"The eyes lingered most in the {primary}; the {least} stayed empty.")
+    if geom.get("line_quality"):
+        lines.append("The line turns sharply and abruptly." if geom["line_quality"] == "angular"
+                     else "The line flows in soft curves.")
+    if perception.get("raw_vision_label") and perception.get("label"):
+        vision_part = str(perception["label"]).split("·")[0].strip()
+        if vision_part and vision_part.lower() != str(geom.get("summary_label") or "").lower():
+            lines.append(f"Its outline faintly resembles: {vision_part}.")
+    if not lines:
+        return analysis_text
+    return "Drawing notes:\n" + "\n".join(f"- {ln}" for ln in lines) + f"\n\nReading of the visitor:\n{analysis_text}"
 
 
 def _consume_local_dwell_grid():
