@@ -16,8 +16,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from config_manager import (
+    ALLOWED_POEM_STYLES,
     DEFAULT_FALLBACK_MODELS,
+    DEFAULT_POEM_STYLE,
     OPENAI_COMPAT_VISION_HINTS,
+    POEM_STYLE_SPECS,
     THINKING_MODEL_HINTS,
     VISION_MODEL_HINTS,
     check_and_increment_daily_quota,
@@ -554,6 +557,8 @@ class LLMModel:
         except (TypeError, ValueError):
             self._max_words = default_mw
         self._thinking_mode = str(role_cfg.get("thinking_mode") or "auto").strip().lower()
+        raw_ps = str(role_cfg.get("poem_style") or DEFAULT_POEM_STYLE).strip().lower()
+        self._poem_style = raw_ps if raw_ps in ALLOWED_POEM_STYLES else DEFAULT_POEM_STYLE
         try:
             self._max_tokens = max(0, int(role_cfg.get("max_tokens", 0) or 0))
         except (TypeError, ValueError):
@@ -581,6 +586,9 @@ class LLMModel:
 
     def _build_system_prompt(self) -> str:
         parts = [self._description]
+        if self.role == "poem":
+            spec = POEM_STYLE_SPECS.get(self._poem_style) or POEM_STYLE_SPECS[DEFAULT_POEM_STYLE]
+            parts.append(f"Poem Form & Length: {spec['en']}")
         for label, val in [
             ("Purpose", self._purpose),
             ("Expertise", self._expertise),
@@ -1415,6 +1423,7 @@ class LLMModel:
         max_words: int = None,
         thinking_mode: str = None,
         max_tokens: int = None,
+        poem_style: str = None,
         provider: str = None,
         base_url: str = None,
         api_key: str = None,
@@ -1441,6 +1450,20 @@ class LLMModel:
             "fallback_provider": (fallback_provider if fallback_provider is not None else self._fallback_provider).lower(),
             "fallback_model": fallback_model if fallback_model is not None else self._fallback_model,
         }
+        if self.role == "poem" or poem_style is not None:
+            new_ps = (poem_style if poem_style is not None else self._poem_style).lower()
+            if new_ps not in ALLOWED_POEM_STYLES:
+                new_ps = DEFAULT_POEM_STYLE
+            role_updates["poem_style"] = new_ps
+            # If poem_style changed and prompts/persona match any built-in style preset, sync them to the new style
+            spec = POEM_STYLE_SPECS.get(new_ps) or POEM_STYLE_SPECS[DEFAULT_POEM_STYLE]
+            def _same_str(a, b) -> bool:
+                return " ".join(str(a or "").split()) == " ".join(str(b or "").split())
+            for fld in ("description", "purpose", "expertise", "capabilities", "restrictions", "additional"):
+                cur_val = role_updates.get(fld, "")
+                built_ins = [s.get(fld, "") for s in POEM_STYLE_SPECS.values()]
+                if not str(cur_val).strip() or any(_same_str(cur_val, b) for b in built_ins):
+                    role_updates[fld] = spec[fld]
         if max_words is not None:
             role_updates["max_words"] = max_words
         elif self.role == "analysis":
@@ -1509,6 +1532,7 @@ class LLMModel:
             "max_words": self._max_words,
             "thinking_mode": self._thinking_mode,
             "max_tokens": self._max_tokens,
+            "poem_style": self._poem_style,
             "vision_mode": self._vision_mode,
             "ollama_vision_model": settings.get("ai", {}).get("ollama_vision_model", "moondream"),
         }

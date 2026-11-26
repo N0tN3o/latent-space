@@ -31,7 +31,10 @@ for p in (str(PROJECT_ROOT), str(CURRENT_DIR)):
 
 from config_manager import (
     ALLOWED_LANGUAGES,
+    ALLOWED_POEM_STYLES,
     DEFAULT_LOCAL_NMT_MODEL,
+    DEFAULT_POEM_STYLE,
+    POEM_STYLE_SPECS,
     fast_local_ollama_url,
     get_configured_ollama_host,
     load_settings,
@@ -75,8 +78,74 @@ CURATED_ARCHETYPES = {
         "cosmic star map": "Kozmikus csillagtérkép",
         "infinity loop": "Végtelen hurok",
         "water reflections": "Víztükröződések",
+        "descending sweep": "Ereszkedő lendület",
+        "ascending sweep": "Emelkedő lendület",
+        "horizon scan": "Látóhatár-pásztázás",
+        "vertical ascent": "Függőleges emelkedés",
+        "gathered knot": "Összefutó csomó",
+        "zigzag drift": "Cikcakkos sodródás",
+        "sea urchin": "Tengeri sün",
     }
 }
+
+_HU_VOWELS = "aáeéiíoóöőuúüűAÁEÉIÍOÓÖŐUÚÜŰ"
+# Hungarian definite article must be 'az' before a vowel-initial word ('a egyenes' -> 'az egyenes')
+_HU_ARTICLE_RE = re.compile(rf"(?<!\w)([Aa])([ \t]+)(?=[{_HU_VOWELS}])")
+_HU_DUP_WORD_RE = re.compile(r"(?<!\w)(a|az|és|hogy|is)\s+\1(?!\w)", re.IGNORECASE)
+# Recurring small-LLM Hungarian glitches observed in exhibition logs (safe, unambiguous fixes only)
+_HU_LEXICAL_FIXES = {
+    "magadot": "magadat",
+    "skanálod": "fürkészed",
+    "skanálja": "fürkészi",
+    "skanál": "fürkész",
+    "válasokat": "válaszokat",
+    "vonalok": "vonalak",
+    "vonalokat": "vonalakat",
+    "trajektóriák": "ívek",
+    "trajektória": "ív",
+    "kis rákhoz": "tengerisünhöz",
+    "kis rákként": "tengerisünként",
+    "kis rák": "tengerisün",
+}
+_HU_LEXICAL_RE = re.compile(r"(?<!\w)(" + "|".join(sorted(map(re.escape, _HU_LEXICAL_FIXES), key=len, reverse=True)) + r")(?!\w)",
+                            re.IGNORECASE)
+# Tokens that indicate a broken/hallucinated Hungarian output (invented words, Hunglish, mistranslated metaphors)
+_HU_SUSPECT_RE = re.compile(
+    r"(?<!\w)(?:skan\w*|trajet\w*|nézedés\w*|értemény\w*|háttérzet\w*|körforog\w*|brilliant|koldus\w*|kis rák\w*"
+    r"|the|and|of|with|your|gaze|lines?|edge|void|restless|stillness|urchin)(?!\w)",
+    re.IGNORECASE,
+)
+_HU_FOREIGN_CHARS_RE = re.compile(r"[ñçãâêôàèìòùäëïÿøåßõûî]", re.IGNORECASE)
+_HU_BAD_PLURAL_RE = re.compile(r"(?<!\w)\w{3,}[ae]ok(?!\w)", re.IGNORECASE)
+
+
+def polish_hungarian_text(text: str, is_poem: bool = False) -> str:
+    """Deterministically repair common Hungarian surface errors from small LLMs / NMT output."""
+    if not text:
+        return ""
+
+    def _case_like(src: str, repl: str) -> str:
+        return repl[0].upper() + repl[1:] if src[:1].isupper() else repl
+
+    out = str(text)
+    out = _HU_LEXICAL_RE.sub(lambda m: _case_like(m.group(1), _HU_LEXICAL_FIXES[m.group(1).lower()]), out)
+    out = _HU_ARTICLE_RE.sub(lambda m: ("Az" if m.group(1) == "A" else "az") + m.group(2), out)
+    out = _HU_DUP_WORD_RE.sub(lambda m: m.group(1), out)
+    out = re.sub(r"[ \t]+([,.;:!?…])", r"\1", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    if is_poem:
+        out = "\n".join(ln.strip() for ln in out.splitlines())
+    return out.strip()
+
+
+def hungarian_quality_issues(text: str) -> list:
+    """Return suspicious tokens suggesting invented words, leftover English, or mistranslated metaphors."""
+    if not text:
+        return []
+    issues = [m.group(0) for m in _HU_SUSPECT_RE.finditer(text)]
+    issues += [m.group(0) for m in _HU_FOREIGN_CHARS_RE.finditer(text)]
+    issues += [m.group(0) for m in _HU_BAD_PLURAL_RE.finditer(text)]
+    return issues
 
 _NMT_LOCK = threading.Lock()
 _NMT_CACHE = {
@@ -262,8 +331,8 @@ def preload_local_nmt_model(model_id: str = None, num_threads: int = None) -> di
     }
 
 
-def _clean_translated_output(text: str, is_poem: bool = False) -> str:
-    """Normalize LLM/NMT output, removing stray code fences or wrapping quotes."""
+def _clean_translated_output(text: str, is_poem: bool = False, poem_style: str = None) -> str:
+    """Normalize LLM/NMT output, removing stray code fences or wrapping quotes, and enforcing verse line breaks."""
     if not text:
         return ""
     cleaned = _CODE_FENCE_RE.sub("", str(text)).strip()
@@ -279,12 +348,33 @@ def _clean_translated_output(text: str, is_poem: bool = False) -> str:
         cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     else:
-        lines = [_SYLLABLE_TAG_RE.sub("", ln).rstrip() for ln in cleaned.splitlines()]
-        # Trim leading/trailing empty lines while keeping internal stanza breaks
+        lines = [_SYLLABLE_TAG_RE.sub("", ln).strip() for ln in cleaned.splitlines()]
         while lines and not lines[0]:
             lines.pop(0)
         while lines and not lines[-1]:
             lines.pop()
+        non_empty = [ln for ln in lines if ln]
+        # If an 8B model emitted a multi-sentence poem on a single paragraph line, split it into verse lines
+        if len(non_empty) == 1 and len(non_empty[0].split()) >= 14:
+            one_line = non_empty[0]
+            split_sents = [s.strip() for s in re.split(r"(?<=[.!?…;])\s+", one_line) if s.strip()]
+            if len(split_sents) < 3:
+                split_sents = [s.strip() for s in re.split(r"(?<=[,;—–])\s+", one_line) if s.strip()]
+            if len(split_sents) >= 3:
+                lines = split_sents
+                non_empty = split_sents
+
+        eff_style = (poem_style or "").strip().lower()
+        if eff_style == "haiku" and len(non_empty) > 3:
+            lines = non_empty[:3]
+        elif eff_style == "quatrain" and len(non_empty) >= 4:
+            lines = non_empty[:4]
+        elif eff_style == "lyrical_4_6" and len(non_empty) > 6:
+            lines = non_empty[:6]
+        elif eff_style == "two_stanza":
+            if "" not in lines and len(non_empty) >= 4:
+                mid = min(4, max(2, len(non_empty) // 2))
+                lines = non_empty[:mid] + [""] + non_empty[mid:8]
         cleaned = "\n".join(lines)
     return cleaned.strip()
 
@@ -445,7 +535,7 @@ def _call_ollama_translate(
     if is_translategemma:
         style_extra = ""
         if kind == "poem":
-            style_extra = " This is a minimalist 3-line haiku: preserve its brevity, concrete imagery, and exact line breaks."
+            style_extra = " This is a lyrical poem (or haiku): preserve its concrete imagery, line count, and exact line and stanza breaks."
         elif kind == "archetype":
             style_extra = " Keep it as a concise 1-to-4 word art title."
         user_prompt = (
@@ -460,10 +550,10 @@ def _call_ollama_translate(
     else:
         if kind == "poem":
             sys_prompt = (
-                f"You are a minimalist poetry translator specializing in English to {target_name} haiku. "
-                f"Translate the haiku into sparse, evocative, natural unrhymed {target_name} imagery. "
-                f"Preserve the exact 3-line structure and brevity without adding story or filler. "
-                f"Return ONLY the {target_name} haiku with no title, no syllable counts, no commentary, and no quotation marks."
+                f"You are a lyrical poetry and haiku translator specializing in English to {target_name}. "
+                f"Translate the poem into evocative, natural unrhymed {target_name} imagery. "
+                f"Preserve the exact line and stanza structure and brevity without adding story or filler. "
+                f"Return ONLY the {target_name} poem with no title, no syllable counts, no commentary, and no quotation marks."
             )
         elif kind == "archetype":
             sys_prompt = (
@@ -528,7 +618,10 @@ def _call_ollama_translate(
             content = _strip_think_tags(retry_c) if isinstance(retry_c, str) else ""
     if not content:
         raise RuntimeError(f"Empty translation response from Ollama ({model_name})")
-    return _clean_translated_output(content, is_poem=(kind == "poem"))
+    cleaned_out = _clean_translated_output(content, is_poem=(kind == "poem"))
+    if (target_lang or "").strip().lower() == "hu":
+        cleaned_out = polish_hungarian_text(cleaned_out, is_poem=(kind == "poem"))
+    return cleaned_out
 
 
 def _chat_with_overrides(
@@ -611,14 +704,24 @@ def _translate_native_llm(
         )
 
     lang_rules = ""
-    if (target_lang or "").strip().lower() == "hu":
+    hu_poem_rules = ""
+    is_hu = (target_lang or "").strip().lower() == "hu"
+    if is_hu:
         lang_rules = (
             " Hungarian style rules: Use natural, literary, idiomatic Hungarian with consistent informal "
-            "second-person singular (tegezés, e.g. 'tekinteted', 'vonásaid' — NEVER mix magázás/önözés and "
+            "second-person singular (tegezés, e.g. 'tekinteted', 'vonásaid', 'szemed' — NEVER mix magázás/önözés and "
             "NEVER start with 'Kedvesem'). Keep 'Latent Space' as 'Látens Tér' or 'Latent Space' (never invent "
-            "puns). Translate art/spatial terms accurately: strokes -> vonások/vonalak, archetype -> archetípus, "
+            "puns). Rewrite the meaning in natural Hungarian sentence order rather than word-for-word English calques. "
+            "Use 'az' before vowel-initial words and 'a' before consonant-initial words. "
+            "Translate art/spatial terms accurately: strokes -> vonások/vonalak, archetype -> archetípus, "
             "balance -> egyensúly, upper/lower/left/right -> pontosan (ne cseréld fel a bal és jobb oldalt). "
-            "Use only real, grammatically correct Hungarian words."
+            "Use only real, grammatically correct Hungarian words and inflections (e.g. 'magadat' not 'magadot', "
+            "'vonalak/vonalakat' not 'vonalok', 'fürkészed/pásztázod' not 'skanálod', 'ívek' not 'trajektóriák')."
+        )
+        hu_poem_rules = (
+            " For Hungarian: write clear, natural, grammatical Hungarian lines (use 'az' before vowels, "
+            "real Hungarian verbs and nouns, never Hunglish or broken fragments). Each line must "
+            "stand as a clean, concrete image in the present tense."
         )
 
     # 1. Faithful literary adaptation of the English psychoanalysis into target_lang
@@ -646,6 +749,19 @@ def _translate_native_llm(
         ),
         is_poem=False,
     )
+    if is_hu and tr_analysis:
+        tr_analysis = polish_hungarian_text(tr_analysis, is_poem=False)
+        issues = hungarian_quality_issues(tr_analysis)
+        if issues and _is_hf_model_cached_locally(tcfg["local_nmt_model"]):
+            try:
+                logger.info(f"[translator] Native LLM analysis had suspect tokens {issues[:4]}; falling back to local NMT")
+                nmt_prose = _translate_prose_local_nmt(
+                    psychoanalysis, model_id=tcfg["local_nmt_model"], num_threads=tcfg["local_nmt_threads"]
+                )
+                if nmt_prose:
+                    tr_analysis = polish_hungarian_text(nmt_prose, is_poem=False)
+            except Exception:
+                pass
     if native_max_words > 0 and tr_analysis:
         tr_analysis, _ = enforce_analysis_word_limit(
             tr_analysis,
@@ -656,27 +772,34 @@ def _translate_native_llm(
             language_name=target_name,
             deadline=deadline,
         )
+        if is_hu and tr_analysis:
+            tr_analysis = polish_hungarian_text(tr_analysis, is_poem=False)
 
     if cancel_event is not None and cancel_event.is_set():
         raise RuntimeError("Translation cancelled")
 
-    # 2. Target-language minimalist 3-line haiku (faithful to English haiku & target-language reading)
+    # 2. Target-language poem (matches the configured poem_style: lyrical_4_6, two_stanza, quatrain, or haiku)
+    poem_cfg = ((cfg.get("ai") or {}).get("poem") or {})
+    raw_ps = str(poem_cfg.get("poem_style") or DEFAULT_POEM_STYLE).strip().lower()
+    poem_style = raw_ps if raw_ps in ALLOWED_POEM_STYLES else DEFAULT_POEM_STYLE
+    ps_spec = POEM_STYLE_SPECS.get(poem_style) or POEM_STYLE_SPECS[DEFAULT_POEM_STYLE]
+    style_rule = ps_spec["hu"] if is_hu else ps_spec["en"]
     p_system = (
-        f"You are a minimalist haiku poet and literary translator writing in natural, evocative {target_name}. "
-        f"Produce a single minimalist haiku of EXACTLY 3 short unrhymed lines (5-7-5 rhythm where natural) "
-        f"that faithfully captures the concrete imagery and quiet mood of the English haiku. "
+        f"You are a lyrical poet, haiku master, and literary translator writing in natural, evocative {target_name}. "
+        f"{style_rule} "
+        f"Faithfully capture the concrete imagery, movement, and quiet mood of the English poem, preserving its line and stanza structure.{hu_poem_rules} "
         f"Do NOT tell a story, do NOT rhyme, and use only real, natural {target_name} words. "
-        f"Return ONLY the 3-line {target_name} haiku with no title, no syllable counts, no quotes, and no commentary."
+        f"Return ONLY the {target_name} poem with no title, no syllable counts, no quotes, and no commentary."
     )
     if poem and poem.strip():
         p_prompt = (
-            f"Adapt this English haiku into a 3-line minimalist {target_name} haiku:\n\n"
+            f"Adapt this English poem into natural {target_name} (preserving its line/stanza form):\n\n"
             f"{poem.strip()}\n\n"
             f"Context ({target_name} reading):\n{tr_analysis or psychoanalysis}"
         )
     else:
         p_prompt = (
-            f"Compose a 3-line minimalist {target_name} haiku inspired by this reading:\n\n"
+            f"Compose a {target_name} poem inspired by this reading:\n\n"
             f"{tr_analysis or psychoanalysis}"
         )
     tr_poem = _clean_translated_output(
@@ -691,7 +814,21 @@ def _translate_native_llm(
             deadline=deadline,
         ),
         is_poem=True,
+        poem_style=poem_style,
     )
+    if is_hu and tr_poem:
+        tr_poem = polish_hungarian_text(tr_poem, is_poem=True)
+        poem_issues = hungarian_quality_issues(tr_poem)
+        if poem_issues and poem and poem.strip() and _is_hf_model_cached_locally(tcfg["local_nmt_model"]):
+            try:
+                logger.info(f"[translator] Native LLM poem had suspect tokens {poem_issues[:4]}; falling back to local NMT")
+                nmt_poem = _translate_poem_local_nmt(
+                    poem, model_id=tcfg["local_nmt_model"], num_threads=tcfg["local_nmt_threads"]
+                )
+                if nmt_poem:
+                    tr_poem = polish_hungarian_text(nmt_poem, is_poem=True)
+            except Exception:
+                pass
 
     # 3. Archetype badge (curated table first, low-temp dedicated prompt only for dynamic pareidolia parts)
     arch_system = (
@@ -700,7 +837,7 @@ def _translate_native_llm(
     )
 
     def _llm_part_translate(part: str) -> str:
-        return _chat_with_overrides(
+        raw_part = _chat_with_overrides(
             p_mod,
             message=f"Translate into {target_name}: {part}",
             allow_failover=True,
@@ -710,8 +847,11 @@ def _translate_native_llm(
             thinking_override="off",
             deadline=deadline,
         )
+        return polish_hungarian_text(raw_part, is_poem=False) if is_hu else raw_part
 
     tr_archetype = _translate_archetype_parts(archetype, target_lang, _llm_part_translate)
+    if is_hu and tr_archetype:
+        tr_archetype = polish_hungarian_text(tr_archetype, is_poem=False)
     return {
         "archetype": tr_archetype,
         "psychoanalysis": tr_analysis,
@@ -739,6 +879,9 @@ def translate_analysis_stage_local_nmt(
         lambda part: (_nmt_translate_batch([part], model_id=mid, num_threads=thr) or [part])[0],
     )
     tr_analysis = _translate_prose_local_nmt(psychoanalysis, model_id=mid, num_threads=thr)
+    if (target_lang or "").strip().lower() == "hu":
+        tr_arch = polish_hungarian_text(tr_arch, is_poem=False)
+        tr_analysis = polish_hungarian_text(tr_analysis, is_poem=False)
     return {
         "archetype": tr_arch,
         "psychoanalysis": tr_analysis,
@@ -753,11 +896,14 @@ def translate_poem_stage_local_nmt(
 ) -> str:
     """Translate the finished English poem on CPU, preserving lines and stanzas."""
     tcfg = get_translation_config(settings)
-    return _translate_poem_local_nmt(
+    out = _translate_poem_local_nmt(
         poem,
         model_id=tcfg["local_nmt_model"],
         num_threads=tcfg["local_nmt_threads"],
     )
+    if (target_lang or "").strip().lower() == "hu":
+        out = polish_hungarian_text(out, is_poem=True)
+    return out
 
 
 def translate_reading(
@@ -801,6 +947,10 @@ def translate_reading(
         )
         tr_analysis = _translate_prose_local_nmt(psychoanalysis, model_id=mid, num_threads=thr)
         tr_poem = _translate_poem_local_nmt(poem, model_id=mid, num_threads=thr)
+        if (target_lang or "").strip().lower() == "hu":
+            tr_arch = polish_hungarian_text(tr_arch, is_poem=False)
+            tr_analysis = polish_hungarian_text(tr_analysis, is_poem=False)
+            tr_poem = polish_hungarian_text(tr_poem, is_poem=True)
         return {
             "ok": True,
             "mode": "local_nmt",

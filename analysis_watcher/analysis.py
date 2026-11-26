@@ -250,13 +250,13 @@ def analyze_stroke_geometry(filename: str, canvas_filename: str = None, dwell_gr
 
     ink_ratio = float(np.mean(stroke_mask))
     if ink_ratio < 0.03:
-        density_desc = "sparse, minimalist, and fleeting"
+        density_desc = "a light, thin trail with lots of untouched paper around it"
     elif ink_ratio < 0.10:
-        density_desc = "balanced and deliberate"
+        density_desc = "a moderate amount of ink, leaving clear breathing room"
     elif ink_ratio < 0.22:
-        density_desc = "dense, layered, and expressive"
+        density_desc = "a dense, layered build-up of ink"
     else:
-        density_desc = "heavily saturated, intense, and consuming"
+        density_desc = "ink covering much of the page, worked over again and again"
 
     zone_names = [
         ["upper-left", "upper-center", "upper-right"],
@@ -274,11 +274,11 @@ def analyze_stroke_geometry(filename: str, canvas_filename: str = None, dwell_gr
 
     spatial_entropy = compute_spatial_entropy(raw_densities)
     if spatial_entropy < 0.45:
-        entropy_desc = "tunnel-vision fixation concentrated tightly in specific zones"
+        entropy_desc = "attention stayed tightly in one or two places"
     elif spatial_entropy < 0.78:
-        entropy_desc = "selective anchoring with purposeful excursions across the canvas"
+        entropy_desc = "attention settled on a few anchors and made purposeful trips between them"
     else:
-        entropy_desc = "wide-ranging, panoramic exploration across nearly all regions"
+        entropy_desc = "attention roamed over almost the whole page"
 
     zone_scores.sort(key=lambda x: x[0], reverse=True)
     primary_zone = zone_scores[0][1]
@@ -286,12 +286,15 @@ def analyze_stroke_geometry(filename: str, canvas_filename: str = None, dwell_gr
     least_zone = zone_scores[-1][1]
 
     fractal_dim = compute_fractal_dimension(binary)
+    sparse = ink_ratio < 0.06
     if fractal_dim < 1.18:
-        fractal_desc = f"low-complexity linear trajectory (D={fractal_dim:.2f}), reflecting direct, unknotted movement"
+        fractal_desc = "the path is direct and simple, with little doubling back"
     elif fractal_dim < 1.38:
-        fractal_desc = f"organic intermediate fractal complexity (D={fractal_dim:.2f}), echoing natural branching patterns"
+        fractal_desc = "the path branches and wavers a little, like something growing"
+    elif sparse:
+        fractal_desc = "although the trail is thin, it doubles back and crosses itself many times"
     else:
-        fractal_desc = f"high space-filling fractal intricacy (D={fractal_dim:.2f}), akin to dense abstract expressionist webs"
+        fractal_desc = "the path folds over itself again and again into a thick, intricate web"
 
     dilated = cv2.dilate(binary, np.ones((5, 5), dtype=np.uint8), iterations=1) > 0
     left_half = dilated[:, :w // 2]
@@ -303,13 +306,13 @@ def analyze_stroke_geometry(filename: str, canvas_filename: str = None, dwell_gr
     vert_sym = _dilated_dice(top_half, bottom_half_flipped)
 
     if horiz_sym > 0.62 and vert_sym > 0.62:
-        symmetry_desc = "strikingly symmetrical and centered, like a classic Rorschach inkblot"
+        symmetry_desc = "strikingly symmetrical and centered, like a folded inkblot"
     elif horiz_sym > 0.50:
-        symmetry_desc = "horizontally mirrored with bilateral balance"
+        symmetry_desc = "roughly mirrored left to right"
     elif vert_sym > 0.50:
-        symmetry_desc = "vertically balanced between upper and lower realms"
+        symmetry_desc = "roughly balanced between top and bottom"
     else:
-        symmetry_desc = "decidedly asymmetrical, driven by directional drift and spontaneous tension"
+        symmetry_desc = "asymmetrical, pulled more to one side than the other"
 
     contours, hierarchy = cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     num_components, enclosed_loops, sharp_bends, total_perim = _count_sharp_bends(contours, hierarchy, binary=binary)
@@ -317,57 +320,90 @@ def analyze_stroke_geometry(filename: str, canvas_filename: str = None, dwell_gr
     bends_per_100px = (sharp_bends / max(total_perim / 100.0, 1.0)) if total_perim > 0 else 0.0
     is_angular = sharp_bends >= 3 and bends_per_100px >= 0.16
     line_quality = (
-        "angular, darting, and electric with sudden directional shifts"
+        "angular, with abrupt changes of direction"
         if is_angular
         else "fluid, sweeping, and organic in its transitions"
     )
 
+    # Dominant gesture is measured on the uncropped canvas when available (page-relative direction)
+    gesture_src = binary
+    if canvas_filename and str(canvas_filename) != str(filename):
+        try:
+            canvas_img = cv2.imread(str(canvas_filename), cv2.IMREAD_UNCHANGED)
+            if canvas_img is not None and canvas_img.size > 0:
+                canvas_mask, _, _ = extract_ink_mask(canvas_img)
+                if np.any(canvas_mask > 0):
+                    gesture_src = canvas_mask
+        except Exception:
+            gesture_src = binary
+    gesture = _compute_gesture(gesture_src)
+    direction = gesture["direction"]
+    elongated = gesture["elongation"] >= 2.2 and ink_ratio < 0.12
+    compact = gesture["x_span"] < 0.42 and gesture["y_span"] < 0.42
+
+    if enclosed_loops == 0:
+        loops_desc = "the trail never closes on itself"
+    elif enclosed_loops <= 3:
+        loops_desc = f"it closes into {enclosed_loops} small pocket{'s' if enclosed_loops > 1 else ''}"
+    elif enclosed_loops <= 15:
+        loops_desc = "it crosses itself several times, forming a handful of small pockets"
+    else:
+        loops_desc = "it crosses itself many times, knotting into dozens of small pockets"
+
     if horiz_sym > 0.62 and vert_sym > 0.62:
-        structure_desc = f"a balanced symmetrical form of {enclosed_loops} enclosed chambers"
         archetype_hint = "Rorschach Mirror"
     elif num_components > 8 and enclosed_loops < 10:
-        structure_desc = "fragmented, staccato bursts of attention jumping rapidly across the canvas"
         archetype_hint = "Saccadic Constellation"
+    elif elongated and direction == "falling_diagonal":
+        archetype_hint = "Descending Sweep"
+    elif elongated and direction == "rising_diagonal":
+        archetype_hint = "Ascending Sweep"
+    elif elongated and direction == "horizontal":
+        archetype_hint = "Horizon Scan"
+    elif elongated and direction == "vertical":
+        archetype_hint = "Vertical Ascent"
     elif enclosed_loops >= 35 or (enclosed_loops >= 28 and fractal_dim >= 1.53):
-        structure_desc = f"an intricate lattice of {enclosed_loops} enclosed loops and recurring self-intersecting orbits"
         archetype_hint = "Fractal Labyrinth"
     elif horiz_sym > 0.50:
-        structure_desc = f"a horizontally mirrored web of {enclosed_loops} intersecting loops"
         archetype_hint = "Bilateral Echo"
     elif spatial_entropy < 0.52 and enclosed_loops >= 6:
-        structure_desc = f"a tightly anchored vortex of {enclosed_loops} concentrated loops around the {primary_zone}"
         archetype_hint = "Focused Vortex"
+    elif compact and enclosed_loops >= 4:
+        archetype_hint = "Gathered Knot"
     elif spatial_entropy >= 0.65 and enclosed_loops >= 6:
-        structure_desc = f"wide-ranging excursions across the canvas weaving {enclosed_loops} open loops"
-        archetype_hint = "Electric Drift" if is_angular else "Panoramic Currents"
+        archetype_hint = "Zigzag Drift" if is_angular else "Panoramic Currents"
     elif enclosed_loops >= 12:
-        structure_desc = f"intertwining paths forming {enclosed_loops} overlapping focal chambers"
         archetype_hint = "Intertwined Orbits"
     elif enclosed_loops >= 2:
-        structure_desc = f"deliberate intersecting paths forming {enclosed_loops} enclosed focal chambers"
         archetype_hint = "Woven Loops"
     elif fractal_dim >= 1.32:
-        structure_desc = "a densely woven tapestry of searching movements"
         archetype_hint = "Woven Tapestry"
     else:
-        structure_desc = "a continuous, unbroken stream-of-consciousness trajectory"
         archetype_hint = "Continuous Horizon Trace"
 
+    def _plain(zone: str) -> str:
+        return zone.replace("-", " ")
+
+    # Plain observational language (no metric names/adjectives the LLM would parrot verbatim)
     description = (
-        f"Visual & Gaze Composition Profile:\n"
-        f"- Archetype: {archetype_hint}\n"
-        f"- Stroke Density: The marks are {density_desc}.\n"
-        f"- Spatial Fixation & Entropy: Characterized by {entropy_desc}. "
-        f"The visitor's gaze gravitated most strongly toward the {primary_zone} and {secondary_zone} regions, "
-        f"while avoiding the {least_zone}.\n"
-        f"- Fractal Complexity: Exhibits {fractal_desc}.\n"
-        f"- Balance & Rorschach Symmetry: The composition is {symmetry_desc}.\n"
-        f"- Movement & Topology: Characterized by {structure_desc}, with strokes that feel {line_quality}."
+        "Observation notes about this visitor's gaze drawing "
+        "(private notes for you: never quote, list, or name these terms):\n"
+        f"- Overall gesture: {gesture['description']}.\n"
+        f"- Where the eyes lingered: most attention in the {_plain(primary_zone)} and {_plain(secondary_zone)}; "
+        f"the {_plain(least_zone)} was left almost untouched.\n"
+        f"- Spread of attention: {entropy_desc}.\n"
+        f"- Amount of ink: {density_desc}.\n"
+        f"- Path: {fractal_desc}; {loops_desc}.\n"
+        f"- Line character: {line_quality}.\n"
+        f"- Balance: {symmetry_desc}."
     )
 
     return {
         "summary_label": archetype_hint,
         "description": description,
+        "gesture_desc": gesture["description"],
+        "direction": direction,
+        "elongation": round(gesture["elongation"], 2),
         "ink_ratio": round(ink_ratio, 4),
         "fractal_dimension": round(fractal_dim, 3),
         "spatial_entropy": round(spatial_entropy, 3),
@@ -375,12 +411,77 @@ def analyze_stroke_geometry(filename: str, canvas_filename: str = None, dwell_gr
         "vert_symmetry": round(vert_sym, 3),
         "primary_zone": primary_zone,
         "secondary_zone": secondary_zone,
+        "least_zone": least_zone,
         "enclosed_loops": enclosed_loops,
         "num_components": num_components,
         "sharp_bends": sharp_bends,
         "bends_per_100px": round(bends_per_100px, 3),
         "line_quality": "angular" if is_angular else "fluid",
     }
+
+
+def _compute_gesture(binary: np.ndarray) -> dict:
+    """
+    Describe the dominant movement of the ink in plain language using a PCA of ink pixel
+    coordinates normalized to the canvas (so diagonals are relative to the page, not pixels).
+    """
+    result = {"direction": "none", "elongation": 1.0, "x_span": 0.0, "y_span": 0.0,
+              "description": "a few faint marks"}
+    ys, xs = np.nonzero(binary > 0)
+    if len(xs) < 20:
+        return result
+    h, w = binary.shape[:2]
+    if len(xs) > 60000:
+        idx = np.random.default_rng(0).choice(len(xs), 60000, replace=False)
+        xs, ys = xs[idx], ys[idx]
+    nx = xs.astype(np.float64) / max(1, w)
+    ny = ys.astype(np.float64) / max(1, h)
+    x_span = float(np.percentile(nx, 95) - np.percentile(nx, 5))
+    y_span = float(np.percentile(ny, 95) - np.percentile(ny, 5))
+    cov = np.cov(np.vstack([nx, ny]))
+    evals, evecs = np.linalg.eigh(cov)
+    l_small, l_big = max(float(evals[0]), 1e-9), max(float(evals[1]), 1e-9)
+    elongation = float(np.sqrt(l_big / l_small))
+    vx, vy = float(evecs[0, 1]), float(evecs[1, 1])
+    angle = float(np.degrees(np.arctan2(vy, vx))) % 180.0  # image y grows downward
+
+    cx, cy = float(np.mean(nx)), float(np.mean(ny))
+    horiz = "left" if cx < 0.38 else ("right" if cx > 0.62 else "middle")
+    vert = "upper" if cy < 0.38 else ("lower" if cy > 0.62 else "middle")
+    if horiz == "middle" and vert == "middle":
+        where = "the middle of the page"
+    elif horiz == "middle":
+        where = f"the {vert} half of the page"
+    elif vert == "middle":
+        where = f"the {horiz} side of the page"
+    else:
+        where = f"the {vert} {horiz} of the page"
+
+    if elongation >= 2.2:
+        if angle < 18 or angle > 162:
+            direction = "horizontal"
+            desc = "one long horizontal journey across the page, like scanning a horizon"
+        elif 72 <= angle <= 108:
+            direction = "vertical"
+            desc = "a mostly vertical climb or fall through the page"
+        elif angle < 90:
+            direction = "falling_diagonal"
+            desc = "a long slanting sweep from the upper left down toward the lower right"
+        else:
+            direction = "rising_diagonal"
+            desc = "a long slanting sweep rising from the lower left toward the upper right"
+    elif x_span < 0.42 and y_span < 0.42:
+        direction = "compact"
+        desc = f"a compact cluster gathered in {where}, with the rest of the page left open"
+    elif x_span > 0.6 and y_span > 0.6:
+        direction = "wide"
+        desc = "a wandering path that reaches out over most of the page"
+    else:
+        direction = "loose"
+        desc = f"a loose, roundish wandering centred on {where}"
+    result.update({"direction": direction, "elongation": elongation, "x_span": x_span,
+                   "y_span": y_span, "description": desc})
+    return result
 
 
 _GENERIC_VISION_LABELS = {
@@ -400,6 +501,36 @@ _GENERIC_MEDIA_WORDS = {
 }
 
 _SMALL_TITLE_WORDS = {"a", "an", "and", "as", "at", "by", "for", "from", "in", "into", "of", "on", "or", "the", "to", "with"}
+
+# Known degenerate token priors of tiny captioning VLMs (e.g. moondream) on white line drawings
+_DEGENERATE_VISION_LABELS = {"ike", "lke", "ikea", "iike", "i", "it", "ok", "yes", "no", "n/a", "na"}
+# Plausible-but-overused labels accepted only when the stroke geometry actually supports them
+_GEOMETRY_GATED_VISION_LABELS = {"urchin", "sea urchin", "urchins"}
+_SHORT_LABEL_ALLOWLIST = {"owl", "eye", "cat", "dog", "fox", "bee", "sun", "web", "elk", "ant", "bat", "eel",
+                          "ram", "yak", "cow", "pig", "hen", "jay", "emu", "fly", "key", "cup", "hat", "net",
+                          "sea", "bay", "map", "kite", "ear", "arm", "leg", "lip", "toe", "egg"}
+_URL_LIKE_RE = re.compile(r"https?://|www\.|\b[\w-]+\.(?:com|org|net|io|co|info|html?|php)\b", re.IGNORECASE)
+_MIXED_ALNUM_RE = re.compile(r"\b(?=\w*\d)(?=\w*[a-zA-Z])\w{4,}\b")
+
+
+def is_degenerate_vision_text(text: str) -> bool:
+    """Detect garbage VLM output: URLs, underscore runs, letter/digit gibberish, or token loops."""
+    s = str(text or "").strip()
+    if not s:
+        return True
+    if _URL_LIKE_RE.search(s) or "__" in s or _MIXED_ALNUM_RE.search(s):
+        return True
+    letters = sum(ch.isalpha() for ch in s)
+    if letters < max(2, int(0.6 * len(s.replace(" ", "")))):
+        return True
+    tokens = re.findall(r"[a-zA-Z]+", s.lower())
+    if len(tokens) >= 6:
+        counts = {}
+        for t in tokens:
+            counts[t] = counts.get(t, 0) + 1
+        if max(counts.values()) >= max(4, len(tokens) // 3) and len(set(tokens)) <= len(tokens) // 2:
+            return True
+    return False
 
 _VISION_PREAMBLE_PATTERNS = [
     r"^\s*(?:\d+\s*[\)\.\:\-]\s*)+",
@@ -440,6 +571,8 @@ def clean_vision_archetype_label(raw_text: str, fallback: str = "") -> str:
     if not lines:
         return fallback
     s = lines[0]
+    if is_degenerate_vision_text(s):
+        return fallback
     s = re.sub(r"[`*_~]+", "", s).strip().strip("\"'“”‘’()[]")
 
     # Apply preamble stripping iteratively (e.g., "1) The lines resemble a ..." -> "...")
@@ -469,6 +602,10 @@ def clean_vision_archetype_label(raw_text: str, fallback: str = "") -> str:
         return fallback
     low_s = s.lower()
     if low_s in _GENERIC_VISION_LABELS or all(w in _GENERIC_MEDIA_WORDS for w in low_s.split()):
+        return fallback
+    if is_degenerate_vision_text(s) or low_s in _DEGENERATE_VISION_LABELS:
+        return fallback
+    if " " not in low_s and len(low_s) <= 3 and low_s not in _SHORT_LABEL_ALLOWLIST:
         return fallback
 
     # Cap to a clean 4-word / 34-char gallery pill title
@@ -669,14 +806,19 @@ def run_ollama_vision_analysis(filename: str, deadline: float = None, cancel_eve
                 visual_desc = _call_ollama_vision(desc_prompt, pass2_tokens)
             except Exception as desc_err:
                 print(f"[analysis] Note: Ollama vision description pass skipped ({_redact_error_secrets(desc_err)}).")
+        if visual_desc and is_degenerate_vision_text(visual_desc):
+            print(f"[analysis] Note: discarded degenerate vision description from '{vision_model}'.")
+            visual_desc = ""
 
-        desc_lines = [f"Self-Hosted Vision Model ({vision_model}) Perception:"]
+        desc_lines = [f"What a small vision model ({vision_model}) saw in the image (may be imprecise):"]
         if filtered_label:
-            desc_lines.append(f"- Pareidolia Archetype: {filtered_label}")
-        else:
-            desc_lines.append(f"- Pareidolia Impression: {raw_label_text}")
+            desc_lines.append(f"- Pareidolia Archetype (it resembles): {filtered_label}")
+        elif not clean_label and not is_degenerate_vision_text(raw_label_text) and len(raw_label_text) <= 120:
+            desc_lines.append(f"- Pareidolia Impression: {raw_label_text.strip()}")
         if visual_desc:
             desc_lines.append(f"- Visual Character: {visual_desc}")
+        if len(desc_lines) == 1:
+            desc_lines = []
 
         return {
             "summary_label": filtered_label,
@@ -1112,11 +1254,24 @@ def analyze_drawing(
     raw_vision_label = ""
     vision_options = {}
     if extra:
-        sections.insert(0, extra["description"])
+        extra = dict(extra)
+        vision_label = (extra.get("summary_label") or "").strip()
+        # Overused VLM priors (e.g. moondream's "urchin") only survive on compact, spiky drawings
+        if vision_label.lower() in _GEOMETRY_GATED_VISION_LABELS and not (
+            geom.get("direction") == "compact" and int(geom.get("sharp_bends") or 0) >= 12
+        ):
+            vision_label = ""
+            extra["summary_label"] = ""
+            extra["description"] = "\n".join(
+                ln for ln in str(extra.get("description") or "").splitlines() if not ln.startswith("- Pareidolia")
+            )
+            if not any(ln.startswith("- ") for ln in extra["description"].splitlines()):
+                extra["description"] = ""
+        if extra.get("description"):
+            sections.insert(0, extra["description"])
         effective_mode = extra.get("engine", mode)
         raw_vision_label = extra.get("raw_label", "")
         vision_options = extra.get("options", {})
-        vision_label = (extra.get("summary_label") or "").strip()
 
         if badge_style == "geometry_only":
             summary_label = geom_label
@@ -1127,6 +1282,13 @@ def analyze_drawing(
                 summary_label = vision_label or geom_label
         else:  # "vision_only"
             summary_label = vision_label or geom_label
+
+    if "direct_vision_llm" in effective_mode:
+        sections.append(
+            "You can also see the drawing itself. Trust what you see over these notes if they disagree. "
+            "If its overall shape genuinely suggests one concrete everyday image, you may use that as your "
+            "single metaphor; otherwise stay with the movements of the eyes."
+        )
 
     return {
         "label": summary_label,
