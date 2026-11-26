@@ -776,6 +776,87 @@ class TestServerLockdownHTTP(unittest.TestCase):
                 checked_blocks += 1
         self.assertGreaterEqual(checked_blocks, 4)
 
+    def test_audit_h3_secure_cookie_idle_timeout_and_l1_backslash_pdf_guard(self):
+        # 1. L1: GET /api/pdf/..%5C..%5Cx/en returns 400 when AI_AVAILABLE is False (and when True)
+        with mock.patch.object(monitoring_server, "AI_AVAILABLE", False):
+            st_l1_off, _, _ = self._req("GET", "/api/pdf/..%5C..%5Cx/en")
+            self.assertEqual(st_l1_off, 400)
+            st_l1_dot, _, _ = self._req("GET", "/api/pdf/..badid/en")
+            self.assertEqual(st_l1_dot, 400)
+        st_l1_on, _, _ = self._req("GET", "/api/pdf/..%5C..%5Cx/en")
+        self.assertEqual(st_l1_on, 400)
+
+        # 2. H3: Login cookie carries Secure on HTTPS, and passive polls do NOT extend idle_exp
+        with mock.patch.dict(os.environ, {"LATENT_SPACE_TRUST_PROXY": "1"}):
+            st_login, hdrs_login, _ = self._req(
+                "POST",
+                "/api/auth/login",
+                body={"password": "TestLockdownPass!42"},
+                headers={"X-Forwarded-Proto": "https", "X-Forwarded-For": "10.10.10.5"},
+            )
+        self.assertEqual(st_login, 200)
+        set_cookie_hdr = dict((k.lower(), v) for k, v in hdrs_login).get("set-cookie", "")
+        self.assertIn("HttpOnly", set_cookie_hdr)
+        self.assertIn("SameSite=Strict", set_cookie_hdr)
+        self.assertIn("; Secure", set_cookie_hdr)
+
+        from http.cookies import SimpleCookie
+        ck = SimpleCookie()
+        ck.load(set_cookie_hdr)
+        tok = ck[monitoring_server.ADMIN_SESSION_COOKIE].value
+        cookie_hdr = {"Cookie": f"{monitoring_server.ADMIN_SESSION_COOKIE}={tok}"}
+
+        with monitoring_server._auth_lock:
+            entry_before = dict(monitoring_server._admin_sessions[tok])
+            # Set idle_exp to 100s in the future so any touch=True would jump it to ~1800s
+            forced_idle = entry_before["idle_exp"] - 1700.0
+            monitoring_server._admin_sessions[tok]["idle_exp"] = forced_idle
+
+        # Passive polls (/api/settings/printing, /api/auth/status, /api/status) must NOT extend idle_exp
+        for passive_path in ("/api/settings/printing", "/api/auth/status", "/api/status"):
+            st_p, _, _ = self._req("GET", passive_path, headers=cookie_hdr)
+            self.assertEqual(st_p, 200)
+
+        with monitoring_server._auth_lock:
+            self.assertEqual(monitoring_server._admin_sessions[tok]["idle_exp"], forced_idle)
+
+        # Active admin action (/api/settings) DOES extend idle_exp
+        st_act, _, _ = self._req("GET", "/api/settings", headers=cookie_hdr)
+        self.assertEqual(st_act, 200)
+        with monitoring_server._auth_lock:
+            self.assertGreater(monitoring_server._admin_sessions[tok]["idle_exp"], forced_idle + 1000.0)
+
+        # 3. M4: Transient per-run files and print_history.json are blocked (403) in /shared_output/
+        (config_manager.SHARED_DIR / "input_20261126_000000_001.png").write_bytes(b"secret")
+        (config_manager.DOCS_DIR / "print_history.json").write_text("{}", encoding="utf-8")
+        st_tr1, _, _ = self._req("GET", "/shared_output/input_20261126_000000_001.png")
+        st_tr2, _, _ = self._req("GET", "/shared_output/docs/print_history.json")
+        self.assertEqual(st_tr1, 403)
+        self.assertEqual(st_tr2, 403)
+
+        # 4. H1: When require_upload_token is enabled, /api/drawings rejects tokenless uploads (401) and accepts issued token
+        img = np.ones((32, 32), dtype=np.uint8) * 255
+        _, buf = cv2.imencode(".png", img)
+        img_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+        config_manager.update_settings_section("server", {"require_upload_token": True})
+        st_notok, _, body_notok = self._req("POST", "/api/drawings", body={"image": img_b64}, client_ip="10.99.88.77")
+        self.assertEqual(st_notok, 401)
+        self.assertEqual(json.loads(body_notok)["error_code"], "ERR_UPLOAD_TOKEN_REQUIRED")
+
+        st_tk, _, body_tk = self._req("GET", "/api/drawings/token")
+        self.assertEqual(st_tk, 200)
+        up_tok = json.loads(body_tk)["upload_token"]
+        with mock.patch.object(monitoring_server, "enqueue_pipeline_job", return_value=("r_tok", 1)), \
+             mock.patch.object(monitoring_server, "write_live_image_and_mark_handled"):
+            st_withtok, _, _ = self._req(
+                "POST",
+                "/api/drawings",
+                body={"image": img_b64},
+                headers={"X-Upload-Token": up_tok},
+                client_ip="10.99.88.77",
+            )
+        self.assertEqual(st_withtok, 200)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

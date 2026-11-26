@@ -125,7 +125,8 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
         fake_model.chat.side_effect = ["A thoughtful psychoanalytical reading.", "Silent eyes trace\nPaths in white space."]
 
         with mock.patch.object(run_analysis_watcher, "LLMModel", return_value=fake_model), \
-             mock.patch.object(run_analysis_watcher, "save_print_pdf", side_effect=fake_save_pdf):
+             mock.patch.object(run_analysis_watcher, "save_print_pdf", side_effect=fake_save_pdf), \
+             mock.patch.object(run_analysis_watcher, "get_translation_config", return_value={"enabled": False, "mode": "off", "target_languages": [], "default_print_language": "en"}):
             ok = run_analysis_watcher.run_analysis_pipeline(run_id=rid, snapshot_path=str(snap), raise_on_error=True)
 
         self.assertTrue(ok)
@@ -391,7 +392,8 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
         fake_model.chat.side_effect = ["Analysis text.", "Poem text."]
 
         with mock.patch.object(run_analysis_watcher, "LLMModel", return_value=fake_model), \
-             mock.patch.object(run_analysis_watcher, "save_print_pdf", side_effect=fake_pdf_cancel):
+             mock.patch.object(run_analysis_watcher, "save_print_pdf", side_effect=fake_pdf_cancel), \
+             mock.patch.object(run_analysis_watcher, "get_translation_config", return_value={"enabled": False, "mode": "off", "target_languages": [], "default_print_language": "en"}):
             ok = run_analysis_watcher.run_analysis_pipeline(
                 run_id=rid, snapshot_path=str(snap), raise_on_error=False, cancel_event=cancel_ev,
             )
@@ -569,6 +571,137 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
         self.assertEqual(fs, 6.2)
         self.assertTrue(fitted.endswith("..."))
         self.assertLessEqual(len(fitted.splitlines()), 15)
+
+    def test_audit_h2_provider_400_retries_obey_single_call_deadline(self):
+        import time
+        import requests
+
+        config_manager.update_settings_section("ai", {
+            "vision_mode": "vision",
+            "analysis": {
+                "provider": "openai_compatible",
+                "model": "gpt-4o",
+                "base_url": "http://localhost:1234/v1",
+                "thinking_mode": "low",
+                "fallback_provider": "none",
+            },
+        })
+        img_file = TEST_TMP / "h2_dummy.png"
+        img = np.ones((32, 32), dtype=np.uint8) * 255
+        _, buf = cv2.imencode(".png", img)
+        img_file.write_bytes(buf.tobytes())
+
+        observed_timeouts = []
+
+        def slow_400_post(*args, **kwargs):
+            to = kwargs.get("timeout")
+            read_to = to[1] if isinstance(to, (tuple, list)) else float(to)
+            observed_timeouts.append(read_to)
+            time.sleep(min(0.18, read_to))
+            resp = mock.MagicMock(status_code=400, ok=False)
+            resp.raise_for_status.side_effect = requests.exceptions.HTTPError("400 Bad Request", response=resp)
+            return resp
+
+        m = LLMModel("analysis")
+        t0 = time.monotonic()
+        single_call_budget = 0.35
+        with mock.patch("chat.requests.post", side_effect=slow_400_post):
+            with self.assertRaises(AIGenerationError):
+                m.chat(
+                    "Test H2 deadline",
+                    image_path=str(img_file),
+                    allow_failover=False,
+                    deadline=t0 + single_call_budget,
+                )
+        elapsed = time.monotonic() - t0
+        self.assertLessEqual(elapsed, single_call_budget + 0.15)
+        self.assertTrue(all(t <= single_call_budget + 0.01 for t in observed_timeouts))
+        # Second attempt timeout must be strictly smaller than first attempt timeout
+        if len(observed_timeouts) >= 2:
+            self.assertLess(observed_timeouts[1], observed_timeouts[0])
+
+    def test_audit_m5_start_everything_cp1252_stdout_and_m8_zero_default_log_leak(self):
+        import start_everything
+
+        # M5: start_everything.py output redirected to a strict cp1252 file/stream never raises UnicodeEncodeError
+        cp1252_file = TEST_TMP / "cp1252_stdout.txt"
+        raw_buf = io.BytesIO()
+        cp1252_wrapper = io.TextIOWrapper(raw_buf, encoding="cp1252", errors="strict")
+        old_stdout = sys.stdout
+        try:
+            sys.stdout = cp1252_wrapper
+            starter = start_everything.LatentSpaceStarter(mode="server", port=8000, https_port=8443)
+            with mock.patch.object(starter, "start_server_and_pipeline"), \
+                 mock.patch.object(starter, "monitor_processes"), \
+                 mock.patch.object(starter, "stop_all"), \
+                 mock.patch.object(starter, "get_ip_address", return_value="192.168.1.50"):
+                starter.run()
+            cp1252_wrapper.flush()
+        finally:
+            sys.stdout = old_stdout
+        decoded_out = raw_buf.getvalue().decode("cp1252", errors="replace")
+        self.assertIn("LATENT SPACE WEB SUITE RUNNING", decoded_out)
+
+        # Also test subprocess execution with stdout redirected to a cp1252 file
+        import subprocess
+        with open(cp1252_file, "wb") as f_out:
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "cp1252:strict"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import start_everything; "
+                        "print('  ✓ Unloaded Ollama model: test'); "
+                        "print('  ⚡ Applying Ollama VRAM tuning'); "
+                        "print('✅ LATENT SPACE WEB SUITE RUNNING! 🖼️ 👁️ 🖨️ 🎛️ 📱')"
+                    ),
+                ],
+                stdout=f_out,
+                stderr=subprocess.PIPE,
+                env=env,
+                timeout=10,
+            )
+        self.assertEqual(proc.returncode, 0, msg=proc.stderr.decode("utf-8", errors="replace"))
+
+        # M8: Running a pipeline under redirected LATENT_SPACE_LOGS_DIR writes zero bytes to the repo's logs/ directory
+        repo_logs_dir = PROJECT_ROOT / "logs"
+        before_snapshots = {}
+        if repo_logs_dir.exists():
+            for lf in repo_logs_dir.iterdir():
+                if lf.is_file():
+                    before_snapshots[lf.name] = lf.read_bytes()
+
+        rid = "20261126_120000_999"
+        snap = config_manager.SHARED_DIR / f"input_{rid}.png"
+        canvas = np.ones((120, 120), dtype=np.uint8) * 255
+        cv2.line(canvas, (10, 10), (110, 110), 0, 4)
+        cv2.imwrite(str(snap), canvas)
+
+        fake_model = mock.MagicMock()
+        fake_model._provider = "ollama"
+        fake_model._llm = "llama3.2"
+        fake_model._last_used_provider = "ollama"
+        fake_model._last_used_model = "llama3.2"
+        fake_model.initialize.return_value = {"status": "Success"}
+        fake_model.chat.side_effect = ["Redirected log test reading.", "Line one\nLine two\nLine three"]
+
+        with mock.patch.object(run_analysis_watcher, "LLMModel", return_value=fake_model), \
+             mock.patch.object(run_analysis_watcher, "save_print_pdf", return_value=None), \
+             mock.patch.object(run_analysis_watcher, "get_translation_config", return_value={"enabled": False, "mode": "off", "target_languages": [], "default_print_language": "en"}):
+            self.assertTrue(run_analysis_watcher.run_analysis_pipeline(run_id=rid, snapshot_path=str(snap)))
+
+        if repo_logs_dir.exists():
+            for name, before_bytes in before_snapshots.items():
+                after_bytes = (repo_logs_dir / name).read_bytes()
+                self.assertEqual(
+                    after_bytes,
+                    before_bytes,
+                    f"Production log {name} was modified during redirected test run!",
+                )
+        self.assertIn(rid, (config_manager.LOGS_DIR / "installation.log").read_text(encoding="utf-8"))
+        self.assertIn(rid, (config_manager.LOGS_DIR / "responses.log").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

@@ -762,6 +762,12 @@
                     input.value = '';
                     renderGrid();
                 }
+                closeStaffModal();
+                if (isStaffUnlocked) {
+                    isStaffUnlocked = false;
+                    updateStaffAuthButton();
+                    fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+                }
             }, INACTIVITY_TIMEOUT_MS);
         }
         ['mousedown', 'keydown', 'touchstart', 'wheel'].forEach(evt => {

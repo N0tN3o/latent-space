@@ -1069,8 +1069,9 @@
                             const stJson = await st.json();
                             const pageHost = window.location.hostname;
                             const isLocalOrigin = pageHost === 'localhost' || pageHost === '127.0.0.1' || pageHost === '[::1]' || pageHost === '::1';
+                            const isSelfSignedHttps = window.location.protocol === 'https:';
                             const hasCustomRemote = stJson.lan_url && stJson.local_lan_url && stJson.lan_url !== stJson.local_lan_url;
-                            if (stJson.lan_url && (isLocalOrigin || hasCustomRemote)) {
+                            if (stJson.lan_url && (isLocalOrigin || hasCustomRemote || isSelfSignedHttps)) {
                                 lanBaseUrl = stJson.lan_url;
                             } else if (!isLocalOrigin && !hasCustomRemote) {
                                 lanBaseUrl = window.location.origin;

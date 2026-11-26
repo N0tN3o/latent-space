@@ -1642,9 +1642,19 @@
             }
 
             try {
+                const headers = { 'Content-Type': 'application/json' };
+                try {
+                    const tokRes = await fetch('/api/drawings/token?t=' + Date.now());
+                    if (tokRes.ok) {
+                        const tokData = await tokRes.json();
+                        if (tokData && tokData.upload_token) {
+                            headers['X-Upload-Token'] = tokData.upload_token;
+                        }
+                    }
+                } catch (_) {}
                 const res = await fetch('/api/drawings', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers,
                     body: JSON.stringify({ image: dataUrl, dwell_grid: dwellGrid })
                 });
                 if (pollId !== activePollId) return;
@@ -1695,7 +1705,9 @@
 
         async function pollPipelineUntilDone(submittedRunId, pollId) {
             const btn = document.getElementById('submitBtn');
-            for (let i = 0; i < 165; i++) {
+            let activeTicks = 0;
+            let queuedTicks = 0;
+            while (activeTicks < 165 && queuedTicks < 600) {
                 await new Promise(r => setTimeout(r, 1200));
                 if (pollId !== activePollId) return;
                 try {
@@ -1703,6 +1715,27 @@
                     if (pollId !== activePollId) return;
                     const state = await res.json();
                     const run = state.run || null;
+
+                    if (run && run.state === 'QUEUED') {
+                        queuedTicks += 1;
+                        const qPos = run.queue_position || state.queue_length || 1;
+                        setStatusKey('draw.status.queued', { pos: qPos });
+                        if (exhibitionMode && exStage === 'processing') {
+                            exLastProcStatusKey = 'draw.status.queued';
+                            exLastProcStatusVars = { pos: qPos };
+                            renderExhibitionStage();
+                        }
+                        continue;
+                    }
+                    activeTicks += 1;
+                    if (run && run.state === 'RUNNING') {
+                        setStatusKey('draw.status.running');
+                        if (exhibitionMode && exStage === 'processing' && exLastProcStatusKey !== 'draw.status.running') {
+                            exLastProcStatusKey = 'draw.status.running';
+                            exLastProcStatusVars = null;
+                            renderExhibitionStage();
+                        }
+                    }
 
                     let done = false;
                     let isError = false;

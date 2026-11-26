@@ -240,6 +240,7 @@ class TestCVAndGeometry(unittest.TestCase):
                 "model": "llama-3.3-70b-versatile",
                 "base_url": "https://api.groq.com/openai/v1",
                 "api_key": "",
+                "fallback_provider": "auto",
             },
             "poem": {
                 "provider": "openai_compatible",

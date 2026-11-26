@@ -1903,7 +1903,7 @@
                         <div class="field">
                             <label class="field-label" for="remoteServerUrlInput" data-i18n="admin.files.qr_url_label">Public base URL</label>
                             <input type="text" class="input mono" id="remoteServerUrlInput" placeholder="https://art.example.org">
-                            <p class="field-hint" data-i18n="admin.files.qr_url_hint">Optional. Replaces the detected LAN address in Gallery and PDF QR codes.</p>
+                            <p class="field-hint" data-i18n="admin.files.qr_url_hint">Optional. When blank, QR codes use the venue LAN HTTP address (visitors' phones must be on the same Wi-Fi network, or set a public tunnel URL here for cellular data).</p>
                         </div>
                         <button type="button" class="btn" onclick="saveServerUrlSetting()" data-i18n="admin.files.save_qr_url" style="margin-bottom:24px;">Save URL</button>
                     </div>
@@ -3166,9 +3166,14 @@
             ? `<span class="status"><span class="dot ok"></span>${p}</span>`
             : `<span class="status"><span class="dot off"></span>${p} <span class="text-muted">${escapeHtml(t('admin.ai.pkg_missing'))}</span></span>`
         ).join('');
+        const failovers = Array.isArray(aiAvailability.eligible_failovers) ? aiAvailability.eligible_failovers : [];
+        const failoverTags = failovers.length
+            ? failovers.map(f => `<span class="tag mono">${escapeHtml(f)}</span>`).join('')
+            : `<span class="text-muted">None configured</span>`;
         setHtml($('visionInstalledInfo'), `
             <div class="kv"><span class="kv-k">Ollama</span><span class="kv-v">${modelTags}</span></div>
-            <div class="kv"><span class="kv-k">Python</span><span class="kv-v">${pkgStatus}</span></div>`);
+            <div class="kv"><span class="kv-k">Python</span><span class="kv-v">${pkgStatus}</span></div>
+            <div class="kv"><span class="kv-k">Eligible failovers</span><span class="kv-v">${failoverTags}</span></div>`);
 
         $('saveVisionBtn').disabled = !visionEval.available;
         $('testVisionBtn').disabled = !visionEval.available;

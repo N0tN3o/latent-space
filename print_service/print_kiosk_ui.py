@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+import hmac
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ from PyQt6.QtGui import QFont, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -32,9 +34,17 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import config_manager
-from config_manager import load_settings, mark_file_printed, send_pdf_to_printer, validate_printer_name
+from config_manager import (
+    get_or_create_admin_password,
+    load_settings,
+    mark_file_printed,
+    send_pdf_to_printer,
+    validate_printer_name,
+)
 
 INACTIVITY_TIMEOUT_SEC = 60  # Reset search after 60s of no activity
+MAX_VISIBLE_RECORDS = 60
+_META_CACHE = {}  # meta_path_str -> (mtime_ns, archetype, poem)
 _ENGLISH_MONTHS = (
     "", "January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December",
@@ -78,14 +88,20 @@ class PrintRecord:
         self.archetype = ""
         self.poem = ""
         meta_path = self.path.with_suffix(".json")
-        if meta_path.exists():
-            try:
+        try:
+            st = meta_path.stat()
+            cache_key = str(meta_path)
+            cached = _META_CACHE.get(cache_key)
+            if cached and cached[0] == st.st_mtime_ns:
+                self.archetype, self.poem = cached[1], cached[2]
+            else:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 if isinstance(meta, dict):
                     self.archetype = str(meta.get("archetype") or "")
                     self.poem = str(meta.get("poem") or "")
-            except Exception:
-                pass
+                _META_CACHE[cache_key] = (st.st_mtime_ns, self.archetype, self.poem)
+        except Exception:
+            pass
 
     def _check_if_printed(self):
         return self.filename in _read_printed_set()
@@ -94,15 +110,29 @@ class PrintRecord:
         mark_file_printed(self.filename, extra_meta={"user_timestamp": self.timestamp.isoformat()})
         self.printed = True
 
-    def ensure_thumbnail_file(self) -> Path | None:
-        """Return path to sidecar PNG thumbnail, generating it atomically off the UI thread if missing."""
+    def get_existing_thumbnail_path(self) -> Path | None:
         png_path = self.path.with_suffix(".png")
         if png_path.exists():
             return png_path
+        page_png = self.path.with_name(f"{self.path.stem}.page.png")
+        if page_png.exists():
+            return page_png
+        return None
+
+    def ensure_thumbnail_file(self) -> Path | None:
+        """
+        Return path to sidecar scribble PNG thumbnail (`print_<id>.png`) if present,
+        otherwise render page 0 of the PDF to `print_<id>.page.png` without overwriting
+        the pipeline's cropped drawing thumbnail.
+        """
+        existing = self.get_existing_thumbnail_path()
+        if existing is not None:
+            return existing
         if not self.path.exists():
             return None
 
-        tmp_png = png_path.with_name(f".{png_path.name}.{os.getpid()}.{threading.get_ident()}.tmp.png")
+        page_png = self.path.with_name(f"{self.path.stem}.page.png")
+        tmp_png = page_png.with_name(f".{page_png.name}.{os.getpid()}.{threading.get_ident()}.tmp.png")
         try:
             try:
                 import fitz
@@ -112,8 +142,8 @@ class PrintRecord:
                         pix = doc[0].get_pixmap(dpi=120)
                         pix.save(str(tmp_png))
                         if tmp_png.exists():
-                            os.replace(str(tmp_png), str(png_path))
-                            return png_path
+                            os.replace(str(tmp_png), str(page_png))
+                            return page_png
                 finally:
                     doc.close()
             except Exception:
@@ -127,8 +157,8 @@ class PrintRecord:
                         check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     )
                     if tmp_png.exists():
-                        os.replace(str(tmp_png), str(png_path))
-                        return png_path
+                        os.replace(str(tmp_png), str(page_png))
+                        return page_png
             except Exception:
                 pass
 
@@ -140,8 +170,8 @@ class PrintRecord:
                         check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     )
                     if tmp_png.exists():
-                        os.replace(str(tmp_png), str(png_path))
-                        return png_path
+                        os.replace(str(tmp_png), str(page_png))
+                        return page_png
                 except Exception:
                     pass
         finally:
@@ -185,9 +215,9 @@ class PrintQueueItem(QWidget):
         placeholder = QPixmap(120, 160)
         placeholder.fill(Qt.GlobalColor.lightGray)
         self.thumb_label.setPixmap(placeholder)
-        png_path = record.path.with_suffix(".png")
-        if png_path.exists():
-            self.set_thumbnail_file(str(png_path))
+        existing_thumb = record.get_existing_thumbnail_path()
+        if existing_thumb is not None:
+            self.set_thumbnail_file(str(existing_thumb))
         layout.addWidget(self.thumb_label)
 
         info_layout = QVBoxLayout()
@@ -204,17 +234,25 @@ class PrintQueueItem(QWidget):
         info_layout.addStretch()
         layout.addLayout(info_layout, stretch=1)
 
-        print_btn = QPushButton("PRINT")
-        print_btn.setFont(QFont("Arial", 18, QFont.Weight.Bold))
-        print_btn.setFixedSize(150, 80)
-        print_btn.clicked.connect(lambda: self.print_clicked.emit(self.record))
-        layout.addWidget(print_btn)
+        self.print_btn = QPushButton("REPRINT (STAFF)" if record.printed else "PRINT")
+        self.print_btn.setFont(QFont("Arial", 16 if record.printed else 18, QFont.Weight.Bold))
+        self.print_btn.setFixedSize(160, 80)
+        self.print_btn.clicked.connect(lambda: self.print_clicked.emit(self.record))
+        layout.addWidget(self.print_btn)
         self.setLayout(layout)
         self.setStyleSheet(
             "QWidget { background-color: #2a2a2a; border: 2px solid #444; border-radius: 10px; margin: 5px; } "
             "QPushButton { background-color: #4CAF50; color: white; border: none; border-radius: 10px; } "
-            "QPushButton:hover { background-color: #45a049; }"
+            "QPushButton:hover { background-color: #45a049; } "
+            "QPushButton:disabled { background-color: #555; color: #aaa; }"
         )
+
+    def set_printing(self, in_progress: bool):
+        self.print_btn.setEnabled(not in_progress)
+        if in_progress:
+            self.print_btn.setText("PRINTING...")
+        else:
+            self.print_btn.setText("REPRINT (STAFF)" if self.record.printed else "PRINT")
 
     def set_thumbnail_file(self, png_path: str):
         pixmap = QPixmap(png_path)
@@ -240,8 +278,10 @@ class EnhancedPrintKioskUI(QMainWindow):
         self.filtered_records = []
         self._items_by_name = {}
         self._in_flight_thumbs = set()
+        self._printing_in_flight = set()
         self._display_sig = None
         self._thumb_pool = ThreadPoolExecutor(max_workers=2)
+        self._print_pool = ThreadPoolExecutor(max_workers=1)
 
         self.file_event_signal.connect(self.on_new_pdf)
         self.thumbnail_ready_signal.connect(self._on_thumbnail_ready)
@@ -392,7 +432,7 @@ class EnhancedPrintKioskUI(QMainWindow):
             item.set_thumbnail_file(png_path)
 
     def _schedule_thumbnail(self, record: PrintRecord):
-        if record.filename in self._in_flight_thumbs or record.path.with_suffix(".png").exists():
+        if record.filename in self._in_flight_thumbs or record.get_existing_thumbnail_path() is not None:
             return
         self._in_flight_thumbs.add(record.filename)
         def _worker():
@@ -401,7 +441,8 @@ class EnhancedPrintKioskUI(QMainWindow):
         self._thumb_pool.submit(_worker)
 
     def update_queue_display(self):
-        sig = tuple((r.filename, r.printed) for r in self.filtered_records)
+        visible_records = self.filtered_records[:MAX_VISIBLE_RECORDS]
+        sig = tuple((r.filename, r.printed, r.filename in self._printing_in_flight) for r in visible_records)
         if sig == self._display_sig:
             return
         self._display_sig = sig
@@ -417,11 +458,15 @@ class EnhancedPrintKioskUI(QMainWindow):
         filtered = len(self.filtered_records)
         if filtered == 0:
             self.queue_info.setText("No drawings found.")
+        elif filtered > len(visible_records):
+            self.queue_info.setText(f"Showing {len(visible_records)} most recent of {filtered} matching drawings ({total} total)")
         else:
             self.queue_info.setText(f"Showing {filtered} of {total} drawings")
 
-        for record in self.filtered_records:
+        for record in visible_records:
             item = PrintQueueItem(record)
+            if record.filename in self._printing_in_flight:
+                item.set_printing(True)
             item.print_clicked.connect(self.print_pdf)
             self._items_by_name[record.filename] = item
             self.queue_layout.addWidget(item)
@@ -433,18 +478,39 @@ class EnhancedPrintKioskUI(QMainWindow):
         QTimer.singleShot(300, self.refresh_queue)
 
     def print_pdf(self, record):
-        reply = QMessageBox.question(
-            self, "Confirm Print", f"Print drawing from {record.timestamp.strftime('%H:%M')}?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        if record.filename in self._printing_in_flight:
             return
+        if record.printed:
+            entered, ok = QInputDialog.getText(
+                self,
+                "Staff Passcode Required",
+                "This drawing has already been printed.\nEnter staff admin passcode to reprint:",
+                QLineEdit.EchoMode.Password,
+            )
+            if not ok or not entered:
+                return
+            expected_pw, _ = get_or_create_admin_password()
+            if not hmac.compare_digest(entered.strip(), expected_pw):
+                QMessageBox.warning(self, "Access Denied", "Invalid staff passcode.")
+                return
+        else:
+            reply = QMessageBox.question(
+                self, "Confirm Print", f"Print drawing from {record.timestamp.strftime('%H:%M')}?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
         try:
             printer_name = validate_printer_name(load_settings().get("printing", {}).get("printer_name", "default") or "default")
         except ValueError as e:
             QMessageBox.critical(self, "Error", f"Invalid printer configuration: {e}")
             return
+
+        self._printing_in_flight.add(record.filename)
+        item = self._items_by_name.get(record.filename)
+        if item is not None:
+            item.set_printing(True)
 
         def _print_worker():
             res = send_pdf_to_printer(
@@ -454,11 +520,16 @@ class EnhancedPrintKioskUI(QMainWindow):
             )
             self.print_finished_signal.emit(record, res)
 
-        self._thumb_pool.submit(_print_worker)
+        self._print_pool.submit(_print_worker)
 
     def _on_print_finished(self, record, res):
+        self._printing_in_flight.discard(record.filename)
+        item = self._items_by_name.get(record.filename)
+        if item is not None:
+            item.set_printing(False)
         if isinstance(res, dict) and res.get("status") == "success":
             record.printed = True
+            self._display_sig = None
             QMessageBox.information(self, "Success", "Print job sent!")
             self.update_queue_display()
         else:
@@ -470,6 +541,8 @@ class EnhancedPrintKioskUI(QMainWindow):
             self.observer.stop()
         if hasattr(self, "_thumb_pool"):
             self._thumb_pool.shutdown(wait=False)
+        if hasattr(self, "_print_pool"):
+            self._print_pool.shutdown(wait=False)
         event.accept()
 
 
