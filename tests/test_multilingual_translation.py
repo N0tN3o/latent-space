@@ -254,6 +254,97 @@ class TestMultilingualTranslationAndI18n(unittest.TestCase):
         self.assertEqual(arch_kwargs["temperature_override"], 0.1)
         self.assertIn("archetype title", arch_kwargs["system_prompt_override"].lower())
 
+        # Deterministic Hungarian surface polisher & suspect-output detector
+        raw_glitched = "A egyenes vonalok között keresed magadot, és skanálod a látóhatárt, mint egy kis rák."
+        polished = translator.polish_hungarian_text(raw_glitched)
+        self.assertEqual(
+            polished,
+            "Az egyenes vonalak között keresed magadat, és fürkészed a látóhatárt, mint egy tengerisün.",
+        )
+        self.assertEqual(translator.hungarian_quality_issues(polished), [])
+        self.assertTrue(translator.hungarian_quality_issues("A gaze lines in the void és nézedés."))
+
+        # Poem prompt builder anchors the poet in the drawing's physical gesture & spatial focus
+        poem_msg = run_analysis_watcher._build_poem_message(
+            "You linger near the centre.",
+            {
+                "label": "River Bend · Descending Sweep",
+                "raw_vision_label": "River Bend",
+                "geometry": {
+                    "summary_label": "Descending Sweep",
+                    "gesture_desc": "a long diagonal sweep from the upper left toward the lower right",
+                    "primary_zone": "center",
+                    "least_zone": "lower-left",
+                    "line_quality": "angular",
+                },
+            },
+        )
+        self.assertIn("a long diagonal sweep from the upper left toward the lower right", poem_msg)
+        self.assertIn("The eyes lingered most in the center; the lower left stayed empty.", poem_msg)
+        self.assertIn("River Bend", poem_msg)
+
+        # Structured persona fields and selectable poem styles (lyrical_4_6, two_stanza, quatrain, haiku)
+        from chat import LLMModel
+        a_llm = LLMModel("analysis")
+        p_llm = LLMModel("poem")
+        self.assertTrue(a_llm._purpose and a_llm._expertise and a_llm._capabilities and a_llm._restrictions and a_llm._additional)
+        self.assertTrue(p_llm._purpose and p_llm._expertise and p_llm._capabilities and p_llm._restrictions and p_llm._additional)
+        self.assertEqual(p_llm._poem_style, "lyrical_4_6")
+        self.assertIn("4 to 6 unrhymed lines", p_llm._build_system_prompt())
+        self.assertIn("Purpose:", a_llm._build_system_prompt())
+        self.assertIn("Restrictions:", a_llm._build_system_prompt())
+
+        p_llm.update_assistant(poem_style="two_stanza")
+        self.assertEqual(p_llm.get_config_dict()["poem_style"], "two_stanza")
+        self.assertIn("two-stanza", p_llm.get_config_dict()["description"].lower())
+        self.assertIn("two-stanza lyrical free-verse poem of 6 to 8 unrhymed lines", p_llm._build_system_prompt())
+
+        p_llm.update_assistant(poem_style="haiku")
+        self.assertEqual(p_llm.get_config_dict()["poem_style"], "haiku")
+        self.assertIn("5-7-5", p_llm.get_config_dict()["description"])
+        self.assertIn("5-7-5", p_llm.get_config_dict()["purpose"])
+        self.assertIn("strict 5-7-5 syllable rhythm", p_llm._build_system_prompt())
+        p_llm.update_assistant(poem_style="lyrical_4_6")
+
+        # Single-line multi-sentence poem output from small LLMs is split into verse lines
+        single_line_poem = (
+            "Branches grasp and release in the upper boughs, while a lone trunk stands steady. "
+            "Leaves rustle and settle into the quiet grass below. "
+            "Morning light rests on the open field."
+        )
+        cleaned_verse = translator._clean_translated_output(single_line_poem, is_poem=True, poem_style="lyrical_4_6")
+        self.assertGreaterEqual(len(cleaned_verse.splitlines()), 3)
+
+        # Print Kiosk (/kiosk) no longer renders the attribution footer; Admin uses custom .combo instead of <datalist>
+        kiosk_html = (PROJECT_ROOT / "web_ui" / "kiosk.html").read_text(encoding="utf-8")
+        self.assertNotIn("kioskAttribution", kiosk_html)
+        self.assertNotIn("renderKioskAttribution", kiosk_html)
+        admin_html = (PROJECT_ROOT / "web_ui" / "admin.html").read_text(encoding="utf-8")
+        self.assertNotIn('list="ollamaModelList"', admin_html)
+        self.assertIn('data-combo="vision"', admin_html)
+        self.assertIn('id="poem_style"', admin_html)
+
+        # Live pipeline stage progress callback updates monitoring_server._pipeline_state
+        with monitoring_server._pipeline_lock:
+            monitoring_server._pipeline_state["running"] = True
+            monitoring_server._pipeline_state["active_run_id"] = "stage_test_run"
+            monitoring_server._pipeline_state["stages"] = {}
+        try:
+            monitoring_server._on_pipeline_stage_progress("stage_test_run", "vision", "done", elapsed_sec=1.25)
+            monitoring_server._on_pipeline_stage_progress("stage_test_run", "analysis", "running")
+            with monitoring_server._pipeline_lock:
+                snap = monitoring_server._snapshot_pipeline_state_unlocked()
+            self.assertEqual(snap["current_stage"], "analysis")
+            self.assertEqual(snap["stages"]["vision"]["status"], "done")
+            self.assertEqual(snap["stages"]["vision"]["elapsed_sec"], 1.25)
+            self.assertEqual(snap["stages"]["analysis"]["status"], "running")
+        finally:
+            with monitoring_server._pipeline_lock:
+                monitoring_server._pipeline_state["running"] = False
+                monitoring_server._pipeline_state["active_run_id"] = None
+                monitoring_server._pipeline_state["current_stage"] = None
+                monitoring_server._pipeline_state["stages"] = {}
+
     def test_overlapped_pipeline_bilingual_storage_and_fault_tolerance(self):
         rid = "20261120_100000_001"
         snap = config_manager.SHARED_DIR / f"input_{rid}.png"

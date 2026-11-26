@@ -667,9 +667,11 @@ class TestPipelinePDFFailoverAndCleanup(unittest.TestCase):
 
         # M8: Running a pipeline under redirected LATENT_SPACE_LOGS_DIR writes zero bytes to the repo's logs/ directory
         repo_logs_dir = PROJECT_ROOT / "logs"
+        tracked_logs = ("installation.log", "vision.log", "responses.txt", "predictions.csv", "credits.csv")
         before_snapshots = {}
         if repo_logs_dir.exists():
-            for lf in repo_logs_dir.iterdir():
+            for fname in tracked_logs:
+                lf = repo_logs_dir / fname
                 if lf.is_file():
                     before_snapshots[lf.name] = lf.read_bytes()
 

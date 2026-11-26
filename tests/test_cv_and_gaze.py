@@ -131,7 +131,21 @@ class TestCVAndGeometry(unittest.TestCase):
         cv2.polylines(z_img, [pts], False, 0, 4)
         cv2.imwrite(str(zig_path), z_img)
         z_geom = analysis.analyze_stroke_geometry(str(zig_path))
-        self.assertIn("angular, darting, and electric", z_geom["description"])
+        self.assertIn("angular, with abrupt changes of direction", z_geom["description"])
+
+        # Elongated falling diagonal with small loops is classified as Descending Sweep (not generic Electric Drift)
+        diag_path = TEST_TMP / "diag_sweep.png"
+        d_img = np.ones((720, 1280), dtype=np.uint8) * 255
+        cv2.line(d_img, (120, 120), (1120, 580), 0, 4)
+        for k in range(7):
+            cx = 220 + k * 120
+            cy = int(120 + (cx - 120) * (460 / 1000.0))
+            cv2.circle(d_img, (cx, cy), 18, 0, 3)
+        cv2.imwrite(str(diag_path), d_img)
+        d_geom = analysis.analyze_stroke_geometry(str(diag_path))
+        self.assertEqual(d_geom["summary_label"], "Descending Sweep")
+        self.assertEqual(d_geom["direction"], "falling_diagonal")
+        self.assertNotIn("dense abstract expressionist webs", d_geom["description"])
 
     def test_luminance_235_dark_canvas_color_and_nested_bullseye(self):
         # 1. Luminance 235 strokes must agree across preprocess, analysis, and heatmap
@@ -404,6 +418,14 @@ class TestCVAndGeometry(unittest.TestCase):
         self.assertEqual(analysis.clean_vision_archetype_label("This abstract drawing looks like a bird in flight."), "Bird in Flight")
         self.assertEqual(analysis.clean_vision_archetype_label("A black and white line drawing of a tree."), "Tree")
         self.assertEqual(analysis.clean_vision_archetype_label("An abstract line drawing on a white background.", fallback="Electric Drift"), "Electric Drift")
+        # Degenerate VLM tokens ("ike", URLs, underscores, mixed alnum gibberish, unapproved 3-letter noise) fall back
+        self.assertEqual(analysis.clean_vision_archetype_label("ike", fallback="Woven Loops"), "Woven Loops")
+        self.assertEqual(analysis.clean_vision_archetype_label("xqz", fallback="Woven Loops"), "Woven Loops")
+        self.assertEqual(analysis.clean_vision_archetype_label("owl", fallback="Woven Loops"), "Owl")
+        self.assertEqual(analysis.clean_vision_archetype_label("visit www.example.com/art_12", fallback="Woven Loops"), "Woven Loops")
+        self.assertTrue(analysis.is_degenerate_vision_text("line_1__2__3 https://bad.example.org"))
+        self.assertTrue(analysis.is_degenerate_vision_text("ab12cd34 token"))
+        self.assertFalse(analysis.is_degenerate_vision_text("A sweeping curve crosses the upper left corner."))
 
         # 2. run_ollama_vision_analysis honors configured prompts, temperature, max_tokens, and badge_style
         img_path = TEST_TMP / "moondream_sample.png"
