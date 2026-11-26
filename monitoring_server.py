@@ -29,6 +29,7 @@ import queue
 import re
 import secrets
 import shutil
+import signal
 import ssl
 import struct
 import subprocess
@@ -37,6 +38,14 @@ import threading
 import time
 from urllib.parse import parse_qs, unquote, urlparse
 import urllib.request
+
+for _stream_name in ("stdout", "stderr"):
+    _stream = getattr(sys, _stream_name, None)
+    if _stream is not None and hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(errors="replace")
+        except Exception:
+            pass
 
 try:
     import psutil
@@ -55,7 +64,10 @@ from config_manager import (
     atomic_write_bytes,
     ensure_directories,
     ensure_lan_tls_cert,
+    fast_local_ollama_url,
+    get_ca_cert_fingerprint,
     get_configured_ollama_host,
+    get_daily_quota_usage,
     get_https_enabled,
     get_https_port,
     get_lan_ip,
@@ -63,6 +75,7 @@ from config_manager import (
     get_public_base_url,
     get_server_host,
     get_server_port,
+    is_thinking_model_name,
     load_settings,
     mark_file_printed,
     mask_settings_secrets,
@@ -74,16 +87,21 @@ from config_manager import (
     update_content_json,
     update_settings_section,
     validate_printer_name,
+    validate_translation_data,
     write_content_json,
 )
 from qr_utils import qr_svg
 
 ensure_directories()
 
+_SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_]{4,64}$")
+PIPELINE_RUN_DEADLINE_SEC = 150.0
+
 try:
     from analysis import analyze_drawing, get_ai_availability
     from chat import AIGenerationError, LLMModel
     from run_analysis_watcher import (
+        PIPELINE_RUN_DEADLINE_SEC,
         PipelineStageError,
         cleanup_orphaned_temp_files,
         ensure_localized_print_pdf,
@@ -163,17 +181,25 @@ SYNC_PIPELINE_TIMEOUT_SEC = 185.0
 REQUEST_SOCKET_TIMEOUT_SEC = 30.0
 ADMIN_SESSION_COOKIE = "ls_admin_session"
 ADMIN_SESSION_TTL_SEC = 12 * 3600
+ADMIN_SESSION_IDLE_TTL_SEC = 30 * 60
 MAX_ADMIN_SESSIONS = 128
 LOGIN_WINDOW_SEC = 300
 LOGIN_MAX_FAILURES = 8
 UPLOAD_WINDOW_SEC = 60
-UPLOAD_MAX_PER_WINDOW = 15
+UPLOAD_MAX_PER_WINDOW = 4
+GLOBAL_UPLOAD_MAX_PER_WINDOW = 20
+UPLOAD_TOKEN_TTL_SEC = 900
+MAX_UPLOAD_TOKENS = 512
 MAX_TRACKED_IPS = 4096
 
 _auth_lock = threading.Lock()
-_admin_sessions = {}     # token -> expiry_monotonic
+_admin_sessions = {}     # token -> {"abs_exp": float, "idle_exp": float} (or float for legacy callers)
 _login_failures = {}     # client_ip -> [monotonic_timestamps]
 _upload_timestamps = {}  # client_ip -> [monotonic_timestamps]
+_global_upload_timestamps = []  # [monotonic_timestamps]
+_upload_tokens = {}      # token -> expiry_monotonic
+_active_client_ips = {}  # run_id -> client_ip
+_queued_run_ids = []     # ordered list of queued run_ids
 
 ALLOWED_AI_CONFIG_KEYS = {
     "name", "description", "purpose", "expertise", "capabilities",
@@ -184,12 +210,25 @@ ALLOWED_AI_CONFIG_KEYS = {
 }
 
 
+def _session_expiries(entry) -> tuple:
+    if isinstance(entry, dict):
+        abs_exp = float(entry.get("abs_exp", 0.0))
+        idle_exp = float(entry.get("idle_exp", abs_exp))
+        return abs_exp, idle_exp
+    val = float(entry or 0.0)
+    return val, val
+
+
 def _prune_sessions_unlocked(now: float):
-    expired = [tok for tok, exp in _admin_sessions.items() if exp <= now]
+    expired = []
+    for tok, entry in _admin_sessions.items():
+        abs_exp, idle_exp = _session_expiries(entry)
+        if abs_exp <= now or idle_exp <= now:
+            expired.append(tok)
     for tok in expired:
         _admin_sessions.pop(tok, None)
     if len(_admin_sessions) > MAX_ADMIN_SESSIONS:
-        oldest = sorted(_admin_sessions.items(), key=lambda kv: kv[1])
+        oldest = sorted(_admin_sessions.items(), key=lambda kv: _session_expiries(kv[1])[1])
         for tok, _ in oldest[: len(_admin_sessions) - MAX_ADMIN_SESSIONS]:
             _admin_sessions.pop(tok, None)
 
@@ -199,21 +238,32 @@ def _create_admin_session() -> str:
     token = secrets.token_urlsafe(32)
     with _auth_lock:
         _prune_sessions_unlocked(now)
-        _admin_sessions[token] = now + ADMIN_SESSION_TTL_SEC
+        _admin_sessions[token] = {
+            "abs_exp": now + ADMIN_SESSION_TTL_SEC,
+            "idle_exp": now + ADMIN_SESSION_IDLE_TTL_SEC,
+        }
     return token
 
 
-def _validate_admin_session(token: str) -> bool:
+def _validate_admin_session(token: str, touch: bool = True) -> bool:
     if not token:
         return False
     now = time.monotonic()
     with _auth_lock:
         _prune_sessions_unlocked(now)
-        exp = _admin_sessions.get(token)
-        if exp is None or exp <= now:
+        entry = _admin_sessions.get(token)
+        if entry is None:
+            return False
+        abs_exp, idle_exp = _session_expiries(entry)
+        if abs_exp <= now or idle_exp <= now:
             _admin_sessions.pop(token, None)
             return False
-        _admin_sessions[token] = now + ADMIN_SESSION_TTL_SEC
+        if touch:
+            new_idle = min(abs_exp, now + ADMIN_SESSION_IDLE_TTL_SEC)
+            if isinstance(entry, dict):
+                entry["idle_exp"] = new_idle
+            else:
+                _admin_sessions[token] = {"abs_exp": abs_exp, "idle_exp": new_idle}
         return True
 
 
@@ -221,6 +271,35 @@ def _revoke_admin_session(token: str):
     if token:
         with _auth_lock:
             _admin_sessions.pop(token, None)
+
+
+def _create_upload_token() -> str:
+    now = time.monotonic()
+    tok = secrets.token_urlsafe(24)
+    with _auth_lock:
+        expired = [k for k, exp in _upload_tokens.items() if exp <= now]
+        for k in expired:
+            _upload_tokens.pop(k, None)
+        if len(_upload_tokens) >= MAX_UPLOAD_TOKENS:
+            oldest = sorted(_upload_tokens.items(), key=lambda kv: kv[1])
+            for k, _ in oldest[: len(_upload_tokens) - MAX_UPLOAD_TOKENS + 1]:
+                _upload_tokens.pop(k, None)
+        _upload_tokens[tok] = now + UPLOAD_TOKEN_TTL_SEC
+    return tok
+
+
+def _validate_upload_token(token: str, consume: bool = False) -> bool:
+    if not token:
+        return False
+    now = time.monotonic()
+    with _auth_lock:
+        exp = _upload_tokens.get(token)
+        if exp is None or exp <= now:
+            _upload_tokens.pop(token, None)
+            return False
+        if consume:
+            _upload_tokens.pop(token, None)
+        return True
 
 
 def _prune_ip_bucket_unlocked(bucket: dict, window_sec: float, now: float):
@@ -266,13 +345,20 @@ def _clear_login_failures(client_ip: str):
 def _check_and_record_upload_rate_limit(client_ip: str) -> tuple:
     now = time.monotonic()
     with _auth_lock:
+        if not _upload_timestamps:
+            _global_upload_timestamps.clear()
         _prune_ip_bucket_unlocked(_upload_timestamps, UPLOAD_WINDOW_SEC, now)
+        _global_upload_timestamps[:] = [ts for ts in _global_upload_timestamps if (now - ts) < UPLOAD_WINDOW_SEC]
         recent = _upload_timestamps.get(client_ip, [])
         if len(recent) >= UPLOAD_MAX_PER_WINDOW:
             retry_after = max(1, int(UPLOAD_WINDOW_SEC - (now - recent[0])))
             return False, retry_after
+        if len(_global_upload_timestamps) >= GLOBAL_UPLOAD_MAX_PER_WINDOW:
+            retry_after = max(1, int(UPLOAD_WINDOW_SEC - (now - _global_upload_timestamps[0])))
+            return False, retry_after
         recent.append(now)
         _upload_timestamps[client_ip] = recent
+        _global_upload_timestamps.append(now)
         return True, 0
 
 
@@ -315,7 +401,11 @@ def _pipeline_worker_loop():
     while True:
         item = _pipeline_queue.get()
         rid, snap_path, done_event, result_holder, dwell_grid, cancel_event = item
+        watchdog = None
         try:
+            with _pipeline_lock:
+                if rid in _queued_run_ids:
+                    _queued_run_ids.remove(rid)
             if cancel_event is not None and cancel_event.is_set():
                 if snap_path and Path(snap_path).name.startswith("input_"):
                     try:
@@ -348,15 +438,28 @@ def _pipeline_worker_loop():
                 _pipeline_state["last_error"] = None
                 _record_run_status_unlocked(rid, state="RUNNING", status="running")
 
+            eff_cancel = cancel_event if cancel_event is not None else threading.Event()
+            run_deadline = time.monotonic() + float(PIPELINE_RUN_DEADLINE_SEC)
+            watchdog = threading.Timer(float(PIPELINE_RUN_DEADLINE_SEC), eff_cancel.set)
+            watchdog.daemon = True
+            watchdog.start()
+
             pipeline_kwargs = {
                 "run_id": rid,
                 "snapshot_path": snap_path,
                 "raise_on_error": True,
                 "dwell_grid": dwell_grid,
             }
-            if cancel_event is not None:
-                pipeline_kwargs["cancel_event"] = cancel_event
-            ok = run_analysis_pipeline(**pipeline_kwargs)
+            try:
+                ok = run_analysis_pipeline(
+                    **pipeline_kwargs,
+                    cancel_event=eff_cancel,
+                    deadline=run_deadline,
+                )
+            except TypeError:
+                if cancel_event is not None:
+                    pipeline_kwargs["cancel_event"] = cancel_event
+                ok = run_analysis_pipeline(**pipeline_kwargs)
             with _pipeline_lock:
                 _pipeline_state["last_run"] = datetime.now().isoformat()
                 if not ok:
@@ -404,8 +507,16 @@ def _pipeline_worker_loop():
                 result_holder["error"] = str(exc)
 
         finally:
+            if watchdog is not None:
+                try:
+                    watchdog.cancel()
+                except Exception:
+                    pass
             _pipeline_queue.task_done()
             with _pipeline_lock:
+                _active_client_ips.pop(rid, None)
+                if rid in _queued_run_ids:
+                    _queued_run_ids.remove(rid)
                 _pipeline_state["running"] = False
                 _pipeline_state["active_run_id"] = None
                 qlen = _pipeline_queue.qsize()
@@ -440,6 +551,7 @@ def enqueue_pipeline_job(
     result_holder: dict = None,
     dwell_grid=None,
     cancel_event: threading.Event = None,
+    client_ip: str = None,
 ) -> tuple:
     """Snapshot drawing input to input_{run_id}.png and enqueue into bounded FIFO worker queue."""
     if not AI_AVAILABLE:
@@ -450,6 +562,8 @@ def enqueue_pipeline_job(
     with _pipeline_lock:
         if _pipeline_queue.qsize() >= MAX_PIPELINE_QUEUE_SIZE:
             raise QueueFullError("Analysis queue is full. Please try again in a moment.")
+        if client_ip and client_ip in _active_client_ips.values():
+            raise QueueFullError("A drawing from your device is already queued or being analyzed.")
 
         if image_bytes is not None:
             snap = config_manager.SHARED_DIR / f"input_{rid}.png"
@@ -457,6 +571,10 @@ def enqueue_pipeline_job(
         else:
             _, snap = snapshot_drawing_input(source_path or (config_manager.SHARED_DIR / "image.png"), run_id=rid)
 
+        if client_ip:
+            _active_client_ips[rid] = client_ip
+        if rid not in _queued_run_ids:
+            _queued_run_ids.append(rid)
         _record_run_status_unlocked(rid, state="QUEUED", status="queued")
         _pipeline_queue.put((rid, str(snap), done_event, result_holder, dwell_grid, cancel_event))
         qlen = _pipeline_queue.qsize()
@@ -531,12 +649,7 @@ def get_service_status(service_name: str, cmdlines: list = None) -> str:
 
 def _fast_local_ollama_url(host: str) -> str:
     """Replace 'http://localhost:' with 'http://127.0.0.1:' to avoid Windows 2s IPv6 ::1 refusal stalls."""
-    h = (host or "").strip().rstrip("/")
-    if h.lower().startswith("http://localhost:"):
-        return "http://127.0.0.1:" + h[len("http://localhost:"):]
-    if h.lower() == "http://localhost":
-        return "http://127.0.0.1"
-    return h
+    return fast_local_ollama_url(host)
 
 
 def _get_memory_percent_stdlib():
@@ -1245,6 +1358,17 @@ def _sync_attributions_to_content_json(attr_data: dict):
         current["attributions"] = attr_data
         return current
     update_content_json(_apply)
+    # Invalidate cached localized PDFs so subsequent /api/pdf/<run_id>/<lang> renders include the updated attribution footer
+    try:
+        lang_root = config_manager.DOCS_DIR / "lang"
+        if lang_root.exists():
+            for cached_pdf in lang_root.rglob("print_*.pdf"):
+                try:
+                    cached_pdf.unlink(missing_ok=True)
+                except OSError:
+                    pass
+    except Exception:
+        pass
 
 
 def _evict_deleted_prints_and_sync_gallery(deleted_names: list):
@@ -1494,10 +1618,59 @@ def _resolve_print_datetime(pdf_file: Path, mtime: float = None, meta: dict = No
         return datetime.now()
 
 
-def api_list_prints() -> list:
+def prune_expired_prints(retention_days: int = None) -> int:
+    """Prune archived print artifacts older than retention_days when retention_days > 0."""
+    if retention_days is None:
+        try:
+            retention_days = int(load_settings().get("printing", {}).get("retention_days", 0) or 0)
+        except (TypeError, ValueError):
+            retention_days = 0
+    if retention_days <= 0:
+        return 0
+    docs_dir = config_manager.DOCS_DIR
+    shared_dir = config_manager.SHARED_DIR
+    if not docs_dir.exists():
+        return 0
+    cutoff = datetime.now() - timedelta(days=int(retention_days))
+    deleted_names = []
+    for pdf_file in docs_dir.glob("print_*.pdf"):
+        try:
+            if _resolve_print_datetime(pdf_file) < cutoff:
+                stem = pdf_file.stem
+                try:
+                    pdf_file.unlink()
+                except OSError:
+                    continue
+                deleted_names.append(pdf_file.name)
+                for suffix in (".png", ".json", ".heatmap.png", ".page.png"):
+                    try:
+                        pdf_file.with_name(f"{stem}{suffix}").unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                for lc in config_manager.SUPPORTED_LANGUAGES:
+                    try:
+                        (docs_dir / "lang" / lc / f"{stem}.pdf").unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                if stem.startswith("print_"):
+                    rid = stem[len("print_"):]
+                    try:
+                        (shared_dir / f"output_{rid}.mp3").unlink(missing_ok=True)
+                    except OSError:
+                        pass
+        except Exception:
+            pass
+    if deleted_names:
+        remove_from_print_history(deleted_names)
+        _evict_deleted_prints_and_sync_gallery(deleted_names)
+    return len(deleted_names)
+
+
+def api_list_prints(limit: int = None, offset: int = 0, summary_only: bool = False) -> list:
     docs_dir = config_manager.DOCS_DIR
     if not docs_dir.exists():
         return []
+    prune_expired_prints()
     printed_set = _get_printed_set()
     entries = []
     for f in docs_dir.glob("print_*.pdf"):
@@ -1510,6 +1683,10 @@ def api_list_prints() -> list:
             continue
 
     entries.sort(key=lambda item: item[0], reverse=True)
+    if offset and offset > 0:
+        entries = entries[offset:]
+    if limit is not None and limit > 0:
+        entries = entries[:limit]
     files = []
     today_date = datetime.now().date()
     yesterday_date = today_date - timedelta(days=1)
@@ -1523,7 +1700,7 @@ def api_list_prints() -> list:
         langs = meta.get("languages")
         if not isinstance(langs, list) or not langs:
             langs = list(translations.keys()) if translations else ["en"]
-        files.append({
+        entry = {
             "name": f.name,
             "run_id": run_id,
             "pdf_url": f"/shared_output/docs/{f.name}",
@@ -1542,11 +1719,13 @@ def api_list_prints() -> list:
             "fractalDimension": meta.get("fractalDimension"),
             "spatialEntropy": meta.get("spatialEntropy"),
             "poem": meta.get("poem", ""),
-            "psychoanalysis": meta.get("psychoanalysis", ""),
-            "translations": translations,
             "languages": langs,
             "print_language": meta.get("printLanguage", "en"),
-        })
+        }
+        if not summary_only:
+            entry["psychoanalysis"] = meta.get("psychoanalysis", "")
+            entry["translations"] = translations
+        files.append(entry)
     return files
 
 
@@ -1625,18 +1804,40 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         if len(args) >= 2 and str(args[1]).startswith(("4", "5")):
             super().log_message(fmt, *args)
 
+    def _is_trusted_proxy(self) -> bool:
+        return os.environ.get("LATENT_SPACE_TRUST_PROXY") == "1" or any(
+            os.environ.get(var) for var in ("RENDER", "SPACE_ID", "RAILWAY_ENVIRONMENT", "FLY_APP_NAME")
+        )
+
+    def _is_https_request(self) -> bool:
+        if isinstance(getattr(self, "request", None), ssl.SSLSocket) or getattr(getattr(self, "request", None), "_is_tls", False):
+            return True
+        if self._is_trusted_proxy():
+            xfp = (self.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip().lower()
+            if xfp == "https":
+                return True
+        return False
+
     def end_headers(self):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "SAMEORIGIN")
         self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
+        if self._is_https_request():
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
+        if not getattr(self, "_custom_csp_sent", False):
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+                "media-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; "
+                "worker-src 'self' blob:; frame-ancestors 'self'",
+            )
         super().end_headers()
 
     def _get_client_ip(self) -> str:
         peer = self.client_address[0] if self.client_address else "unknown"
-        trust_proxy = os.environ.get("LATENT_SPACE_TRUST_PROXY") == "1" or any(
-            os.environ.get(var) for var in ("RENDER", "SPACE_ID", "RAILWAY_ENVIRONMENT", "FLY_APP_NAME")
-        )
-        if trust_proxy:
+        if self._is_trusted_proxy():
             if os.environ.get("FLY_APP_NAME"):
                 fly_vals = [v.strip() for v in (self.headers.get_all("Fly-Client-IP") or []) if v.strip()]
                 if fly_vals:
@@ -1664,7 +1865,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         except Exception:
             return ""
 
-    def _check_admin_auth_state(self) -> tuple:
+    def _check_admin_auth_state(self, touch: bool = True) -> tuple:
         expected_pw, _ = get_or_create_admin_password()
         auth_header = (self.headers.get("Authorization") or "").strip()
         bearer_token = ""
@@ -1672,7 +1873,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             bearer_token = auth_header[7:].strip()
         header_token = (self.headers.get("X-Admin-Token") or "").strip() or bearer_token
         if header_token:
-            if _validate_admin_session(header_token):
+            if _validate_admin_session(header_token, touch=touch):
                 return True, 0
             client_ip = self._get_client_ip()
             allowed, retry_after = _check_login_rate_limit(client_ip)
@@ -1684,16 +1885,16 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             _record_login_failure(client_ip)
             return False, 0
         cookie_token = self._get_session_cookie_token()
-        if cookie_token and _validate_admin_session(cookie_token):
+        if cookie_token and _validate_admin_session(cookie_token, touch=touch):
             return True, 0
         return False, 0
 
-    def _is_admin_authenticated(self) -> bool:
-        ok, _ = self._check_admin_auth_state()
+    def _is_admin_authenticated(self, touch: bool = True) -> bool:
+        ok, _ = self._check_admin_auth_state(touch=touch)
         return ok
 
-    def _require_admin(self) -> bool:
-        ok, retry_after = self._check_admin_auth_state()
+    def _require_admin(self, touch: bool = True) -> bool:
+        ok, retry_after = self._check_admin_auth_state(touch=touch)
         if ok:
             return True
         if retry_after > 0:
@@ -1814,6 +2015,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             self.send_response(206 if is_partial else 200)
             self.send_header("Content-Type", ctype)
             if suffix == ".svg":
+                self._custom_csp_sent = True
                 self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox")
             self.send_header("Accept-Ranges", "bytes")
             if is_partial:
@@ -1933,6 +2135,18 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             return self._send_file(PROJECT_DIR / "index.html")
         if path in ("/admin", "/admin.html"):
+            if (
+                _active_https_port > 0
+                and not self._is_https_request()
+                and self._get_client_ip() not in ("127.0.0.1", "::1", "localhost")
+            ):
+                host_hdr = (self.headers.get("Host") or "").split(":", 1)[0].strip() or _get_lan_ip()
+                target_url = f"https://{host_hdr}:{_active_https_port}/admin"
+                self.send_response(307)
+                self.send_header("Location", target_url)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
             return self._send_file(config_manager.WEB_UI_DIR / "admin.html")
         if path in ("/draw", "/draw.html"):
             return self._send_file(config_manager.WEB_UI_DIR / "draw.html")
@@ -1992,6 +2206,9 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             rel_parts = Path(rel).parts
             if not rel or any(part.startswith(".") for part in rel_parts):
                 return self._send_text("Forbidden", status=403)
+            leaf_low = rel_parts[-1].lower()
+            if leaf_low == "print_history.json" or leaf_low.startswith(("input_", "image_processed_", "heatmap_", "dwell_grid")):
+                return self._send_text("Forbidden", status=403)
             shared_root = config_manager.SHARED_DIR.resolve()
             target = (shared_root / rel).resolve()
             if not target.is_relative_to(shared_root):
@@ -2016,18 +2233,35 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
 
         # Public auth & gallery metadata routes
         if path == "/api/auth/status":
-            return self._send_json({"authenticated": self._is_admin_authenticated()})
+            return self._send_json({"authenticated": self._is_admin_authenticated(touch=False)})
+
+        if path == "/api/drawings/token":
+            return self._send_json({
+                "status": "success",
+                "upload_token": _create_upload_token(),
+                "expires_in": UPLOAD_TOKEN_TTL_SEC,
+            })
 
         if path.startswith("/api/pdf/"):
-            rest = path[len("/api/pdf/"):].strip("/")
+            raw_tail = path[len("/api/pdf/"):]
+            if "\\" in raw_tail:
+                return self._send_text("Bad Request", status=400)
+            rest = raw_tail.strip("/")
             parts = rest.split("/")
             if len(parts) != 2:
                 return self._send_text("Bad Request", status=400)
             req_rid, req_lang = parts[0].strip(), parts[1].strip().lower()
             if req_lang not in config_manager.ALLOWED_LANGUAGES:
                 return self._send_text("Unsupported language", status=400)
+            if not _SAFE_RUN_ID_RE.match(req_rid):
+                if not AI_AVAILABLE:
+                    return self._send_text("Bad Request", status=400)
+                return self._send_text("Print PDF not found", status=404)
             if not AI_AVAILABLE:
-                fallback_pdf = config_manager.DOCS_DIR / f"print_{req_rid}.pdf"
+                docs_root = config_manager.DOCS_DIR.resolve()
+                fallback_pdf = (docs_root / f"print_{req_rid}.pdf").resolve()
+                if not fallback_pdf.is_relative_to(docs_root):
+                    return self._send_text("Bad Request", status=400)
                 if fallback_pdf.exists():
                     return self._send_file(fallback_pdf, cacheable=True)
                 return self._send_text("Not Found", status=404)
@@ -2062,22 +2296,51 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             port = get_server_port(settings)
             lan_ip = _get_lan_ip()
             tr_cfg = settings.get("translation", {})
+            req_tok = bool(
+                settings.get("server", {}).get("require_upload_token", False)
+                or os.environ.get("LATENT_SPACE_REQUIRE_UPLOAD_TOKEN") == "1"
+            )
             return self._send_json({
                 "lan_url": get_public_base_url(settings, lan_ip=lan_ip),
                 "local_lan_url": f"http://{lan_ip}:{port}",
                 "https_url": f"https://{lan_ip}:{_active_https_port}" if _active_https_port else "",
                 "https_port": _active_https_port,
+                "ca_fingerprint": get_ca_cert_fingerprint(_active_ca_cert_path),
+                "require_upload_token": req_tok,
                 "supported_languages": list(config_manager.SUPPORTED_LANGUAGES),
                 "translation_enabled": bool(tr_cfg.get("enabled", True) and tr_cfg.get("mode", "local_nmt") != "off"),
             })
 
         if path == "/api/pipeline/status":
             req_run_id = (query.get("run_id") or [""])[0]
+            is_admin = self._is_admin_authenticated(touch=False)
             with _pipeline_lock:
                 snap = dict(_pipeline_state)
                 snap["queue_length"] = _pipeline_queue.qsize()
                 if req_run_id:
-                    snap["run"] = _run_statuses.get(req_run_id)
+                    run_entry = _run_statuses.get(req_run_id)
+                    if run_entry:
+                        run_copy = dict(run_entry)
+                        if req_run_id in _queued_run_ids:
+                            run_copy["queue_position"] = _queued_run_ids.index(req_run_id) + 1
+                        elif run_copy.get("state") == "RUNNING":
+                            run_copy["queue_position"] = 0
+                        snap["run"] = run_copy
+                    else:
+                        snap["run"] = None
+            if not is_admin:
+                def _public_err_msg(code):
+                    if not code:
+                        return None
+                    if code == "ERR_DRAWING_BLANK":
+                        return "Drawing appears blank or has too few strokes."
+                    if code == "ERR_PIPELINE_TIMEOUT":
+                        return "Analysis timed out."
+                    return "Pipeline stage failed."
+                if snap.get("last_error"):
+                    snap["last_error"] = _public_err_msg(snap.get("last_error_code"))
+                if isinstance(snap.get("run"), dict) and snap["run"].get("error"):
+                    snap["run"]["error"] = _public_err_msg(snap["run"].get("error_code"))
             return self._send_json(snap)
 
         if path == "/api/settings/attributions":
@@ -2085,7 +2348,7 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/settings/printing":
             printing_cfg = load_settings().get("printing", {})
-            if self._is_admin_authenticated():
+            if self._is_admin_authenticated(touch=False):
                 return self._send_json(printing_cfg)
             return self._send_json({
                 "auto_print": bool(printing_cfg.get("auto_print", False)),
@@ -2093,11 +2356,36 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             })
 
         if path == "/api/files/prints":
-            return self._send_json(api_list_prints())
+            try:
+                limit = int((query.get("limit") or ["0"])[0])
+            except (TypeError, ValueError):
+                limit = 0
+            try:
+                offset = max(0, int((query.get("offset") or ["0"])[0]))
+            except (TypeError, ValueError):
+                offset = 0
+            summary_only = (query.get("summary") or [""])[0] == "1"
+            prints_list = api_list_prints(
+                limit=limit if limit > 0 else None,
+                offset=offset,
+                summary_only=summary_only,
+            )
+            top_ts = prints_list[0]["timestamp"] if prints_list else 0
+            printed_cnt = sum(1 for p in prints_list if p.get("printed"))
+            etag = f'W/"prints-{len(prints_list)}-{printed_cnt}-{top_ts}-{offset}-{limit}-{int(summary_only)}"'
+            if self.headers.get("If-None-Match") == etag:
+                try:
+                    self.send_response(304)
+                    self.send_header("ETag", etag)
+                    self.end_headers()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, ssl.SSLError):
+                    pass
+                return
+            return self._send_json(prints_list, extra_headers=[("ETag", etag)])
 
         # Admin-protected GET routes
         if path in ("/api/status", "/api/monitoring"):
-            if not self._require_admin():
+            if not self._require_admin(touch=False):
                 return
             return self._send_json(api_get_status())
 
@@ -2175,7 +2463,9 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         except (InvalidJSONError, ValueError, TypeError) as e:
             self._send_json({"status": "error", "error": str(e)}, status=400)
         except Exception as e:
-            self._send_json({"status": "error", "error": str(e)}, status=500)
+            print(f"[monitoring_server] Unexpected error on POST {self.path}: {e}")
+            err_msg = str(e) if self._is_admin_authenticated(touch=False) else "Internal server error"
+            self._send_json({"status": "error", "error": err_msg}, status=500)
 
     def _handle_post(self):
         parsed = urlparse(self.path)
@@ -2201,9 +2491,10 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                 return self._send_json({"status": "error", "error": "Invalid admin password"}, status=401)
             _clear_login_failures(client_ip)
             session_tok = _create_admin_session()
+            secure_attr = "; Secure" if self._is_https_request() else ""
             cookie_val = (
                 f"{ADMIN_SESSION_COOKIE}={session_tok}; HttpOnly; SameSite=Strict; Path=/; "
-                f"Max-Age={ADMIN_SESSION_TTL_SEC}"
+                f"Max-Age={ADMIN_SESSION_TTL_SEC}{secure_attr}"
             )
             return self._send_json(
                 {"status": "success", "authenticated": True},
@@ -2214,14 +2505,39 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/auth/logout":
             cookie_tok = self._get_session_cookie_token()
             _revoke_admin_session(cookie_tok)
-            expired_cookie = f"{ADMIN_SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
+            secure_attr = "; Secure" if self._is_https_request() else ""
+            expired_cookie = f"{ADMIN_SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0{secure_attr}"
             return self._send_json(
                 {"status": "success", "authenticated": False},
                 status=200,
                 extra_headers=[("Set-Cookie", expired_cookie)],
             )
 
+        if path == "/api/drawings/token":
+            return self._send_json({
+                "status": "success",
+                "upload_token": _create_upload_token(),
+                "expires_in": UPLOAD_TOKEN_TTL_SEC,
+            })
+
         if path == "/api/drawings":
+            settings = load_settings()
+            require_tok = bool(
+                settings.get("server", {}).get("require_upload_token", False)
+                or os.environ.get("LATENT_SPACE_REQUIRE_UPLOAD_TOKEN") == "1"
+            )
+            header_upload_tok = (self.headers.get("X-Upload-Token") or "").strip()
+            if require_tok and not self._is_admin_authenticated(touch=False):
+                if not _validate_upload_token(header_upload_tok, consume=True):
+                    return self._send_json(
+                        {
+                            "status": "error",
+                            "error_code": "ERR_UPLOAD_TOKEN_REQUIRED",
+                            "error": "Valid upload token required to submit drawings.",
+                        },
+                        status=401,
+                    )
+
             client_ip = self._get_client_ip()
             allowed, retry_after = _check_and_record_upload_rate_limit(client_ip)
             if not allowed:
@@ -2273,13 +2589,23 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             cancel_event = threading.Event() if is_sync else None
             result_holder = {} if is_sync else None
 
-            rid, qlen = enqueue_pipeline_job(
-                image_bytes=img_bytes,
-                done_event=done_event,
-                result_holder=result_holder,
-                dwell_grid=dwell_grid,
-                cancel_event=cancel_event,
-            )
+            try:
+                rid, qlen = enqueue_pipeline_job(
+                    image_bytes=img_bytes,
+                    done_event=done_event,
+                    result_holder=result_holder,
+                    dwell_grid=dwell_grid,
+                    cancel_event=cancel_event,
+                    client_ip=client_ip,
+                )
+            except TypeError:
+                rid, qlen = enqueue_pipeline_job(
+                    image_bytes=img_bytes,
+                    done_event=done_event,
+                    result_holder=result_holder,
+                    dwell_grid=dwell_grid,
+                    cancel_event=cancel_event,
+                )
             write_live_image_and_mark_handled(target_path, img_bytes)
 
             if is_sync:
@@ -2375,11 +2701,23 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             if not AI_AVAILABLE:
                 return self._send_json({"status": "error", "error": "Translation module unavailable"}, 503)
             data = self._read_json_body()
+            unknown_keys = set(data.keys()) - {"local_nmt_model", "local_nmt_threads"}
+            if unknown_keys:
+                return self._send_json({"status": "error", "error": f"Unknown preload keys: {sorted(unknown_keys)}"}, 400)
+            val_payload = {}
+            if "local_nmt_model" in data and data["local_nmt_model"] is not None:
+                val_payload["local_nmt_model"] = data["local_nmt_model"]
+            if "local_nmt_threads" in data and data["local_nmt_threads"] is not None:
+                val_payload["local_nmt_threads"] = data["local_nmt_threads"]
+            if val_payload:
+                validate_translation_data(val_payload)
             model_id = data.get("local_nmt_model")
             threads = data.get("local_nmt_threads")
             try:
                 res = preload_local_nmt_model(model_id=model_id, num_threads=threads)
                 return self._send_json(res)
+            except ValueError as ve:
+                return self._send_json({"status": "error", "error": str(ve)}, 400)
             except Exception as e:
                 return self._send_json({"status": "error", "error": str(e)}, 500)
 
@@ -2626,21 +2964,33 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
             def _delete_print_artifacts(pdf_file: Path) -> bool:
                 stem = pdf_file.stem
                 removed_any = False
-                for suffix in (".pdf", ".png", ".json", ".heatmap.png"):
+                if pdf_file.exists():
+                    pdf_file.unlink()
+                    removed_any = True
+                for suffix in (".png", ".json", ".heatmap.png", ".page.png"):
                     p = pdf_file.with_name(f"{stem}{suffix}")
                     if p.exists():
-                        p.unlink()
-                        removed_any = True
+                        try:
+                            p.unlink()
+                            removed_any = True
+                        except OSError as side_err:
+                            print(f"[monitoring_server] Warning: could not delete sidecar {p.name}: {side_err}")
                 for lc in config_manager.SUPPORTED_LANGUAGES:
                     loc_pdf = docs_dir / "lang" / lc / f"{stem}.pdf"
                     if loc_pdf.exists():
-                        loc_pdf.unlink()
-                        removed_any = True
+                        try:
+                            loc_pdf.unlink()
+                            removed_any = True
+                        except OSError as loc_err:
+                            print(f"[monitoring_server] Warning: could not delete localized PDF {loc_pdf}: {loc_err}")
                 if stem.startswith("print_"):
                     rid = stem[len("print_"):]
                     audio_p = shared_dir / f"output_{rid}.mp3"
                     if audio_p.exists():
-                        audio_p.unlink()
+                        try:
+                            audio_p.unlink()
+                        except OSError as aud_err:
+                            print(f"[monitoring_server] Warning: could not delete audio {audio_p.name}: {aud_err}")
                 return removed_any
 
             if action == "specific":
@@ -2654,8 +3004,14 @@ class LatentSpaceRequestHandler(BaseHTTPRequestHandler):
                 target_pdf = docs_dir / filename
                 if not target_pdf.exists():
                     return self._send_json({"status": "error", "error": "Print PDF not found"}, 404)
-                if _delete_print_artifacts(target_pdf):
-                    deleted_names.append(target_pdf.name)
+                try:
+                    if _delete_print_artifacts(target_pdf):
+                        deleted_names.append(target_pdf.name)
+                except OSError as lock_err:
+                    return self._send_json(
+                        {"status": "error", "error": f"PDF file is currently in use and could not be deleted: {lock_err}"},
+                        status=409,
+                    )
             elif action == "all":
                 today_date = datetime.now().date()
                 for f in docs_dir.glob("print_*.pdf"):
@@ -2771,17 +3127,32 @@ def run_server(host="0.0.0.0", port=8000, https_port=None):
     print(f"  Admin Dashboard:    http://localhost:{port}/admin")
     if _active_https_port:
         target_host = lan_ip if lan_ip != "localhost" else "localhost"
+        ca_fp = get_ca_cert_fingerprint(_active_ca_cert_path)
         print("-" * 64)
         print(f"  Phone / Tablet HTTPS (Camera Enabled — Offline LAN):")
         print(f"    Gaze Draw:        https://{target_host}:{_active_https_port}/draw")
         print(f"    Print Kiosk:      https://{target_host}:{_active_https_port}/kiosk")
         print(f"    Gallery:          https://{target_host}:{_active_https_port}/")
         print(f"    Admin Dashboard:  https://{target_host}:{_active_https_port}/admin")
-        print(f"    Optional CA Cert: http://{target_host}:{port}/api/tls/ca.crt")
+        print(f"    Name-Scoped CA:   https://{target_host}:{_active_https_port}/api/tls/ca.crt")
+        if ca_fp:
+            print(f"    CA SHA-256:       {ca_fp}")
     print("=" * 64)
+
+    def _handle_sigterm(_signum, _frame):
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    try:
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, _handle_sigterm)
+    except Exception:
+        pass
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        pass
+    finally:
         print("\nShutting down server...")
         _watcher_stop.set()
         release_nonblocking_lock(_watcher_lock_fd)
