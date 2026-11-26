@@ -16,7 +16,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from config_manager import (
+    DEFAULT_FALLBACK_MODELS,
+    OPENAI_COMPAT_VISION_HINTS,
+    THINKING_MODEL_HINTS,
+    VISION_MODEL_HINTS,
+    check_and_increment_daily_quota,
+    fast_local_ollama_url,
     get_configured_ollama_host,
+    is_thinking_model_name,
     load_env_vars,
     load_settings,
     update_settings_section,
@@ -27,30 +34,15 @@ logger = logging.getLogger("image_analysis_pipeline")
 _OLLAMA_CAPS_LOCK = threading.Lock()
 _OLLAMA_VISION_CAPS = {}
 _OLLAMA_THINKING_CAPS = {}
-_VISION_NAME_HINTS = (
-    "vision", "llava", "bakllava", "moondream", "minicpm-v",
-    "qwen2-vl", "qwen2.5-vl", "qwen2.5vl", "qwen3-vl", "qwen3vl", "qwen3.5",
-    "pixtral", "internvl", "mistral-small3.1", "mistral-small3.2",
-    "gemma3:latest", "gemma3:4b", "gemma3:12b", "gemma3:27b", "gemma4",
-    "llama4", "llama-4",
-)
-_OPENAI_COMPAT_VISION_HINTS = _VISION_NAME_HINTS + (
-    "gpt-4o", "gpt-4-turbo", "gpt-4.1", "gpt-4.5", "gpt-5", "chatgpt-4o",
-    "llama-3.2-11b-vision", "llama-3.2-90b-vision", "llama-4-",
-)
-_THINKING_NAME_HINTS = (
-    "gemma4", "qwen3", "deepseek-r1", "qwq", "gpt-oss", "magistral",
-    "cogito", "openthinker", "phi4-reasoning", "exaone-deep", "marco-o1",
-)
+_VISION_NAME_HINTS = VISION_MODEL_HINTS
+_OPENAI_COMPAT_VISION_HINTS = OPENAI_COMPAT_VISION_HINTS
+_THINKING_NAME_HINTS = THINKING_MODEL_HINTS
 _THINK_TAG_RE = re.compile(r"<(?:think|thought)>.*?</(?:think|thought)>", re.DOTALL | re.IGNORECASE)
 _GEMMA4_PX_PER_SOFT_TOKEN = 48 * 48
 
 
 def _is_thinking_model_name(model_name: str) -> bool:
-    low = (model_name or "").strip().lower()
-    if not low:
-        return False
-    return any(h in low for h in _THINKING_NAME_HINTS)
+    return is_thinking_model_name(model_name)
 
 
 def _strip_think_tags(text: str) -> str:
@@ -330,6 +322,7 @@ def enforce_analysis_word_limit(
     llm_model=None,
     cancel_event=None,
     language_name: str = "English",
+    deadline: float = None,
 ) -> tuple:
     """
     Guarantee an analysis obeys a hard max_words ± tolerance_pct ceiling (e.g. 110 ± 10% -> max 121 words)
@@ -370,7 +363,11 @@ def enforce_analysis_word_limit(
     candidate = raw
     used_condensation = False
 
-    if llm_model is not None and not (cancel_event is not None and cancel_event.is_set()):
+    if (
+        llm_model is not None
+        and not (cancel_event is not None and cancel_event.is_set())
+        and (deadline is None or (deadline - time.monotonic()) > 1.0)
+    ):
         editor_system = (
             f"You are a precise literary editor for an interactive art installation. "
             f"Condense the provided psychoanalytical interpretation in {language_name} so its total length "
@@ -395,6 +392,8 @@ def enforce_analysis_word_limit(
             }
             if cancel_event is not None:
                 chat_kwargs["cancel_event"] = cancel_event
+            if deadline is not None:
+                chat_kwargs["deadline"] = deadline
             try:
                 condensed_raw = llm_model.chat(**chat_kwargs)
             except TypeError:
@@ -527,8 +526,18 @@ class LLMModel:
         self._llm = role_cfg.get("model", "llama3.2")
         self._base_url = role_cfg.get("base_url", "http://localhost:11434/v1")
         self._api_key = role_cfg.get("api_key", "")
-        self._fallback_provider = (role_cfg.get("fallback_provider") or "auto").lower()
+        self._fallback_provider = (role_cfg.get("fallback_provider") or "none").lower()
         self._fallback_model = role_cfg.get("fallback_model", "") or ""
+        try:
+            self._daily_cloud_call_limit = max(0, int(ai_cfg.get("daily_cloud_call_limit", 0) or 0))
+        except (TypeError, ValueError):
+            self._daily_cloud_call_limit = 0
+        raw_fb_models = ai_cfg.get("fallback_models")
+        self._fallback_models = dict(DEFAULT_FALLBACK_MODELS)
+        if isinstance(raw_fb_models, dict):
+            for k, v in raw_fb_models.items():
+                if v and str(v).strip():
+                    self._fallback_models[str(k).strip().lower()] = str(v).strip()
         self._name = role_cfg.get("name", f"Latent Space {self.role.capitalize()}")
         self._description = role_cfg.get("description", "")
         self._purpose = role_cfg.get("purpose", "")
@@ -691,6 +700,11 @@ class LLMModel:
         settings = load_settings()
         env = load_env_vars()
         ai_cfg = settings.get("ai", {})
+        fb_defaults = dict(DEFAULT_FALLBACK_MODELS)
+        if isinstance(ai_cfg.get("fallback_models"), dict):
+            for k, v in ai_cfg["fallback_models"].items():
+                if v and str(v).strip():
+                    fb_defaults[str(k).strip().lower()] = str(v).strip()
         other_role = "poem" if self.role == "analysis" else "analysis"
         other_cfg = ai_cfg.get(other_role, {})
         other_prov = (other_cfg.get("provider") or "").lower()
@@ -710,17 +724,17 @@ class LLMModel:
             fb_prov = self._fallback_provider
             fb_model = self._fallback_model
             if fb_prov == "ollama":
-                fb_model = fb_model or (other_cfg.get("model") if other_prov == "ollama" else "") or "llama3.2"
+                fb_model = fb_model or (other_cfg.get("model") if other_prov == "ollama" else "") or fb_defaults["ollama"]
                 fb_url = (other_cfg.get("base_url") if other_prov == "ollama" else "") or default_ollama_v1
                 add_candidate("ollama", fb_model, fb_url, "")
             elif fb_prov == "gemini":
                 key = self._resolve_key_for_provider("gemini", settings, env)
                 if key:
-                    add_candidate("gemini", fb_model or "gemini-2.0-flash", "", key)
+                    add_candidate("gemini", fb_model or fb_defaults["gemini"], "", key)
             elif fb_prov == "anthropic":
                 key = self._resolve_key_for_provider("anthropic", settings, env)
                 if key:
-                    add_candidate("anthropic", fb_model or "claude-3-5-haiku-latest", "", key)
+                    add_candidate("anthropic", fb_model or fb_defaults["anthropic"], "", key)
             elif fb_prov == "openai_compatible":
                 fb_mod_low = (fb_model or "").lower()
                 other_oai_url = other_cfg.get("base_url", "") if other_prov == "openai_compatible" else ""
@@ -739,15 +753,15 @@ class LLMModel:
                     url = other_oai_url
                     key = other_cfg.get("api_key") or self._resolve_openai_compatible_key(url, settings, env)
                     if key or not other_vendor:
-                        add_candidate("openai_compatible", fb_model or other_cfg.get("model") or "llama-3.3-70b-versatile", url, key)
+                        add_candidate("openai_compatible", fb_model or other_cfg.get("model") or fb_defaults["groq"], url, key)
                 elif env.get("GROQ_API_KEY"):
-                    add_candidate("openai_compatible", fb_model or "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1", env["GROQ_API_KEY"])
+                    add_candidate("openai_compatible", fb_model or fb_defaults["groq"], "https://api.groq.com/openai/v1", env["GROQ_API_KEY"])
                 elif env.get("OPENROUTER_API_KEY"):
-                    add_candidate("openai_compatible", fb_model or "meta-llama/llama-3.2-11b-vision-instruct:free", "https://openrouter.ai/api/v1", env["OPENROUTER_API_KEY"])
+                    add_candidate("openai_compatible", fb_model or fb_defaults["openrouter"], "https://openrouter.ai/api/v1", env["OPENROUTER_API_KEY"])
                 elif env.get("OPENAI_API_KEY"):
-                    add_candidate("openai_compatible", fb_model or "gpt-4o-mini", "https://api.openai.com/v1", env["OPENAI_API_KEY"])
+                    add_candidate("openai_compatible", fb_model or fb_defaults["openai"], "https://api.openai.com/v1", env["OPENAI_API_KEY"])
             elif fb_prov == "buas" and env.get("ACCESS_TOKEN") and env.get("USER_KEY"):
-                add_candidate("buas", fb_model or "llama3.3:latest", self.__url_api, "")
+                add_candidate("buas", fb_model or fb_defaults["buas"], self.__url_api, "")
 
         # 2. Other role's configured provider/endpoint if distinct from current failed primary
         if other_prov:
@@ -758,12 +772,7 @@ class LLMModel:
                     is_local_openai = other_prov == "openai_compatible" and bool(other_url) and not _is_cloud_openai_compatible_host(other_url)
                     is_buas_ready = other_prov == "buas" and bool(env.get("ACCESS_TOKEN") and env.get("USER_KEY"))
                     if other_prov == "ollama" or other_key or is_local_openai or is_buas_ready:
-                        default_other_model = (
-                            "llama3.2" if other_prov == "ollama" else
-                            "gemini-2.0-flash" if other_prov == "gemini" else
-                            "claude-3-5-haiku-latest" if other_prov == "anthropic" else
-                            "llama3.3:latest" if other_prov == "buas" else ""
-                        )
+                        default_other_model = fb_defaults.get(other_prov, "")
                         other_model = other_cfg.get("model") or default_other_model
                         if other_model:
                             add_candidate(
@@ -776,25 +785,25 @@ class LLMModel:
         # 3. Cloud API failovers (from .env or settings) — always use matching keys & provider default models
         gemini_key = self._resolve_key_for_provider("gemini", settings, env)
         if gemini_key:
-            add_candidate("gemini", "gemini-2.0-flash", "", gemini_key)
+            add_candidate("gemini", fb_defaults["gemini"], "", gemini_key)
 
         if env.get("GROQ_API_KEY"):
-            add_candidate("openai_compatible", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1", env["GROQ_API_KEY"])
+            add_candidate("openai_compatible", fb_defaults["groq"], "https://api.groq.com/openai/v1", env["GROQ_API_KEY"])
         if env.get("OPENROUTER_API_KEY"):
-            add_candidate("openai_compatible", "meta-llama/llama-3.2-11b-vision-instruct:free", "https://openrouter.ai/api/v1", env["OPENROUTER_API_KEY"])
+            add_candidate("openai_compatible", fb_defaults["openrouter"], "https://openrouter.ai/api/v1", env["OPENROUTER_API_KEY"])
         if env.get("OPENAI_API_KEY"):
-            add_candidate("openai_compatible", "gpt-4o-mini", "https://api.openai.com/v1", env["OPENAI_API_KEY"])
+            add_candidate("openai_compatible", fb_defaults["openai"], "https://api.openai.com/v1", env["OPENAI_API_KEY"])
 
         anth_key = self._resolve_key_for_provider("anthropic", settings, env)
         if anth_key:
-            add_candidate("anthropic", "claude-3-5-haiku-latest", "", anth_key)
+            add_candidate("anthropic", fb_defaults["anthropic"], "", anth_key)
 
         if env.get("ACCESS_TOKEN") and env.get("USER_KEY"):
-            add_candidate("buas", "llama3.3:latest", self.__url_api, "")
+            add_candidate("buas", fb_defaults["buas"], self.__url_api, "")
 
         # 4. Self-hosted Ollama failover when a Cloud provider failed
         if self._provider != "ollama":
-            ollama_model = (other_cfg.get("model") if other_prov == "ollama" else "") or "llama3.2"
+            ollama_model = (other_cfg.get("model") if other_prov == "ollama" else "") or fb_defaults["ollama"]
             ollama_url = (other_cfg.get("base_url") if other_prov == "ollama" else "") or default_ollama_v1
             add_candidate("ollama", ollama_model, ollama_url, "")
 
@@ -803,32 +812,43 @@ class LLMModel:
     def _call_provider(self, provider: str, model: str, base_url: str, api_key: str,
                        message: str, img_b64: str = None, timeout=None,
                        temperature_override: float = None, system_prompt_override: str = None,
-                       thinking_override: str = None) -> tuple:
+                       thinking_override: str = None, deadline: float = None,
+                       cancel_event=None) -> tuple:
         req_timeout = timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC)
+        is_cloud = provider in ("gemini", "anthropic", "buas") or (
+            provider == "openai_compatible" and bool(_is_cloud_openai_compatible_host(base_url))
+        )
+        daily_limit = int(getattr(self, "_daily_cloud_call_limit", 0) or 0)
+        if is_cloud and daily_limit > 0:
+            if not check_and_increment_daily_quota("cloud_llm", daily_limit):
+                raise RuntimeError(f"Daily cloud AI call limit ({daily_limit}) reached")
+
+        fb_defaults = getattr(self, "_fallback_models", DEFAULT_FALLBACK_MODELS)
         used_model = model
         if provider == "gemini":
             same_prov_model = self._llm if self._provider == "gemini" else ""
-            used_model = model or same_prov_model or "gemini-2.0-flash"
+            used_model = model or same_prov_model or fb_defaults.get("gemini", "gemini-2.0-flash")
             reply = self._chat_gemini(
                 message, img_b64, model_name=used_model, api_key=api_key, timeout=req_timeout,
                 temperature_override=temperature_override, system_prompt_override=system_prompt_override,
-                thinking_override=thinking_override,
+                thinking_override=thinking_override, deadline=deadline, cancel_event=cancel_event,
             )
         elif provider == "anthropic":
             same_prov_model = self._llm if self._provider == "anthropic" else ""
-            used_model = model or same_prov_model or "claude-3-5-haiku-latest"
+            used_model = model or same_prov_model or fb_defaults.get("anthropic", "claude-3-5-haiku-latest")
             reply = self._chat_anthropic(
                 message, img_b64, model_name=used_model, api_key=api_key, timeout=req_timeout,
                 temperature_override=temperature_override, system_prompt_override=system_prompt_override,
+                deadline=deadline, cancel_event=cancel_event,
             )
         elif provider == "buas":
-            reply = self._chat_buas(message, timeout=req_timeout)
+            reply = self._chat_buas(message, timeout=req_timeout, deadline=deadline, cancel_event=cancel_event)
         elif provider in ("ollama", "openai_compatible"):
             reply, used_model = self._chat_openai_or_ollama(
                 message, img_b64, provider=provider, model_name=model,
                 base_url=base_url, api_key=api_key, timeout=req_timeout,
                 temperature_override=temperature_override, system_prompt_override=system_prompt_override,
-                thinking_override=thinking_override,
+                thinking_override=thinking_override, deadline=deadline, cancel_event=cancel_event,
             )
         else:
             raise ValueError(f"Unknown AI provider: {provider}")
@@ -839,7 +859,8 @@ class LLMModel:
 
     def chat(self, message: str, image_path: str = None, allow_failover: bool = True,
              cancel_event=None, temperature_override: float = None,
-             system_prompt_override: str = None, thinking_override: str = None) -> str:
+             system_prompt_override: str = None, thinking_override: str = None,
+             deadline: float = None) -> str:
         """
         Send a prompt (and optional drawing image for Vision LLMs) to the configured provider.
         Retries transient primary failures and fails over across providers within a bounded time budget.
@@ -866,7 +887,8 @@ class LLMModel:
             read_cap = READ_TIMEOUT_SEC
             budget_sec = MAX_CHAT_BUDGET_SEC
 
-        deadline = time.monotonic() + budget_sec
+        own_deadline = time.monotonic() + budget_sec
+        eff_deadline = min(float(deadline), own_deadline) if deadline is not None else own_deadline
 
         # Step A: Primary provider (1 quick retry only on transient failures; never retry Ollama ReadTimeout)
         primary_err = None
@@ -878,8 +900,12 @@ class LLMModel:
                     provider=self._provider,
                     model=self._llm,
                 )
-            rem = max(3.0, deadline - time.monotonic())
+            rem = eff_deadline - time.monotonic()
+            if rem <= 0.1:
+                primary_err = primary_err or "Run deadline exceeded"
+                break
             req_timeout = (min(CONNECT_TIMEOUT_SEC, rem), min(read_cap, rem))
+            call_deadline = min(eff_deadline, time.monotonic() + min(read_cap, rem))
             try:
                 reply, used_model = self._call_provider(
                     self._provider, self._llm, self._base_url, self._api_key,
@@ -887,6 +913,8 @@ class LLMModel:
                     temperature_override=temperature_override,
                     system_prompt_override=system_prompt_override,
                     thinking_override=thinking_override,
+                    deadline=call_deadline,
+                    cancel_event=cancel_event,
                 )
                 self._last_used_provider = self._provider
                 self._last_used_model = used_model
@@ -894,10 +922,10 @@ class LLMModel:
             except Exception as e:
                 primary_err = _redact_secret_text(str(e), self._api_key, self._access_token, self._user_key)
                 logger.warning(f"[chat] {self.role} primary attempt {attempt + 1} ({self._provider}/{self._llm}) failed: {primary_err}")
-                if _should_skip_primary_retry(e, provider=self._provider) or time.monotonic() >= deadline:
+                if _should_skip_primary_retry(e, provider=self._provider) or (eff_deadline - time.monotonic()) <= 0.6:
                     break
                 if attempt == 0:
-                    time.sleep(0.5)
+                    time.sleep(min(0.5, max(0.0, eff_deadline - time.monotonic() - 0.1)))
 
         # Step B: Cross-provider failover within remaining time budget
         failover_errs = []
@@ -906,11 +934,12 @@ class LLMModel:
                 if cancel_event is not None and cancel_event.is_set():
                     failover_errs.append("cancelled")
                     break
-                rem = deadline - time.monotonic()
+                rem = eff_deadline - time.monotonic()
                 if rem <= 1.0:
                     failover_errs.append("budget exhausted")
                     break
                 req_timeout = (min(CONNECT_TIMEOUT_SEC, rem), min(15.0, rem))
+                call_deadline = min(eff_deadline, time.monotonic() + min(15.0, rem))
                 try:
                     logger.warning(f"[chat] {self.role} failing over to {fb_prov} ({fb_model})...")
                     reply, used_model = self._call_provider(
@@ -918,6 +947,8 @@ class LLMModel:
                         temperature_override=temperature_override,
                         system_prompt_override=system_prompt_override,
                         thinking_override=thinking_override,
+                        deadline=call_deadline,
+                        cancel_event=cancel_event,
                     )
                     self._last_used_provider = fb_prov
                     self._last_used_model = used_model
@@ -971,9 +1002,7 @@ class LLMModel:
         if low.startswith("gemma3:1b"):
             return False
         host_root = clean_base[:-3] if clean_base.endswith("/v1") else clean_base
-        host_root = host_root.rstrip("/")
-        if host_root.lower().startswith("http://localhost:"):
-            host_root = "http://127.0.0.1:" + host_root[len("http://localhost:"):]
+        host_root = fast_local_ollama_url(host_root.rstrip("/"))
         cache_key = (host_root, model_name)
         with _OLLAMA_CAPS_LOCK:
             if cache_key in _OLLAMA_VISION_CAPS:
@@ -1009,9 +1038,7 @@ class LLMModel:
         if not model_name:
             return False
         host_root = clean_base[:-3] if clean_base.endswith("/v1") else clean_base
-        host_root = host_root.rstrip("/")
-        if host_root.lower().startswith("http://localhost:"):
-            host_root = "http://127.0.0.1:" + host_root[len("http://localhost:"):]
+        host_root = fast_local_ollama_url(host_root.rstrip("/"))
         cache_key = (host_root, model_name)
         with _OLLAMA_CAPS_LOCK:
             if cache_key in _OLLAMA_THINKING_CAPS:
@@ -1038,6 +1065,8 @@ class LLMModel:
         temperature_override: float = None,
         system_prompt_override: str = None,
         thinking_override: str = None,
+        deadline: float = None,
+        cancel_event=None,
     ) -> tuple:
         prov = (provider or self._provider).lower()
         same_prov_model = self._llm if prov == self._provider else ""
@@ -1045,6 +1074,17 @@ class LLMModel:
         b_url = (base_url if base_url is not None else self._base_url) or f"{get_configured_ollama_host()}/v1"
         key = api_key if api_key is not None else self._api_key
         req_timeout = timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC)
+        conn_cap = req_timeout[0] if isinstance(req_timeout, (tuple, list)) else CONNECT_TIMEOUT_SEC
+        read_cap = req_timeout[1] if isinstance(req_timeout, (tuple, list)) else float(req_timeout)
+        call_deadline = float(deadline) if deadline is not None else (time.monotonic() + read_cap)
+
+        def _next_timeout() -> tuple:
+            if cancel_event is not None and cancel_event.is_set():
+                raise requests.exceptions.ReadTimeout("Cancelled via cancel_event")
+            rem = call_deadline - time.monotonic()
+            if rem <= 0.05:
+                raise requests.exceptions.ReadTimeout("Call deadline exceeded during provider request")
+            return (min(conn_cap, rem), min(read_cap, rem))
 
         system_prompt = system_prompt_override if system_prompt_override is not None else self._build_system_prompt()
         eff_temp = float(temperature_override) if temperature_override is not None else float(self._temperature)
@@ -1116,22 +1156,22 @@ class LLMModel:
             # Guard boolean-thinking models (e.g. gemma4:e4b) against runaway unbounded thinking loops
             payload["max_tokens"] = OLLAMA_AUTO_THINKING_MAX_TOKENS.get(self.role, 768)
 
-        resp = requests.post(endpoint, json=payload, headers=headers, timeout=req_timeout)
+        resp = requests.post(endpoint, json=payload, headers=headers, timeout=_next_timeout())
 
         # If server rejects reasoning_effort (e.g. non-thinking model or older runtime), strip it first while keeping image
         if resp.status_code in (400, 422) and "reasoning_effort" in payload:
             payload.pop("reasoning_effort", None)
-            resp = requests.post(endpoint, json=payload, headers=headers, timeout=req_timeout)
+            resp = requests.post(endpoint, json=payload, headers=headers, timeout=_next_timeout())
 
         # Only retry without image when server specifically rejects the multimodal request shape
         if resp.status_code in (400, 422) and send_img_b64 is not None:
             payload["messages"] = build_messages(False)
-            resp = requests.post(endpoint, json=payload, headers=headers, timeout=req_timeout)
+            resp = requests.post(endpoint, json=payload, headers=headers, timeout=_next_timeout())
 
         # If Ollama returns 404 because the configured model tag is not pulled locally,
         # discover an installed model and preserve image payload if that model supports vision
         used_model = mod
-        if resp.status_code == 404 and prov == "ollama":
+        if resp.status_code == 404 and prov == "ollama" and (call_deadline - time.monotonic()) > 0.5:
             try:
                 fallback_model = self._discover_ollama_text_model(clean_base, mod)
                 if fallback_model:
@@ -1149,7 +1189,7 @@ class LLMModel:
                         )
                     )
                     payload["messages"] = build_messages(keep_img)
-                    resp = requests.post(endpoint, json=payload, headers=headers, timeout=req_timeout)
+                    resp = requests.post(endpoint, json=payload, headers=headers, timeout=_next_timeout())
                     if resp.ok:
                         used_model = fallback_model
             except Exception:
@@ -1168,6 +1208,7 @@ class LLMModel:
             not content
             and (msg.get("reasoning") or msg.get("thinking") or msg.get("reasoning_content"))
             and payload.get("reasoning_effort") != "none"
+            and (call_deadline - time.monotonic()) > 0.5
         ):
             logger.warning(
                 f"[chat] {prov} ({used_model}) returned empty content with reasoning output; "
@@ -1176,7 +1217,7 @@ class LLMModel:
             payload["reasoning_effort"] = "none"
             if payload.get("max_tokens", 0) and payload["max_tokens"] < 512:
                 payload.pop("max_tokens", None)
-            retry_resp = requests.post(endpoint, json=payload, headers=headers, timeout=req_timeout)
+            retry_resp = requests.post(endpoint, json=payload, headers=headers, timeout=_next_timeout())
             if retry_resp.ok:
                 retry_msg = (retry_resp.json().get("choices") or [{}])[0].get("message") or {}
                 retry_c = retry_msg.get("content")
@@ -1191,7 +1232,8 @@ class LLMModel:
     def _chat_gemini(self, message: str, img_b64: str = None, model_name: str = None,
                      api_key: str = None, timeout=None,
                      temperature_override: float = None, system_prompt_override: str = None,
-                     thinking_override: str = None) -> str:
+                     thinking_override: str = None, deadline: float = None,
+                     cancel_event=None) -> str:
         key = api_key if api_key is not None else self._api_key
         if not key:
             raise RuntimeError("GEMINI_API_KEY is not configured. Add it in Admin -> AI Config or .env")
@@ -1234,10 +1276,22 @@ class LLMModel:
             payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
 
         req_to = timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC)
-        resp = requests.post(url, json=payload, headers=headers, timeout=req_to)
+        conn_cap = req_to[0] if isinstance(req_to, (tuple, list)) else CONNECT_TIMEOUT_SEC
+        read_cap = req_to[1] if isinstance(req_to, (tuple, list)) else float(req_to)
+        call_deadline = float(deadline) if deadline is not None else (time.monotonic() + read_cap)
+
+        def _next_to():
+            if cancel_event is not None and cancel_event.is_set():
+                raise requests.exceptions.ReadTimeout("Cancelled via cancel_event")
+            rem = call_deadline - time.monotonic()
+            if rem <= 0.05:
+                raise requests.exceptions.ReadTimeout("Call deadline exceeded during Gemini request")
+            return (min(conn_cap, rem), min(read_cap, rem))
+
+        resp = requests.post(url, json=payload, headers=headers, timeout=_next_to())
         if resp.status_code == 400 and "thinkingConfig" in gen_cfg:
             gen_cfg.pop("thinkingConfig", None)
-            resp = requests.post(url, json=payload, headers=headers, timeout=req_to)
+            resp = requests.post(url, json=payload, headers=headers, timeout=_next_to())
         resp.raise_for_status()
         data = resp.json()
         candidates = data.get("candidates", [])
@@ -1252,7 +1306,8 @@ class LLMModel:
 
     def _chat_anthropic(self, message: str, img_b64: str = None, model_name: str = None,
                         api_key: str = None, timeout=None,
-                        temperature_override: float = None, system_prompt_override: str = None) -> str:
+                        temperature_override: float = None, system_prompt_override: str = None,
+                        deadline: float = None, cancel_event=None) -> str:
         key = api_key if api_key is not None else self._api_key
         if not key:
             raise RuntimeError("ANTHROPIC_API_KEY is not configured. Add it in Admin -> AI Config or .env")
@@ -1288,19 +1343,40 @@ class LLMModel:
         if system_prompt:
             payload["system"] = system_prompt
 
-        resp = requests.post(url, json=payload, headers=headers, timeout=timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC))
+        req_to = timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC)
+        if deadline is not None:
+            rem = deadline - time.monotonic()
+            if rem <= 0.05 or (cancel_event is not None and cancel_event.is_set()):
+                raise requests.exceptions.ReadTimeout("Call deadline exceeded before Anthropic request")
+            conn_cap = req_to[0] if isinstance(req_to, (tuple, list)) else CONNECT_TIMEOUT_SEC
+            read_cap = req_to[1] if isinstance(req_to, (tuple, list)) else float(req_to)
+            req_to = (min(conn_cap, rem), min(read_cap, rem))
+        resp = requests.post(url, json=payload, headers=headers, timeout=req_to)
         resp.raise_for_status()
         data = resp.json()
         blocks = data.get("content", [])
         return "".join(b.get("text", "") for b in blocks if b.get("type") == "text").strip()
 
-    def _chat_buas(self, message: str, timeout=None) -> str:
+    def _chat_buas(self, message: str, timeout=None, deadline: float = None, cancel_event=None) -> str:
         if not self._user_key or not self._access_token:
             raise RuntimeError("BUas credentials (ACCESS_TOKEN / USER_KEY) are not configured")
         req_timeout = timeout or (CONNECT_TIMEOUT_SEC, READ_TIMEOUT_SEC)
+        conn_cap = req_timeout[0] if isinstance(req_timeout, (tuple, list)) else CONNECT_TIMEOUT_SEC
+        read_cap = req_timeout[1] if isinstance(req_timeout, (tuple, list)) else float(req_timeout)
+        call_deadline = float(deadline) if deadline is not None else (time.monotonic() + read_cap)
+
+        def _next_to(cap=None):
+            if cancel_event is not None and cancel_event.is_set():
+                raise requests.exceptions.ReadTimeout("Cancelled via cancel_event")
+            rem = call_deadline - time.monotonic()
+            if rem <= 0.05:
+                raise requests.exceptions.ReadTimeout("Call deadline exceeded during BUas request")
+            r_cap = min(read_cap, float(cap)) if cap is not None else read_cap
+            return (min(conn_cap, rem), min(r_cap, rem))
+
         if not self.__chat_key:
             init_data = {"user_key": self._user_key, "assistant_key": self.assistant_key}
-            resp = requests.post(self.__init_endpoint_url, json=init_data, headers=self.__headers, timeout=min(15.0, req_timeout[1]))
+            resp = requests.post(self.__init_endpoint_url, json=init_data, headers=self.__headers, timeout=_next_to(15.0))
             resp.raise_for_status()
             init_response = resp.json()
             if init_response.get("status") == "Failed":
@@ -1313,7 +1389,7 @@ class LLMModel:
             "message": message,
             "user_key": self._user_key,
         }
-        resp = requests.post(self.__ask_endpoint_url, json=chat_data, headers=self.__headers, timeout=req_timeout)
+        resp = requests.post(self.__ask_endpoint_url, json=chat_data, headers=self.__headers, timeout=_next_to())
         if not resp.ok:
             self.__chat_key = None
         resp.raise_for_status()

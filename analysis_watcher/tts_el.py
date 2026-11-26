@@ -16,8 +16,12 @@ def run_el_tts(
     speed=1.0,
     model_id="eleven_multilingual_v2",
 ):
-    """Convert text to speech via ElevenLabs and write atomically."""
-    voice_settings = {"speed": speed}
+    """Convert text to speech via ElevenLabs and write atomically (clamping speed to 0.7..1.2)."""
+    try:
+        safe_speed = max(0.7, min(1.2, float(speed if speed is not None else 1.0)))
+    except (TypeError, ValueError):
+        safe_speed = 1.0
+    voice_settings = {"speed": safe_speed}
     audio = client.text_to_speech.convert(
         text=text,
         voice_id=voice_id,

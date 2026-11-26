@@ -32,8 +32,10 @@ for p in (str(PROJECT_ROOT), str(CURRENT_DIR)):
 from config_manager import (
     ALLOWED_LANGUAGES,
     DEFAULT_LOCAL_NMT_MODEL,
+    fast_local_ollama_url,
     get_configured_ollama_host,
     load_settings,
+    validate_translation_data,
 )
 
 logger = logging.getLogger("image_analysis_pipeline")
@@ -131,12 +133,13 @@ def reset_local_nmt_cache():
 
 
 def _is_hf_model_cached_locally(model_id: str) -> bool:
-    """Fast, zero-network check whether a HuggingFace repo or local dir is cached on disk."""
+    """Fast, zero-network check whether a HuggingFace repo is cached on disk."""
     if not model_id:
         return False
-    p = Path(model_id)
-    if p.exists() and p.is_dir():
-        return (p / "config.json").exists()
+    try:
+        validate_translation_data({"local_nmt_model": model_id})
+    except ValueError:
+        return False
     try:
         from huggingface_hub import snapshot_download
         local_dir = snapshot_download(repo_id=model_id, local_files_only=True)
@@ -145,12 +148,15 @@ def _is_hf_model_cached_locally(model_id: str) -> bool:
         return False
 
 
-def _load_local_nmt(model_id: str, num_threads: int = 6, allow_download: bool = True):
+def _load_local_nmt(model_id: str, num_threads: int = 6, allow_download: bool = False):
     """
     Thread-safe lazy loader for the CPU-only Marian/Seq2Seq NMT model.
     Strictly runs on CPU (0 MB GPU VRAM) with capped CPU threads so webcam
     MediaPipe gaze tracking and Ollama GPU inference remain smooth.
     """
+    validate_translation_data({"local_nmt_model": model_id, "local_nmt_threads": int(num_threads)})
+    if Path(model_id).exists():
+        raise ValueError("Local filesystem paths are not allowed for local_nmt_model")
     with _NMT_LOCK:
         if (
             _NMT_CACHE["model"] is not None
@@ -175,12 +181,22 @@ def _load_local_nmt(model_id: str, num_threads: int = 6, allow_download: bool = 
         except Exception:
             pass
 
+        def _load_seq2seq(mid: str, local_files_only: bool):
+            try:
+                return AutoModelForSeq2SeqLM.from_pretrained(
+                    mid, local_files_only=local_files_only, use_safetensors=True
+                )
+            except Exception:
+                if mid == DEFAULT_LOCAL_NMT_MODEL:
+                    return AutoModelForSeq2SeqLM.from_pretrained(mid, local_files_only=local_files_only)
+                raise
+
         t0 = time.monotonic()
         local_only = not allow_download
         try:
             # Always try local cache first so offline/air-gapped operation never stalls on DNS
             tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=True)
-            model = AutoModelForSeq2SeqLM.from_pretrained(model_id, local_files_only=True)
+            model = _load_seq2seq(model_id, local_files_only=True)
         except Exception:
             if local_only:
                 msg = (
@@ -190,20 +206,19 @@ def _load_local_nmt(model_id: str, num_threads: int = 6, allow_download: bool = 
                 _NMT_CACHE["last_error"] = msg
                 raise RuntimeError(msg)
             # Fast reachability guard so air-gapped exhibitions never stall 30s waiting on DNS/retries
-            if not Path(model_id).exists():
-                try:
-                    requests.head("https://huggingface.co", timeout=2.0)
-                except Exception as net_err:
-                    msg = (
-                        f"Local NMT model '{model_id}' is not cached on disk and HuggingFace is unreachable ({net_err}). "
-                        "Pre-download while online via Admin or: python download_offline_assets.py --with-translation"
-                    )
-                    _NMT_CACHE["last_error"] = msg
-                    raise RuntimeError(msg) from net_err
+            try:
+                requests.head("https://huggingface.co", timeout=2.0)
+            except Exception as net_err:
+                msg = (
+                    f"Local NMT model '{model_id}' is not cached on disk and HuggingFace is unreachable ({net_err}). "
+                    "Pre-download while online via Admin or: python download_offline_assets.py --with-translation"
+                )
+                _NMT_CACHE["last_error"] = msg
+                raise RuntimeError(msg) from net_err
             logger.info(f"[translator] Downloading local CPU NMT model '{model_id}' (one-time cache)...")
             try:
                 tokenizer = AutoTokenizer.from_pretrained(model_id)
-                model = AutoModelForSeq2SeqLM.from_pretrained(model_id)
+                model = _load_seq2seq(model_id, local_files_only=False)
             except Exception as dl_err:
                 msg = f"Could not load or download NMT model '{model_id}': {dl_err}"
                 _NMT_CACHE["last_error"] = msg
@@ -230,14 +245,17 @@ def _load_local_nmt(model_id: str, num_threads: int = 6, allow_download: bool = 
 def preload_local_nmt_model(model_id: str = None, num_threads: int = None) -> dict:
     """Download (if needed) and warm up the CPU NMT model into RAM."""
     tcfg = get_translation_config()
-    mid = (model_id or tcfg["local_nmt_model"]).strip() or DEFAULT_LOCAL_NMT_MODEL
+    mid = (model_id if model_id is not None else tcfg["local_nmt_model"]).strip() or DEFAULT_LOCAL_NMT_MODEL
     thr = num_threads if num_threads is not None else tcfg["local_nmt_threads"]
+    validate_translation_data({"local_nmt_model": mid, "local_nmt_threads": thr})
+    if Path(mid).exists():
+        raise ValueError("Local filesystem paths are not allowed for local_nmt_model")
     t0 = time.monotonic()
-    _load_local_nmt(mid, num_threads=thr, allow_download=True)
+    _load_local_nmt(mid, num_threads=int(thr), allow_download=True)
     return {
         "status": "success",
         "model": mid,
-        "threads": thr,
+        "threads": int(thr),
         "cached_locally": True,
         "loaded_in_memory": True,
         "elapsed_sec": round(time.monotonic() - t0, 2),
@@ -271,7 +289,7 @@ def _clean_translated_output(text: str, is_poem: bool = False) -> str:
     return cleaned.strip()
 
 
-def _nmt_translate_batch(texts: list, model_id: str, num_threads: int = 6, allow_download: bool = True) -> list:
+def _nmt_translate_batch(texts: list, model_id: str, num_threads: int = 6, allow_download: bool = False) -> list:
     """Translate a list of non-empty English strings in a single CPU-batched pass."""
     if not texts:
         return []
@@ -400,6 +418,7 @@ def _call_ollama_translate(
     tcfg: dict,
     settings: dict,
     cancel_event=None,
+    deadline: float = None,
 ) -> str:
     """Translate text via a dedicated Ollama model (TranslateGemma or any local chat model)."""
     if not text or not text.strip():
@@ -410,7 +429,17 @@ def _call_ollama_translate(
     target_name = LANGUAGE_NAMES.get(target_lang, target_lang)
     model_name = tcfg["ollama_model"]
     endpoint = _resolve_ollama_endpoint(tcfg, settings)
-    timeout = (5.0, float(tcfg["ollama_timeout"]))
+    read_cap = float(tcfg["ollama_timeout"])
+    call_deadline = min(float(deadline), time.monotonic() + read_cap) if deadline is not None else (time.monotonic() + read_cap)
+
+    def _next_to():
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Translation cancelled")
+        rem = call_deadline - time.monotonic()
+        if rem <= 0.1:
+            raise requests.exceptions.ReadTimeout("Translation deadline exceeded")
+        return (min(5.0, rem), min(read_cap, rem))
+
     is_translategemma = "translategemma" in model_name.lower()
 
     if is_translategemma:
@@ -466,7 +495,7 @@ def _call_ollama_translate(
         endpoint,
         json=payload,
         headers={"Content-Type": "application/json"},
-        timeout=timeout,
+        timeout=_next_to(),
     )
     if resp.status_code in (400, 422) and "reasoning_effort" in payload:
         payload.pop("reasoning_effort", None)
@@ -474,7 +503,7 @@ def _call_ollama_translate(
             endpoint,
             json=payload,
             headers={"Content-Type": "application/json"},
-            timeout=timeout,
+            timeout=_next_to(),
         )
     resp.raise_for_status()
     data = resp.json()
@@ -489,7 +518,7 @@ def _call_ollama_translate(
             endpoint,
             json=payload,
             headers={"Content-Type": "application/json"},
-            timeout=timeout,
+            timeout=_next_to(),
         )
         if retry_resp.ok:
             retry_msg = (retry_resp.json().get("choices") or [{}])[0].get("message") or {}
@@ -510,6 +539,7 @@ def _chat_with_overrides(
     temperature_override: float = None,
     system_prompt_override: str = None,
     thinking_override: str = None,
+    deadline: float = None,
 ) -> str:
     """Call LLMModel.chat with optional temperature/system/thinking overrides, with TypeError fallback for simple mocks."""
     kwargs = {"message": message, "allow_failover": allow_failover}
@@ -521,6 +551,8 @@ def _chat_with_overrides(
         kwargs["system_prompt_override"] = system_prompt_override
     if thinking_override is not None:
         kwargs["thinking_override"] = thinking_override
+    if deadline is not None:
+        kwargs["deadline"] = deadline
     try:
         return model.chat(**kwargs)
     except TypeError:
@@ -540,6 +572,7 @@ def _translate_native_llm(
     poem_model=None,
     cancel_event=None,
     settings: dict = None,
+    deadline: float = None,
 ) -> dict:
     """
     Use the configured Analysis & Poem LLMModel providers to translate/adapt
@@ -609,6 +642,7 @@ def _translate_native_llm(
             temperature_override=analysis_tr_temp,
             system_prompt_override=a_system,
             thinking_override="off",
+            deadline=deadline,
         ),
         is_poem=False,
     )
@@ -620,6 +654,7 @@ def _translate_native_llm(
             llm_model=a_mod,
             cancel_event=cancel_event,
             language_name=target_name,
+            deadline=deadline,
         )
 
     if cancel_event is not None and cancel_event.is_set():
@@ -653,6 +688,7 @@ def _translate_native_llm(
             temperature_override=poem_tr_temp,
             system_prompt_override=p_system,
             thinking_override="off",
+            deadline=deadline,
         ),
         is_poem=True,
     )
@@ -672,6 +708,7 @@ def _translate_native_llm(
             temperature_override=0.1,
             system_prompt_override=arch_system,
             thinking_override="off",
+            deadline=deadline,
         )
 
     tr_archetype = _translate_archetype_parts(archetype, target_lang, _llm_part_translate)
@@ -733,6 +770,7 @@ def translate_reading(
     analysis_model=None,
     poem_model=None,
     cancel_event=None,
+    deadline: float = None,
 ) -> dict:
     """
     Translate a complete reading (archetype, psychoanalysis, poem) into target_lang
@@ -779,14 +817,14 @@ def translate_reading(
             archetype,
             target_lang,
             lambda part: _call_ollama_translate(
-                part, "archetype", target_lang, tcfg, cfg, cancel_event=cancel_event
+                part, "archetype", target_lang, tcfg, cfg, cancel_event=cancel_event, deadline=deadline
             ),
         )
         tr_analysis = _call_ollama_translate(
-            psychoanalysis, "psychoanalysis", target_lang, tcfg, cfg, cancel_event=cancel_event
+            psychoanalysis, "psychoanalysis", target_lang, tcfg, cfg, cancel_event=cancel_event, deadline=deadline
         )
         tr_poem = _call_ollama_translate(
-            poem, "poem", target_lang, tcfg, cfg, cancel_event=cancel_event
+            poem, "poem", target_lang, tcfg, cfg, cancel_event=cancel_event, deadline=deadline
         )
         return {
             "ok": True,
@@ -810,6 +848,7 @@ def translate_reading(
             poem_model=poem_model,
             cancel_event=cancel_event,
             settings=cfg,
+            deadline=deadline,
         )
         res.update({
             "ok": True,
@@ -847,9 +886,7 @@ def get_translation_availability(settings: dict = None) -> dict:
         root = raw_base.rstrip("/")
         if root.endswith("/v1"):
             root = root[:-3]
-        # Avoid Windows ~2s IPv6 ::1 localhost TCP refusal delay when Ollama is stopped
-        if root.lower().startswith("http://localhost:"):
-            root = "http://127.0.0.1:" + root[len("http://localhost:"):]
+        root = fast_local_ollama_url(root)
         if root.startswith(("http://", "https://")):
             r = requests.get(f"{root}/api/tags", timeout=0.6)
             if r.ok:

@@ -20,7 +20,11 @@ for p in (str(PROJECT_ROOT), str(CURRENT_DIR)):
 from config_manager import (
     DEFAULT_VISION_DESCRIPTION_PROMPT,
     DEFAULT_VISION_LABEL_PROMPT,
+    THINKING_MODEL_HINTS,
+    fast_local_ollama_url,
     get_configured_ollama_host,
+    is_thinking_model_name,
+    is_vision_model_name,
     load_env_vars,
     load_settings,
 )
@@ -32,6 +36,17 @@ _CLIP_CACHE = {"model": None, "processor": None, "failed": False, "last_error": 
 _SIGLIP_CACHE = {"model": None, "processor": None, "failed": False, "last_error": ""}
 _RESNET_CACHE = {"model": None, "failed": False, "last_error": ""}
 _LAST_OLLAMA_VISION_ERROR = ""
+_VISION_TLS = threading.local()
+
+
+def _set_last_ollama_vision_error(msg: str) -> None:
+    global _LAST_OLLAMA_VISION_ERROR
+    _LAST_OLLAMA_VISION_ERROR = msg
+    _VISION_TLS.last_error = msg
+
+
+def _get_last_ollama_vision_error() -> str:
+    return getattr(_VISION_TLS, "last_error", None) or _LAST_OLLAMA_VISION_ERROR
 
 ABSTRACT_FORM_PROMPTS = [
     ("a spiraling vortex of concentric loops", "Spiraling Vortex"),
@@ -495,19 +510,13 @@ def _redact_error_secrets(text: str) -> str:
     return safe
 
 
-_THINKING_MODEL_HINTS = (
-    "gemma4", "qwen3", "deepseek-r1", "qwq", "gpt-oss", "magistral",
-    "cogito", "openthinker", "phi4-reasoning", "exaone-deep", "marco-o1",
-)
+_THINKING_MODEL_HINTS = THINKING_MODEL_HINTS
 _THINK_TAG_RE = re.compile(r"<(?:think|thought)>.*?</(?:think|thought)>", re.DOTALL | re.IGNORECASE)
 _GEMMA4_PX_PER_SOFT_TOKEN = 48 * 48  # 2304 px/token -> 280 tokens ~= 645K px
 
 
 def _is_thinking_model_name(model_name: str) -> bool:
-    low = (model_name or "").strip().lower()
-    if not low:
-        return False
-    return any(h in low for h in _THINKING_MODEL_HINTS)
+    return is_thinking_model_name(model_name)
 
 
 def _strip_think_tags(text: str) -> str:
@@ -546,14 +555,13 @@ def _encode_image_for_vision(filename: str, token_budget: int = 280) -> str:
     return base64.b64encode(raw_bytes).decode("utf-8")
 
 
-def run_ollama_vision_analysis(filename: str):
+def run_ollama_vision_analysis(filename: str, deadline: float = None, cancel_event=None):
     """
     100% Self-Hosted Local Ollama Vision Analyzer (e.g. moondream, llava, gemma3, gemma4).
     Uses separate configurable pareidolia label & visual description prompts, Ollama options
     (temperature, num_predict, timeout, thinking mode, vision token budget), and clean badge filtering.
     """
-    global _LAST_OLLAMA_VISION_ERROR
-    _LAST_OLLAMA_VISION_ERROR = ""
+    _set_last_ollama_vision_error("")
     try:
         settings = load_settings()
         ai_cfg = settings.get("ai", {})
@@ -561,7 +569,7 @@ def run_ollama_vision_analysis(filename: str):
         vision_model = (ai_cfg.get("ollama_vision_model") or "moondream").strip()
         host = get_configured_ollama_host(settings)
         if not host.startswith(("http://", "https://")):
-            _LAST_OLLAMA_VISION_ERROR = f"Invalid Ollama host URL: {_redact_error_secrets(host)}"
+            _set_last_ollama_vision_error(f"Invalid Ollama host URL: {_redact_error_secrets(host)}")
             return None
 
         label_prompt = (vision_cfg.get("ollama_label_prompt") or "").strip() or DEFAULT_VISION_LABEL_PROMPT
@@ -588,6 +596,16 @@ def run_ollama_vision_analysis(filename: str):
 
         thinking_active = think_arg in ("low", "medium", "high", True)
 
+        def _step_timeout():
+            if cancel_event is not None and cancel_event.is_set():
+                raise requests.exceptions.ReadTimeout("Vision analysis cancelled")
+            if deadline is not None:
+                rem = deadline - time.monotonic()
+                if rem <= 0.2:
+                    raise requests.exceptions.ReadTimeout("Vision analysis deadline exceeded")
+                return min(float(timeout_sec), rem)
+            return timeout_sec
+
         def _call_ollama_vision(prompt_text: str, num_predict: int) -> str:
             payload = {
                 "model": vision_model,
@@ -602,16 +620,16 @@ def run_ollama_vision_analysis(filename: str):
             if think_arg is not None:
                 payload["think"] = think_arg
 
-            resp = requests.post(f"{host}/api/generate", json=payload, timeout=timeout_sec)
+            resp = requests.post(f"{host}/api/generate", json=payload, timeout=_step_timeout())
 
             # Graceful fallback if a model only supports boolean think or does not support thinking at all
             if resp.status_code == 400 and "think" in payload:
                 if isinstance(payload["think"], str):
                     payload["think"] = True
-                    resp = requests.post(f"{host}/api/generate", json=payload, timeout=timeout_sec)
+                    resp = requests.post(f"{host}/api/generate", json=payload, timeout=_step_timeout())
                 if resp.status_code == 400 and "think" in payload:
                     payload.pop("think", None)
-                    resp = requests.post(f"{host}/api/generate", json=payload, timeout=timeout_sec)
+                    resp = requests.post(f"{host}/api/generate", json=payload, timeout=_step_timeout())
 
             resp.raise_for_status()
             data = resp.json()
@@ -624,7 +642,7 @@ def run_ollama_vision_analysis(filename: str):
                     "during thinking; retrying directly with think=False."
                 )
                 payload["think"] = False
-                retry_resp = requests.post(f"{host}/api/generate", json=payload, timeout=timeout_sec)
+                retry_resp = requests.post(f"{host}/api/generate", json=payload, timeout=_step_timeout())
                 if retry_resp.ok:
                     text_out = _strip_think_tags(retry_resp.json().get("response") or "")
 
@@ -636,7 +654,7 @@ def run_ollama_vision_analysis(filename: str):
 
         raw_label_text = _call_ollama_vision(label_prompt, pass1_tokens)
         if not raw_label_text:
-            _LAST_OLLAMA_VISION_ERROR = f"Ollama vision model '{vision_model}' returned empty response"
+            _set_last_ollama_vision_error(f"Ollama vision model '{vision_model}' returned empty response")
             return None
 
         filtered_label = (
@@ -678,7 +696,7 @@ def run_ollama_vision_analysis(filename: str):
         }
     except Exception as e:
         safe_err = _redact_error_secrets(e)
-        _LAST_OLLAMA_VISION_ERROR = safe_err
+        _set_last_ollama_vision_error(safe_err)
         print(f"[analysis] Note: Local Ollama Vision model unavailable ({safe_err}), using geometric profile.")
         return None
 
@@ -743,8 +761,12 @@ def _run_zero_shot_hf_model(filename: str, model_id: str, cache_dict: dict, is_s
             ),
             "engine": "siglip" if is_siglip else "clip",
         }
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError) as e:
         cache_dict["failed"] = True
+        cache_dict["last_error"] = str(e)
+        print(f"[analysis] Note: {model_id} dependencies not available ({e}), using geometric & fractal analysis.")
+        return None
+    except Exception as e:
         cache_dict["last_error"] = str(e)
         print(f"[analysis] Note: {model_id} not available ({e}), using geometric & fractal analysis.")
         return None
@@ -789,8 +811,12 @@ def run_resnet_classification(filename: str):
             "description": f"ImageNet Pareidolia Association: {', '.join(labels)}",
             "engine": "resnet50",
         }
-    except Exception as e:
+    except (ImportError, ModuleNotFoundError) as e:
         _RESNET_CACHE["failed"] = True
+        _RESNET_CACHE["last_error"] = str(e)
+        print(f"[analysis] Note: TensorFlow ResNet50 dependencies unavailable ({e}).")
+        return None
+    except Exception as e:
         _RESNET_CACHE["last_error"] = str(e)
         print(f"[analysis] Note: TensorFlow ResNet50 unavailable ({e}).")
         return None
@@ -802,9 +828,7 @@ def list_local_ollama_models(settings: dict = None) -> tuple:
     Ollama host's /api/tags, falling back to scanning ~/.ollama/models/manifests on disk.
     """
     cfg = settings or load_settings()
-    host = get_configured_ollama_host(cfg)
-    if host.lower().startswith("http://localhost:"):
-        host = "http://127.0.0.1:" + host[len("http://localhost:"):]
+    host = fast_local_ollama_url(get_configured_ollama_host(cfg))
     if host.startswith(("http://", "https://")):
         try:
             resp = requests.get(f"{host}/api/tags", timeout=0.6)
@@ -848,19 +872,7 @@ def _ollama_model_installed(model_name: str, installed_models: list) -> bool:
 
 
 def _is_vision_model_name(model_name: str) -> bool:
-    low = (model_name or "").strip().lower()
-    if not low:
-        return False
-    if low.startswith("gemma3:1b"):
-        return False
-    vision_hints = (
-        "vision", "llava", "moondream", "bakllava", "minicpm-v", "qwen2-vl", "qwen2.5-vl",
-        "qwen2.5vl", "qwen3-vl", "qwen3vl", "qwen3.5", "pixtral", "internvl",
-        "granite3.2-vision", "mistral-small3.1", "mistral-small3.2", "gemma3", "gemma4",
-        "llama4", "llama-4", "gpt-4o", "gpt-4-vision", "gpt-4.1", "gpt-5",
-        "claude-3", "claude-4", "gemini",
-    )
-    return any(h in low for h in vision_hints)
+    return is_vision_model_name(model_name)
 
 
 def get_ai_availability(settings: dict = None) -> dict:
@@ -888,13 +900,32 @@ def get_ai_availability(settings: dict = None) -> dict:
         "groq": bool((env.get("GROQ_API_KEY") or "").strip()),
         "openrouter": bool((env.get("OPENROUTER_API_KEY") or "").strip()),
         "anthropic": bool((env.get("ANTHROPIC_API_KEY") or "").strip()),
-        "buas": bool((env.get("BUAS_API_KEY") or env.get("API_KEY") or "").strip()),
+        "buas": bool(
+            ((env.get("ACCESS_TOKEN") or "").strip() and (env.get("USER_KEY") or "").strip())
+            or (env.get("BUAS_API_KEY") or "").strip()
+        ),
     }
 
     saved_keys = {
         role: bool((ai_cfg.get(role, {}).get("api_key") or "").strip())
         for role in ("analysis", "poem")
     }
+
+    eligible_failovers = []
+    if env_keys["gemini"] or any((ai_cfg.get(r, {}).get("provider") == "gemini" and saved_keys[r]) for r in ("analysis", "poem")):
+        eligible_failovers.append("gemini")
+    if env_keys["groq"]:
+        eligible_failovers.append("groq")
+    if env_keys["openrouter"]:
+        eligible_failovers.append("openrouter")
+    if env_keys["openai"]:
+        eligible_failovers.append("openai")
+    if env_keys["anthropic"] or any((ai_cfg.get(r, {}).get("provider") == "anthropic" and saved_keys[r]) for r in ("analysis", "poem")):
+        eligible_failovers.append("anthropic")
+    if env_keys["buas"]:
+        eligible_failovers.append("buas")
+    if ollama_running:
+        eligible_failovers.append("ollama")
 
     missing_hf = [pkg for pkg, ok in (("torch", has_torch), ("transformers", has_transformers)) if not ok]
     hf_ready = has_torch and has_transformers
@@ -967,6 +998,7 @@ def get_ai_availability(settings: dict = None) -> dict:
         },
         "env_keys": env_keys,
         "saved_keys": saved_keys,
+        "eligible_failovers": eligible_failovers,
         "vision_modes": vision_modes,
     }
 
@@ -977,9 +1009,7 @@ def _is_ollama_vision_model_ready() -> bool:
         settings = load_settings()
         ai_cfg = settings.get("ai", {})
         vision_model = ai_cfg.get("ollama_vision_model") or "moondream"
-        host = get_configured_ollama_host(settings)
-        if host.lower().startswith("http://localhost:"):
-            host = "http://127.0.0.1:" + host[len("http://localhost:"):]
+        host = fast_local_ollama_url(get_configured_ollama_host(settings))
         if not host.startswith(("http://", "https://")):
             return False
         resp = requests.get(f"{host}/api/tags", timeout=0.6)
@@ -1015,7 +1045,14 @@ def _analysis_llm_handles_vision_natively(ollama_running_hint=None) -> bool:
     return False
 
 
-def analyze_drawing(filename: str, mode: str = "auto", canvas_filename: str = None, dwell_grid=None) -> dict:
+def analyze_drawing(
+    filename: str,
+    mode: str = "auto",
+    canvas_filename: str = None,
+    dwell_grid=None,
+    deadline: float = None,
+    cancel_event=None,
+) -> dict:
     """
     Comprehensive self-hosted drawing analysis returning a short `label` (archetype),
     rich `prompt_context` for the Psychoanalysis LLM, and vision diagnostics for vision.log.
@@ -1035,9 +1072,9 @@ def analyze_drawing(filename: str, mode: str = "auto", canvas_filename: str = No
     fallback_reason = ""
 
     if mode == "ollama_vision":
-        extra = run_ollama_vision_analysis(filename)
+        extra = run_ollama_vision_analysis(filename, deadline=deadline, cancel_event=cancel_event)
         if extra is None:
-            fallback_reason = f"Ollama vision unavailable ({_LAST_OLLAMA_VISION_ERROR or 'model not pulled or server offline'}); fell back to stroke_metrics"
+            fallback_reason = f"Ollama vision unavailable ({_get_last_ollama_vision_error() or 'model not pulled or server offline'}); fell back to stroke_metrics"
     elif mode == "clip":
         with _CACHE_LOCK:
             extra = run_clip_abstract_analysis(filename)
@@ -1068,7 +1105,7 @@ def analyze_drawing(filename: str, mode: str = "auto", canvas_filename: str = No
             if _analysis_llm_handles_vision_natively():
                 effective_mode = "auto(direct_vision_llm+stroke_metrics)"
             elif _is_ollama_vision_model_ready():
-                extra = run_ollama_vision_analysis(filename)
+                extra = run_ollama_vision_analysis(filename, deadline=deadline, cancel_event=cancel_event)
             else:
                 effective_mode = "auto(stroke_metrics)"
 

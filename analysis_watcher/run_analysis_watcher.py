@@ -52,15 +52,17 @@ from translator import (
     translate_reading,
 )
 
-ensure_directories()
-
 _id_lock = threading.Lock()
 _last_run_id = ""
 _watcher_sig_lock = threading.Lock()
 _handled_image_sig = None
 _localized_pdf_locks_guard = threading.Lock()
 _localized_pdf_locks = {}
+_LOCALIZED_PDF_SEMAPHORE = threading.BoundedSemaphore(2)
+_AUTO_PRINT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ls_autoprint")
 _SAFE_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_]{4,64}$")
+PIPELINE_RUN_DEADLINE_SEC = 150.0
+_MAX_PERSISTED_DIGESTS = 32
 
 HU_MONTHS = (
     "",
@@ -117,23 +119,35 @@ def _compute_image_sig(image_path: Path):
         return None
 
 
+def _read_persisted_handled_digests() -> list:
+    sig_file = config_manager.SHARED_DIR / ".image_handled.sig"
+    if not sig_file.exists():
+        return []
+    try:
+        return [ln.strip() for ln in sig_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    except Exception:
+        return []
+
+
 def _persist_handled_digest(digest: str):
     if not digest:
         return
     try:
-        atomic_write_text(config_manager.SHARED_DIR / ".image_handled.sig", f"{digest}\n", encoding="utf-8")
+        existing = [d for d in _read_persisted_handled_digests() if d != digest]
+        existing.append(digest)
+        recent = existing[-_MAX_PERSISTED_DIGESTS:]
+        atomic_write_text(
+            config_manager.SHARED_DIR / ".image_handled.sig",
+            "\n".join(recent) + "\n",
+            encoding="utf-8",
+        )
     except Exception:
         pass
 
 
 def _read_persisted_handled_digest() -> str:
-    sig_file = config_manager.SHARED_DIR / ".image_handled.sig"
-    if not sig_file.exists():
-        return ""
-    try:
-        return sig_file.read_text(encoding="utf-8").strip()
-    except Exception:
-        return ""
+    digests = _read_persisted_handled_digests()
+    return digests[-1] if digests else ""
 
 
 def mark_image_handled(image_path: Path = None):
@@ -168,45 +182,100 @@ def snapshot_drawing_input(source_path: Path = None, run_id: str = None) -> tupl
     return rid, snap
 
 
+class _DynamicLogsFileHandler(logging.Handler):
+    """
+    Lazy file handler that resolves config_manager.LOGS_DIR / filename at emit time
+    and automatically rebinds whenever config_manager.LOGS_DIR changes (e.g. in tests).
+    Opens zero files at module import time.
+    """
+
+    def __init__(self, filename: str, fmt: str):
+        super().__init__()
+        self.filename = filename
+        self._fmt = fmt
+        self.setFormatter(logging.Formatter(fmt))
+        self._inner: logging.FileHandler = None
+        self._current_target: Path = None
+        self._handler_lock = threading.RLock()
+
+    def _close_inner(self):
+        with self._handler_lock:
+            if self._inner is not None:
+                try:
+                    self._inner.close()
+                except Exception:
+                    pass
+                self._inner = None
+                self._current_target = None
+
+    def emit(self, record):
+        try:
+            with self._handler_lock:
+                config_manager.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+                target = (config_manager.LOGS_DIR / self.filename).resolve()
+                if self._inner is None or self._current_target != target:
+                    self._close_inner()
+                    fh = logging.FileHandler(target, encoding="utf-8")
+                    fh.setFormatter(self.formatter or logging.Formatter(self._fmt))
+                    self._inner = fh
+                    self._current_target = target
+                self._inner.emit(record)
+        except Exception:
+            self.handleError(record)
+
+    def close(self):
+        self._close_inner()
+        super().close()
+
+
+_PIPELINE_LOGGERS = []
+
+
 def _setup_logger(name, filename, fmt="%(asctime)s;%(name)s;%(levelname)s;%(message)s"):
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
-    if not logger.handlers:
-        try:
-            config_manager.LOGS_DIR.mkdir(parents=True, exist_ok=True)
-            fh = logging.FileHandler(config_manager.LOGS_DIR / filename, encoding="utf-8")
-            fh.setFormatter(logging.Formatter(fmt))
-            logger.addHandler(fh)
-        except Exception:
-            pass
+    logger.propagate = False
+    has_dynamic = any(
+        isinstance(h, _DynamicLogsFileHandler) and getattr(h, "filename", None) == filename
+        for h in logger.handlers
+    )
+    if not has_dynamic:
+        for h in list(logger.handlers):
+            try:
+                h.close()
+            except Exception:
+                pass
+            logger.removeHandler(h)
+        logger.addHandler(_DynamicLogsFileHandler(filename, fmt))
+    if not any(entry[0] is logger for entry in _PIPELINE_LOGGERS):
+        _PIPELINE_LOGGERS.append((logger, filename, fmt))
     return logger
+
+
+def rebind_all_loggers():
+    """Close cached FileHandlers on all pipeline loggers (and re-attach if cleared) so next emit opens in active LOGS_DIR."""
+    for lg, filename, fmt in _PIPELINE_LOGGERS:
+        has_dynamic = False
+        for h in list(lg.handlers):
+            if isinstance(h, _DynamicLogsFileHandler):
+                h._close_inner()
+                has_dynamic = True
+        if not has_dynamic:
+            lg.addHandler(_DynamicLogsFileHandler(filename, fmt))
 
 
 main_logger = _setup_logger("image_analysis_pipeline", "installation.log")
 response_logger = _setup_logger("request_responses", "responses.log")
 prediction_logger = _setup_logger("predictions", "predictions.csv", fmt="%(asctime)s;%(message)s")
 vision_logger = _setup_logger("vision_perception", "vision.log")
+config_manager.register_logger_rebind_callback(rebind_all_loggers)
 
 
 def _log_vision_entry(payload: dict):
     """Append a structured vision perception entry to the active config_manager.LOGS_DIR/vision.log."""
     try:
-        config_manager.LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        target = (config_manager.LOGS_DIR / "vision.log").resolve()
-        needs_rebind = not vision_logger.handlers or not any(
-            isinstance(h, logging.FileHandler) and Path(getattr(h, "baseFilename", "")).resolve() == target
-            for h in vision_logger.handlers
-        )
-        if needs_rebind:
-            for h in list(vision_logger.handlers):
-                try:
-                    h.close()
-                except Exception:
-                    pass
-                vision_logger.removeHandler(h)
-            fh = logging.FileHandler(target, encoding="utf-8")
-            fh.setFormatter(logging.Formatter("%(asctime)s;%(name)s;%(levelname)s;%(message)s"))
-            vision_logger.addHandler(fh)
+        if not any(isinstance(h, _DynamicLogsFileHandler) for h in vision_logger.handlers):
+            _setup_logger("vision_perception", "vision.log")
         vision_logger.info(json.dumps(payload, ensure_ascii=False))
     except Exception:
         pass
@@ -734,29 +803,45 @@ def ensure_localized_print_pdf(run_id: str, lang: str = "en"):
 
     localized_dir = docs_dir / "lang" / eff_lang
     localized_pdf = localized_dir / f"print_{rid}.pdf"
-    if localized_pdf.exists() and localized_pdf.stat().st_size > 100:
+    meta_mtime_ns = meta_path.stat().st_mtime_ns if meta_path.exists() else 0
+
+    def _is_cached_pdf_fresh() -> bool:
+        if not localized_pdf.exists():
+            return False
+        st = localized_pdf.stat()
+        if st.st_size <= 100:
+            return False
+        if meta_mtime_ns and st.st_mtime_ns < meta_mtime_ns:
+            return False
+        return True
+
+    if _is_cached_pdf_fresh():
         return localized_pdf
 
     lock_key = (rid, eff_lang)
     with _localized_pdf_locks_guard:
         lock = _localized_pdf_locks.setdefault(lock_key, threading.Lock())
         if len(_localized_pdf_locks) > 256:
-            _localized_pdf_locks.clear()
-            _localized_pdf_locks[lock_key] = lock
+            for k, lk in list(_localized_pdf_locks.items()):
+                if k != lock_key and not lk.locked():
+                    del _localized_pdf_locks[k]
+                    if len(_localized_pdf_locks) <= 192:
+                        break
 
     with lock:
-        if localized_pdf.exists() and localized_pdf.stat().st_size > 100:
+        if _is_cached_pdf_fresh():
             return localized_pdf
         if not meta:
             return primary_pdf if primary_pdf.exists() else None
         localized_dir.mkdir(parents=True, exist_ok=True)
-        rendered = save_print_pdf(
-            url=get_gallery_url(print_render=True, lang=eff_lang, run_id=rid),
-            out_dir=str(localized_dir),
-            website_data=meta,
-            run_id=rid,
-            lang=eff_lang,
-        )
+        with _LOCALIZED_PDF_SEMAPHORE:
+            rendered = save_print_pdf(
+                url=get_gallery_url(print_render=True, lang=eff_lang, run_id=rid),
+                out_dir=str(localized_dir),
+                website_data=meta,
+                run_id=rid,
+                lang=eff_lang,
+            )
         if rendered and Path(rendered).exists():
             return Path(rendered)
         return primary_pdf if primary_pdf.exists() else None
@@ -768,6 +853,14 @@ def _run_optional_tts(poem: str, settings: dict, run_id: str = None) -> str:
     if not tts_cfg.get("enabled", False):
         return ""
 
+    try:
+        daily_limit = max(0, int(tts_cfg.get("daily_call_limit", 0) or 0))
+    except (TypeError, ValueError):
+        daily_limit = 0
+    if daily_limit > 0 and not config_manager.check_and_increment_daily_quota("tts", daily_limit):
+        main_logger.warning(f"Daily TTS call limit ({daily_limit}) reached; skipping audio generation.")
+        return ""
+
     provider = tts_cfg.get("provider", "elevenlabs")
     env = load_env_vars()
     rid = run_id or generate_run_id()
@@ -775,9 +868,9 @@ def _run_optional_tts(poem: str, settings: dict, run_id: str = None) -> str:
     output_mp3 = config_manager.SHARED_DIR / audio_filename
 
     if provider == "elevenlabs":
-        api_key = env.get("API_KEY") or env.get("ELEVENLABS_API_KEY")
+        api_key = env.get("ELEVENLABS_API_KEY") or env.get("API_KEY")
         if not api_key:
-            main_logger.warning("TTS enabled with ElevenLabs, but API_KEY is not set.")
+            main_logger.warning("TTS enabled with ElevenLabs, but ELEVENLABS_API_KEY / API_KEY is not set.")
             return ""
         rae_file = config_manager.SHARED_DIR / f"output_rae_{rid}.mp3"
         ryan_file = config_manager.SHARED_DIR / f"output_ryan_{rid}.mp3"
@@ -789,10 +882,10 @@ def _run_optional_tts(poem: str, settings: dict, run_id: str = None) -> str:
             client = ElevenLabs(api_key=api_key)
             v1 = (tts_cfg.get("voice_id_1") or "").strip() or "45QiOxkuEAY6ckHqLMe8"
             v2 = (tts_cfg.get("voice_id_2") or "").strip()
-            run_el_tts(client=client, voice_id=v1, output=str(rae_file), text=poem, speed=1.2)
+            run_el_tts(client=client, voice_id=v1, output=str(rae_file), text=poem, speed=1.15)
             if v2:
                 try:
-                    run_el_tts(client=client, voice_id=v2, output=str(ryan_file), text=poem, speed=1.3)
+                    run_el_tts(client=client, voice_id=v2, output=str(ryan_file), text=poem, speed=1.2)
                     decrease_volume(str(ryan_file), dB=-10)
                     overlay_audio(str(ryan_file), str(rae_file), output_name=str(output_mp3))
                 except Exception as overlay_err:
@@ -841,12 +934,22 @@ def _write_content_error(run_id: str, code: str, message: str, settings: dict = 
     write_content_json(payload)
 
 
-def cleanup_orphaned_temp_files():
+def cleanup_orphaned_temp_files(lock_already_held: bool = False):
     """Remove leftover transient per-run temp files in shared_output from previous crashes/timeouts."""
     shared = config_manager.SHARED_DIR
     docs = config_manager.DOCS_DIR
     if not shared.exists():
         return
+    if not lock_already_held:
+        try:
+            config_manager.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+            probe_fd = try_acquire_nonblocking_lock(config_manager.LOGS_DIR / ".watcher.lock")
+            if probe_fd is None:
+                # Another watcher process is actively running; do not delete its in-flight files
+                return
+            release_nonblocking_lock(probe_fd)
+        except Exception:
+            pass
     patterns = (
         "input_*.png",
         "image_processed_*.png",
@@ -884,12 +987,27 @@ def cleanup_orphaned_temp_files():
                 pass
 
 
+def _dispatch_auto_print_job(pdf_path_str: str, printer_name: str, rid: str):
+    """Background worker function so slow Windows printing never blocks the analysis pipeline."""
+    try:
+        res = send_pdf_to_printer(pdf_path_str, printer_name=printer_name)
+        if res.get("status") == "success":
+            main_logger.info(
+                f"[{rid}] Auto-print dispatched ({res.get('dispatch', 'spooler')}) to '{printer_name}': {Path(pdf_path_str).name}"
+            )
+        else:
+            main_logger.error(f"[{rid}] Auto-print failed: {res.get('error')}")
+    except Exception as e:
+        main_logger.error(f"[{rid}] Auto-print unexpected error: {e}")
+
+
 def run_analysis_pipeline(
     run_id: str = None,
     snapshot_path: str = None,
     raise_on_error: bool = False,
     dwell_grid=None,
     cancel_event: threading.Event = None,
+    deadline: float = None,
 ) -> bool:
     """
     Run the complete Latent Space pipeline on an isolated per-drawing snapshot:
@@ -902,6 +1020,7 @@ def run_analysis_pipeline(
       7. Archive artifacts under docs/print_{run_id}.* and update shared_output/content.json atomically
       8. Render Print PDF (and auto-print if enabled)
     """
+    ensure_directories()
     start_time = datetime.now()
     rid = run_id or generate_run_id()
     main_logger.info(f"[{rid}] Started analysis pipeline at {start_time.isoformat()}")
@@ -928,9 +1047,10 @@ def run_analysis_pipeline(
     poem_audio = ""
     wrote_live_content = False
     pipeline_t0 = time.monotonic()
+    eff_deadline = float(deadline) if deadline is not None else (pipeline_t0 + PIPELINE_RUN_DEADLINE_SEC)
 
     def _check_cancelled():
-        if cancel_event is not None and cancel_event.is_set():
+        if (cancel_event is not None and cancel_event.is_set()) or time.monotonic() >= eff_deadline:
             raise PipelineStageError("ERR_PIPELINE_TIMEOUT", f"Run {rid} cancelled after caller timeout")
 
     try:
@@ -963,12 +1083,22 @@ def run_analysis_pipeline(
 
         # 3. Abstract Art & Visual Perception Analysis
         main_logger.info(f"[{rid}] Starting visual perception analysis (mode={vision_mode})")
-        perception = analyze_drawing(
-            str(image_path),
-            mode=vision_mode,
-            canvas_filename=str(input_img),
-            dwell_grid=dwell_grid,
-        )
+        try:
+            perception = analyze_drawing(
+                str(image_path),
+                mode=vision_mode,
+                canvas_filename=str(input_img),
+                dwell_grid=dwell_grid,
+                deadline=eff_deadline,
+                cancel_event=cancel_event,
+            )
+        except TypeError:
+            perception = analyze_drawing(
+                str(image_path),
+                mode=vision_mode,
+                canvas_filename=str(input_img),
+                dwell_grid=dwell_grid,
+            )
         summary_label = perception["label"]
         prompt_context = perception["prompt_context"]
         effective_vision = perception.get("effective_mode", vision_mode)
@@ -999,10 +1129,19 @@ def run_analysis_pipeline(
         # 4. Psychoanalytical Interpretation
         analysis_t0 = time.monotonic()
         main_logger.info(f"[{rid}] Starting psychoanalysis via {analysis_model._provider} ({analysis_model._llm})")
-        analysis_kwargs = {"message": prompt_context, "image_path": str(image_path), "allow_failover": True}
+        analysis_kwargs = {
+            "message": prompt_context,
+            "image_path": str(image_path),
+            "allow_failover": True,
+            "deadline": eff_deadline,
+        }
         if cancel_event is not None:
             analysis_kwargs["cancel_event"] = cancel_event
-        analysis_text = analysis_model.chat(**analysis_kwargs)
+        try:
+            analysis_text = analysis_model.chat(**analysis_kwargs)
+        except TypeError:
+            analysis_kwargs.pop("deadline", None)
+            analysis_text = analysis_model.chat(**analysis_kwargs)
         analysis_cfg = (settings.get("ai") or {}).get("analysis") or {}
         try:
             analysis_max_words = int(analysis_cfg.get("max_words", 110))
@@ -1016,6 +1155,7 @@ def run_analysis_pipeline(
                 llm_model=analysis_model,
                 cancel_event=cancel_event,
                 language_name="English",
+                deadline=eff_deadline,
             )
             if wl_info.get("action") not in ("unchanged", "disabled"):
                 main_logger.info(
@@ -1058,10 +1198,15 @@ def run_analysis_pipeline(
             # 5. Poem Generation (runs on GPU while CPU NMT translates analysis in parallel)
             poem_t0 = time.monotonic()
             main_logger.info(f"[{rid}] Starting poem generation via {poem_model._provider} ({poem_model._llm})")
-            poem_kwargs = {"message": analysis_text, "allow_failover": True}
+            poem_kwargs = {"message": analysis_text, "allow_failover": True, "deadline": eff_deadline}
             if cancel_event is not None:
                 poem_kwargs["cancel_event"] = cancel_event
-            poem_text = _clean_translated_output(poem_model.chat(**poem_kwargs), is_poem=True)
+            try:
+                raw_poem = poem_model.chat(**poem_kwargs)
+            except TypeError:
+                poem_kwargs.pop("deadline", None)
+                raw_poem = poem_model.chat(**poem_kwargs)
+            poem_text = _clean_translated_output(raw_poem, is_poem=True)
             poem_elapsed = round(time.monotonic() - poem_t0, 2)
             main_logger.info(f"[{rid}] Poem complete via {poem_model._last_used_provider} ({poem_model._last_used_model})")
             response_logger.info(
@@ -1093,7 +1238,8 @@ def run_analysis_pipeline(
                 if tcfg["mode"] == "local_nmt":
                     for tlang in target_langs:
                         try:
-                            part_res = tr_analysis_futures[tlang].result(timeout=45)
+                            rem_nmt = max(1.0, min(45.0, eff_deadline - time.monotonic()))
+                            part_res = tr_analysis_futures[tlang].result(timeout=rem_nmt)
                             tr_poem = translate_poem_stage_local_nmt(poem_text, target_lang=tlang, settings=settings)
                             if part_res.get("psychoanalysis") or tr_poem:
                                 translations[tlang] = {
@@ -1113,21 +1259,35 @@ def run_analysis_pipeline(
                 else:
                     seq_t0 = time.monotonic()
                     for tlang in target_langs:
-                        if cancel_event is not None and cancel_event.is_set():
+                        if (cancel_event is not None and cancel_event.is_set()) or time.monotonic() >= eff_deadline:
                             break
                         try:
                             main_logger.info(f"[{rid}] Starting translation -> {tlang} via mode={tcfg['mode']}")
-                            tr_res = translate_reading(
-                                archetype=summary_label,
-                                psychoanalysis=analysis_text,
-                                poem=poem_text,
-                                target_lang=tlang,
-                                settings=settings,
-                                prompt_context=prompt_context,
-                                analysis_model=analysis_model,
-                                poem_model=poem_model,
-                                cancel_event=cancel_event,
-                            )
+                            try:
+                                tr_res = translate_reading(
+                                    archetype=summary_label,
+                                    psychoanalysis=analysis_text,
+                                    poem=poem_text,
+                                    target_lang=tlang,
+                                    settings=settings,
+                                    prompt_context=prompt_context,
+                                    analysis_model=analysis_model,
+                                    poem_model=poem_model,
+                                    cancel_event=cancel_event,
+                                    deadline=eff_deadline,
+                                )
+                            except TypeError:
+                                tr_res = translate_reading(
+                                    archetype=summary_label,
+                                    psychoanalysis=analysis_text,
+                                    poem=poem_text,
+                                    target_lang=tlang,
+                                    settings=settings,
+                                    prompt_context=prompt_context,
+                                    analysis_model=analysis_model,
+                                    poem_model=poem_model,
+                                    cancel_event=cancel_event,
+                                )
                             if tr_res.get("ok"):
                                 translations[tlang] = {
                                     "archetype": tr_res.get("archetype") or summary_label,
@@ -1151,8 +1311,10 @@ def run_analysis_pipeline(
 
         _check_cancelled()
 
-        # 6. Optional Text-to-Speech
-        poem_audio = _run_optional_tts(poem_text, settings, run_id=rid)
+        # 6. Optional Text-to-Speech (use localized poem when default_print_language translation is available)
+        req_print_lang = get_translation_config(settings)["default_print_language"]
+        tts_poem_text = (translations.get(req_print_lang) or {}).get("poem") or poem_text
+        poem_audio = _run_optional_tts(tts_poem_text, settings, run_id=rid)
 
         # 7. Attention Heatmap
         main_logger.info(f"[{rid}] Generating attention heatmap")
@@ -1260,12 +1422,8 @@ def run_analysis_pipeline(
             printing_cfg = latest_settings.get("printing", {})
             if printing_cfg.get("auto_print", False) and not (cancel_event and cancel_event.is_set()):
                 printer_name = printing_cfg.get("printer_name", "default")
-                main_logger.info(f"[{rid}] Auto-print enabled — printing {pdf_path.name} on '{printer_name}'")
-                res = send_pdf_to_printer(str(pdf_path), printer_name=printer_name)
-                if res.get("status") == "success":
-                    main_logger.info(f"[{rid}] Sent PDF to printer ({printer_name}): {pdf_path.name}")
-                else:
-                    main_logger.error(f"[{rid}] Auto-print failed: {res.get('error')}")
+                main_logger.info(f"[{rid}] Auto-print enabled — queuing {pdf_path.name} on '{printer_name}'")
+                _AUTO_PRINT_EXECUTOR.submit(_dispatch_auto_print_job, str(pdf_path), printer_name, rid)
         else:
             for orphan_doc in (archived_thumb, archived_heatmap):
                 try:
@@ -1357,9 +1515,9 @@ def watch_loop(stop_event=None, runner_fn=None):
                 if image_path.exists():
                     sig = _compute_image_sig(image_path)
                     if sig is not None and sig != _handled_image_sig:
-                        persisted = _read_persisted_handled_digest()
+                        persisted_digests = set(_read_persisted_handled_digests())
                         _handled_image_sig = sig
-                        if sig[2] != persisted:
+                        if sig[2] not in persisted_digests:
                             _persist_handled_digest(sig[2])
                             should_trigger = True
 
@@ -1383,12 +1541,13 @@ def watch_loop(stop_event=None, runner_fn=None):
 
 
 if __name__ == "__main__":
+    ensure_directories()
     _standalone_lock_fd = try_acquire_nonblocking_lock(config_manager.LOGS_DIR / ".watcher.lock")
     if _standalone_lock_fd is None:
         print("[analysis_watcher] Another watcher instance is already running; exiting.")
         sys.exit(0)
     try:
-        cleanup_orphaned_temp_files()
+        cleanup_orphaned_temp_files(lock_already_held=True)
         watch_loop()
     except KeyboardInterrupt:
         print("\nStopping file watch...")
