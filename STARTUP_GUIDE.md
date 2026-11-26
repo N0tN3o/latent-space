@@ -118,3 +118,24 @@ To verify all computer vision, gaze calibration, AI failover, PDF/QR generation,
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+---
+
+## 8. Recommended Local Ollama Models (8 GB VRAM GPUs)
+
+For exhibition laptops or desktops with an 8 GB VRAM GPU (such as an RTX 4060):
+
+- **Dedicated Hungarian Translation (`mode: "ollama"`):**
+  ```bash
+  ollama pull translategemma:4b
+  ```
+  Requires ~3.3 GB VRAM and uses Google's TranslateGemma prompt template in `analysis_watcher/translator.py`.
+
+- **Single Multimodal + Multilingual All-Rounder:**
+  ```bash
+  ollama pull gemma3:4b
+  ```
+  Requires ~3.3 GB VRAM and supports vision perception, creative interpretation, poetry, and translation with zero model swapping.
+
+- **CPU-Only Zero-VRAM Translation (`mode: "local_nmt"`):**
+  Uses `Helsinki-NLP/opus-mt-tc-big-en-hu` on CPU (0 MB GPU VRAM) so the GPU remains dedicated to your primary Ollama model. Pre-download before offline exhibitions via **Admin -> 3. Multilingual Translation -> Download / Preload Model** or `python download_offline_assets.py --with-translation`.
